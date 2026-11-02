@@ -433,7 +433,8 @@
       return false;
     }
     if (!window.__vm.cssLoaded || window.__vm.settings.isOpen?.()) return false;
-    if (bar) { targetTab = tabId; keepTarget = keep; return true; }
+    if (bar && keep) return false; // an empty space's open never takes over a bar the user opened
+    if (bar) { targetTab = tabId; keepTarget = false; return true; }
     targetTab = tabId;
     keepTarget = keep;
     mode = null;
@@ -468,10 +469,38 @@
   window.addEventListener("vm-open-command-bar", () => open(null));
   window.__vm.onShortcut((key) => { if (key === window.__vm.normalise(window.__vm.shortcut("meta+t"))) open(null); });
 
+  // Landing in an empty space, from the space bar, a shortcut or Vivaldi's own menu, opens the bar on the space's blank
+  // tab, as a new tab does; the bar keeps that tab, so Escape stays in the space. A bar still open from the space just
+  // left is closed first: it belongs to that space's tab. Every window sees every window's tab events, so only a switch
+  // in this window, between two tabs of this window, counts.
+  const spaceChanged = async (previous, tabId, windowId) => {
+    const spaceOf = window.__vm.workspaces?.of;
+    if (!spaceOf || Date.now() - startedAt < 5000) return;
+    const win = await chrome.windows.getCurrent().catch(() => null);
+    if (!win || win.id !== windowId) return;
+    await new Promise((resolve) => setTimeout(resolve, 150)); // let Vivaldi finish switching, then look
+    const [[active], prior] = await Promise.all([
+      chrome.tabs.query({ active: true, windowId }).catch(() => []), chrome.tabs.get(previous).catch(() => null)]);
+    if (!active || !prior || active.id !== tabId || spaceOf(active) === spaceOf(prior)) return;
+    if (bar && targetTab !== tabId) close(true);
+    if (bar || !isBlank(active)) return;
+    const own = (await chrome.tabs.query({ windowId }).catch(() => [])).filter((t) => spaceOf(t) === spaceOf(active));
+    if (own.every(isBlank)) open(tabId, windowId, true);
+  };
+
   const activeHistory = [];
-  chrome.tabs.onActivated.addListener(({ tabId }) => {
+  const lastActive = new Map(); // window id -> its active tab, seeded so the first switch after start counts
+  chrome.tabs.query({ active: true }).then((tabs) => {
+    for (const t of tabs) if (!lastActive.has(t.windowId)) lastActive.set(t.windowId, t.id);
+  }, () => {});
+  chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
     activeHistory.push(tabId);
     if (activeHistory.length > 6) activeHistory.shift();
+    const previous = lastActive.get(windowId);
+    lastActive.set(windowId, tabId);
+    if (previous != null && previous !== tabId) {
+      spaceChanged(previous, tabId, windowId).catch((e) => console.warn("[vivarc] empty space:", e));
+    }
   });
 
   chrome.tabs.onCreated.addListener(async (tab) => {
@@ -495,21 +524,6 @@
         }
       }, 120);
     }
-  });
-
-  // Landing in an empty space, from the space bar, a shortcut or Vivaldi's own menu, opens the bar on the space's blank
-  // tab, as a new tab does. Only on a switch between spaces, and the bar keeps that tab, so Escape stays in the space.
-  chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
-    const spaceOf = window.__vm.workspaces?.of;
-    if (!spaceOf || bar || Date.now() - startedAt < 5000) return;
-    const previous = activeHistory.filter((id) => id !== tabId).pop();
-    const prior = previous != null ? await chrome.tabs.get(previous).catch(() => null) : null;
-    if (!prior || prior.windowId !== windowId) return;
-    await new Promise((resolve) => setTimeout(resolve, 150)); // let Vivaldi finish switching, then look again
-    const [active] = await chrome.tabs.query({ active: true, windowId }).catch(() => []);
-    if (bar || !active || active.id !== tabId || !isBlank(active) || spaceOf(active) === spaceOf(prior)) return;
-    const own = (await chrome.tabs.query({ windowId }).catch(() => [])).filter((t) => spaceOf(t) === spaceOf(active));
-    if (own.every(isBlank)) open(tabId, windowId, true);
   });
   console.log("[vivarc] command bar started");
 })();
