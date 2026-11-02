@@ -164,6 +164,7 @@
   let list = null;
   let chipHolder = null;
   let targetTab = null;
+  let keepTarget = false; // the target is an empty space's own blank tab: closing the bar must not close it
   let mode = null;
   let rows = [];
   let selected = 0;
@@ -193,11 +194,13 @@
 
   const close = (removeBlank) => {
     const blank = targetTab;
+    const keep = keepTarget;
     bar?.remove();
     bar = input = list = chipHolder = targetTab = mode = null;
+    keepTarget = false;
     rows = [];
     seq++;
-    if (removeBlank && blank != null) chrome.tabs.remove(blank).catch(() => {});
+    if (removeBlank && blank != null && !keep) chrome.tabs.remove(blank).catch(() => {});
   };
 
   const go = (url) => {
@@ -296,6 +299,7 @@
     (await chrome.tabs.query({ currentWindow: true })).filter((t) => !isBlank(t) && t.id !== targetTab);
 
   const pageBehindBar = async () => {
+    if (keepTarget) return null; // an empty space: nothing behind the bar, and the last page is in another space
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (active && !isBlank(active) && active.id !== targetTab) return active;
     const last = activeHistory.filter((id) => id !== targetTab).pop();
@@ -417,7 +421,7 @@
     autoCompleted = e.key.length === 1 && !e.metaKey && !e.ctrlKey;
   };
 
-  const open = async (tabId, tabWindowId) => {
+  const open = async (tabId, tabWindowId, keep = false) => {
     if (!window.__vm.cssLoaded || window.__vm.settings.isOpen?.()) return false;
     try {
       const win = await chrome.windows.getCurrent();
@@ -429,8 +433,9 @@
       return false;
     }
     if (!window.__vm.cssLoaded || window.__vm.settings.isOpen?.()) return false;
-    if (bar) { targetTab = tabId; return true; }
+    if (bar) { targetTab = tabId; keepTarget = keep; return true; }
     targetTab = tabId;
+    keepTarget = keep;
     mode = null;
     bar = el("div");
     bar.id = "vm-cmd";
@@ -490,6 +495,21 @@
         }
       }, 120);
     }
+  });
+
+  // Landing in an empty space, from the space bar, a shortcut or Vivaldi's own menu, opens the bar on the space's blank
+  // tab, as a new tab does. Only on a switch between spaces, and the bar keeps that tab, so Escape stays in the space.
+  chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
+    const spaceOf = window.__vm.workspaces?.of;
+    if (!spaceOf || bar || Date.now() - startedAt < 5000) return;
+    const previous = activeHistory.filter((id) => id !== tabId).pop();
+    const prior = previous != null ? await chrome.tabs.get(previous).catch(() => null) : null;
+    if (!prior || prior.windowId !== windowId) return;
+    await new Promise((resolve) => setTimeout(resolve, 150)); // let Vivaldi finish switching, then look again
+    const [active] = await chrome.tabs.query({ active: true, windowId }).catch(() => []);
+    if (bar || !active || active.id !== tabId || !isBlank(active) || spaceOf(active) === spaceOf(prior)) return;
+    const own = (await chrome.tabs.query({ windowId }).catch(() => [])).filter((t) => spaceOf(t) === spaceOf(active));
+    if (own.every(isBlank)) open(tabId, windowId, true);
   });
   console.log("[vivarc] command bar started");
 })();
