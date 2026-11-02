@@ -11,10 +11,12 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import vivarc  # noqa: E402
+import module_state  # noqa: E402
 
 
 class ReminderCase(unittest.TestCase):
     def setUp(self):
+        module_state.restore_after(self, vivarc)  # main() reconfigures the module on a Windows host
         self.tmp = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.app = os.path.join(self.tmp, "Vivaldi.app")

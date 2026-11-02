@@ -11,6 +11,14 @@ from unittest import mock
 import windows_support as win
 
 
+def private_vivarc():
+    """A private copy of vivarc, so adapter bindings cannot leak to the macOS tests."""
+    spec = importlib.util.spec_from_file_location('vivarc_windows_test', Path(__file__).parents[1] / 'vivarc.py')
+    v = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(v)
+    return v
+
+
 class WindowsSupport(unittest.TestCase):
     def test_versioned_resources_are_sorted_numerically(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -28,17 +36,14 @@ class WindowsSupport(unittest.TestCase):
             self.assertFalse(win.running())
 
     def test_install_reapply_and_uninstall_restore_preferences(self):
-        # Load a private copy so adapter bindings cannot leak to the macOS tests.
-        spec = importlib.util.spec_from_file_location('vivarc_windows_test', Path(__file__).parents[1] / 'vivarc.py')
-        v = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(v)
+        v = private_vivarc()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             app = root / 'Vivaldi app'
             resources = app / '8.10.1' / 'resources' / 'vivaldi'
             resources.mkdir(parents=True)
-            html = '<html><body></body></html>'
-            (resources / 'window.html').write_text(html)
+            html = b'<html>\n<body>\n</body>\n</html>\n'  # LF, as Vivaldi ships it
+            (resources / 'window.html').write_bytes(html)
             actions = [{'COMMAND_NEW_TAB': {'shortcuts': ['ctrl+t']}, 'COMMAND_SAVE_PAGE': {'shortcuts': ['ctrl+s']}}]
             (resources / 'prefs_definitions.json').write_text(json.dumps({'vivaldi': {'actions': {'default': actions}}}))
             data = root / 'User Data'
@@ -60,13 +65,16 @@ class WindowsSupport(unittest.TestCase):
                 self.assertEqual(patched['vivaldi']['actions'][0]['COMMAND_NEW_TAB']['shortcuts'], [])
                 self.assertIn(v.BEGIN, (resources / 'window.html').read_text())
                 self.assertIn('"platform": "Windows"', (resources / 'vivarc.js').read_text(encoding='utf8'))
+                self.assertNotIn(b'\r', (resources / 'vivarc.js').read_bytes())  # Vivaldi's files stay LF
+                if os.name == 'nt':  # cmd.exe launchers keep the platform's CRLF
+                    self.assertIn(b'\r\n', Path(v.UPDATE_COMMAND).read_bytes())
                 launcher = Path(v.UPDATE_COMMAND).read_text(encoding='utf8')
                 self.assertIn('"' + str(data) + '"', launcher)
                 self.assertIn('"' + str(app) + '"', launcher)
                 v.cmd_install(args)
                 v.cmd_uninstall(args)
                 self.assertEqual(json.loads(prefs.read_text()), original)
-                self.assertNotIn(v.BEGIN, (resources / 'window.html').read_text())
+                self.assertEqual((resources / 'window.html').read_bytes(), html)  # byte-identical: no CRLF
                 self.assertFalse((resources / 'vivarc.js').exists())
                 self.assertFalse(Path(v.UPDATE_COMMAND).exists())
                 self.assertFalse(Path(v.UNINSTALL_COMMAND).exists())

@@ -385,10 +385,11 @@ def preflight(resources, ask=ask, open_settings=open_settings):
     die("Still no permission to modify Vivaldi. Nothing was changed. See the README troubleshooting section.")
 
 
-def write_atomic(path, text):
-    """Write next to the target and swap it in, so a reader never sees half a file and a stale owner cannot block us."""
+def write_atomic(path, text, newline=None):
+    """Write next to the target and swap it in, so a reader never sees half a file and a stale owner cannot block us.
+    Pass newline="\\n" for Vivaldi's own files: Windows text mode would otherwise turn LF into CRLF."""
     temp = f"{path}.vivarc-tmp"
-    with open(temp, "w", encoding="utf8") as f:
+    with open(temp, "w", encoding="utf8", newline=newline) as f:
         f.write(text)
     os.replace(temp, path)
 
@@ -453,7 +454,7 @@ def write_bundle(resources, with_peek):
     start_page = pathlib.Path(HOME_DIR, "start", "index.html").as_uri()
     config = {**load_config(), "startUrl": start_page, "platform": platform.system()}
     bundle = build_bundle(os.path.join(HERE, "src/js"), config, extras, pre)
-    write_atomic(os.path.join(resources, "vivarc.js"), bundle)
+    write_atomic(os.path.join(resources, "vivarc.js"), bundle, newline="\n")
 
 
 def apply_js(app, resources, with_peek):
@@ -464,7 +465,7 @@ def apply_js(app, resources, with_peek):
     if BEGIN not in html and not os.path.exists(saved):
         shutil.copy2(html_path, saved)
     write_bundle(resources, with_peek)
-    write_atomic(html_path, inject_window_html(html))
+    write_atomic(html_path, inject_window_html(html), newline="\n")
 
 
 def is_newer(tag, current):
@@ -743,8 +744,7 @@ def cmd_uninstall(args):
     try:
         if os.path.exists(html_path):
             html = read_text(html_path)
-            with open(html_path, "w", encoding="utf8") as f:
-                f.write(remove_window_html(html))
+            write_atomic(html_path, remove_window_html(html), newline="\n")
         bundle = os.path.join(resources, "vivarc.js")
         if os.path.exists(bundle):
             os.remove(bundle)
