@@ -1,5 +1,8 @@
 # Changelog
 
+## Unreleased
+- Pinned folders slide open and shut instead of appearing at once. With Reduce Motion on, they still open instantly.
+
 ## 0.1.16 - 2026-10-28
 - **Uninstall Vivarc**: the installer now also leaves `~/Applications/Uninstall Vivarc.app` next to Update Vivarc. It quits Vivaldi, restores your settings, removes Vivarc and reopens Vivaldi, so removing or reinstalling no longer needs Terminal.
 - Docs: the README and the guide page now say that a sidebar hidden with Cmd+S slides back in when you move the pointer to the left edge of the window.
