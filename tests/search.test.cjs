@@ -128,6 +128,70 @@ test('first blank tab of a new workspace never reactivates the previous workspac
   assert.equal(calls.navigation.length, 0);
 });
 
+// A window whose bar was opened and closed again, then sees `tabs` (id -> tab) with tab 10 active in space 1.
+async function spaces(tabs) {
+  const { context, calls } = setup();
+  (await loadBar(context)).events.keydown({ key: 'Escape', preventDefault() {} });
+  vm.runInContext(source('07-workspaces.js'), context);
+  const inputs = [];
+  const make = context.document.createElement;
+  context.document.createElement = tag => { const node = make(tag); if (tag === 'input') inputs.push(node); return node; };
+  context.Date = { now: () => Date.now() + 6000 };
+  context.setTimeout = fn => fn();
+  calls.removed = [];
+  const active = { 1: 10 }; // window id -> its active tab
+  Object.assign(context.chrome.tabs, {
+    get: async id => tabs[id], remove: async id => calls.removed.push(id),
+    query: async q => Object.values(tabs).filter(t => (!q.windowId || t.windowId === q.windowId) && (!q.active || t.id === active[t.windowId])),
+  });
+  const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+  const activate = async (tabId, windowId = 1) => { active[windowId] = tabId; calls.onActivated({ tabId, windowId }); await settle(); };
+  await activate(10);
+  return { calls, inputs, activate };
+}
+const page = (id, space, windowId = 1) => ({ id, windowId, url: `https://${id}.test/`, vivExtData: `{"workspaceId":${space}}` });
+const blank = (id, space, windowId = 1) => ({ id, windowId, url: 'vivaldi://newtab', vivExtData: `{"workspaceId":${space}}` });
+
+test('landing in an empty space opens the bar on its blank tab, and Escape stays in the space', async () => {
+  const { calls, inputs, activate } = await spaces({ 10: page(10, 1), 20: blank(20, 2) });
+  await activate(20);
+  assert.equal(inputs.length, 1, 'the bar opens');
+  inputs[0].events.keydown({ key: 'Escape', preventDefault() {} });
+  assert.deepEqual(calls.removed, [], "Escape must not close the space's only tab");
+});
+test('the bar stays shut for a space with pages, a tab in the same space, or a switch in another window', async () => {
+  const { inputs, activate } = await spaces({ 10: page(10, 1), 11: blank(11, 1), 20: blank(20, 2), 21: page(21, 2), 30: page(30, 3, 2), 31: blank(31, 4, 2) });
+  await activate(11);
+  await activate(20);
+  await activate(30, 2);
+  await activate(31, 2);
+  assert.equal(inputs.length, 0);
+});
+test('moving between blank tabs of one empty space does not reopen the bar', async () => {
+  const { inputs, activate } = await spaces({ 10: page(10, 1), 20: blank(20, 2), 22: blank(22, 2) });
+  await activate(20);
+  inputs[0].events.keydown({ key: 'Escape', preventDefault() {} });
+  await activate(22);
+  assert.equal(inputs.length, 1);
+});
+test("a space switch in another window leaves this window's bar open", async () => {
+  const { calls, inputs, activate } = await spaces({ 10: page(10, 1), 20: blank(20, 2), 30: page(30, 3, 2), 31: page(31, 4, 2) });
+  await activate(20);
+  await activate(30, 2);
+  await activate(31, 2);
+  inputs[0].value = 'example.test';
+  await inputs[0].events.input();
+  inputs[0].events.keydown({ key: 'Enter', preventDefault() {} });
+  assert.deepEqual(calls.navigation.at(-1), { id: 20, url: 'https://example.test', active: true }, 'the bar is still open on tab 20');
+});
+test('switching space closes a bar left open for the space before, keeping that space its tab', async () => {
+  const { calls, inputs, activate } = await spaces({ 10: page(10, 1), 20: blank(20, 2), 30: blank(30, 3) });
+  await activate(20);
+  await activate(30);
+  assert.equal(inputs.length, 2, 'the bar closes for space 2 and opens again for space 3');
+  assert.deepEqual(calls.removed, []);
+});
+
 for (const failure of ['missing default', 'native request error', 'POST search']) {
   test(`DuckDuckGo fallback when ${failure}`, async () => {
     const { context, calls } = setup({ missing: failure === 'missing default' });

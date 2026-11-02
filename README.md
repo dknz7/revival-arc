@@ -159,7 +159,7 @@ python3 ~/.vivarc/app/vivarc.py status      # what is installed
   <img src="docs/screenshots/sidebar.png" alt="Vivarc sidebar: favorites grid, pinned folders, open tabs" width="760">
 </p>
 
-**A command bar on Cmd+T.** It opens over the page you are on. Type to jump to an open tab, a bookmark or a history entry, paste a URL, or search.
+**A command bar on Cmd+T.** It opens over the page you are on. Type to jump to an open tab, a bookmark or a history entry, paste a URL, or search. Switching to an empty space opens it by itself; Escape closes it and stays in the space.
 
 <p align="center">
   <img src="docs/screenshots/command-bar.png" alt="Command bar in YouTube search mode" width="760">
