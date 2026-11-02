@@ -12,7 +12,7 @@
   const windows = config.platform === "Windows";
   const shortcut = (combo) => {
     if (combo === "alt+meta+left" || combo === "alt+meta+right") {
-      return windows ? combo.replace("alt+meta", "alt") : combo;
+      return windows ? combo.replace("alt+meta", "ctrl") : combo;
     }
     if (!windows) return combo;
     if (combo === "ctrl+meta+n") return "alt+ctrl+n";

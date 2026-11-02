@@ -10,11 +10,17 @@
   const COPY_URL = window.__vm.shortcut("shift+meta+c");
 
   // Bump when the steps change: profiles already set up then run the (idempotent) steps once more.
-  const VERSION = 15;
+  // 16 moved the Windows space keys to Ctrl+Left/Right; macOS steps did not change, so macOS stays on 15.
+  const VERSION = window.__vm.windows ? 16 : 15;
   const TOGGLE = window.__vm.shortcut("meta+s");
   const PROFILE_KEYS = [window.__vm.shortcut("ctrl+meta+left"), window.__vm.shortcut("ctrl+meta+right")]; // the profile switcher's previous/next, handled in 06-spaces.js
   const SPACE_KEYS = { COMMAND_WORKSPACE_SWITCH_BACK_ORDER: window.__vm.shortcut("alt+meta+left"), COMMAND_WORKSPACE_SWITCH_FORWARD_ORDER: window.__vm.shortcut("alt+meta+right"),
     COMMAND_WORKSPACE_CREATE_NEW: window.__vm.shortcut("ctrl+meta+n") }; // like Arc's spaces; Ctrl+Cmd+N opens Vivaldi's own Create Workspace dialog
+  // Keys earlier builds put on the space commands. The first Windows build used Alt+Left/Right, taken from Back/Forward,
+  // which get them back (only if nothing else holds them). Mirrors LEGACY_SPACE_KEYS / RESTORED_KEYS in the installer.
+  const LEGACY_SPACE_KEYS = ["meta+left", "meta+right", "alt+meta+left", "alt+meta+right", "alt+ctrl+left", "alt+ctrl+right",
+    ...(window.__vm.windows ? ["alt+left", "alt+right"] : [])];
+  const RESTORED_KEYS = window.__vm.windows ? { COMMAND_PAGE_BACK: "alt+left", COMMAND_PAGE_FORWARD: "alt+right" } : {};
 
   // The address bar and navigation buttons live inside the sidebar; the top bar is hidden.
   const SIDEBAR_TOOLBAR = ["TabButton", "Extensions", "FlexibleSpacer", "Back", "Reload", "Forward", "AddressField"];
@@ -76,8 +82,14 @@
     }
     for (const [name, key] of Object.entries(SPACE_KEYS)) {
       const cmd = command(name);
-      cmd.shortcuts = cmd.shortcuts.filter((s) => !["meta+left", "meta+right", "alt+meta+left", "alt+meta+right", "alt+ctrl+left", "alt+ctrl+right"].includes(s));
+      cmd.shortcuts = cmd.shortcuts.filter((s) => !LEGACY_SPACE_KEYS.includes(s));
       cmd.shortcuts.push(key);
+    }
+    const held = new Set(Object.values(table).flatMap((c) => (Array.isArray(c?.shortcuts) ? c.shortcuts : [])));
+    for (const [name, key] of Object.entries(RESTORED_KEYS)) {
+      // Only a command already in the table: one missing from it still has Vivaldi's default, which includes the key.
+      const cmd = table[name];
+      if (cmd && Array.isArray(cmd.shortcuts) && !held.has(key)) cmd.shortcuts.unshift(key);
     }
     await set("vivaldi.actions", actions);
   };

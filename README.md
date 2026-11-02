@@ -116,7 +116,8 @@ python vivarc.py install
 #### Shortcuts and limitations
 
 Ctrl+T opens the command bar, Ctrl+S toggles the sidebar, Ctrl+Shift+C copies the
-URL, Alt+Left/Right switches spaces, and Ctrl+Alt+N creates a space.
+URL, Ctrl+Left/Right switches spaces, and Ctrl+Alt+N creates a space. Alt+Left/Right
+stay Back/Forward; Vivaldi's second Back/Forward pair, Ctrl+Left/Right, goes to spaces.
 Ctrl+Shift+Left/Right or Ctrl+Shift+1..9 switches profiles. F2 opens Vivaldi's
 Quick Commands. Conflicting Vivaldi shortcuts are replaced; uninstall restores
 the saved preferences.

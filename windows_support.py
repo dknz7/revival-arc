@@ -114,6 +114,9 @@ def configure(v, args=None):
     v.COPY_URL_KEY = 'shift+ctrl+c'
     v.TOGGLE_SIDEBAR_KEY = 'ctrl+s'
     v.PROFILE_KEYS = ('ctrl+shift+left', 'ctrl+shift+right')
-    v.SPACE_KEYS = {'COMMAND_WORKSPACE_SWITCH_BACK_ORDER': 'alt+left',
-                    'COMMAND_WORKSPACE_SWITCH_FORWARD_ORDER': 'alt+right',
+    v.SPACE_KEYS = {'COMMAND_WORKSPACE_SWITCH_BACK_ORDER': 'ctrl+left',
+                    'COMMAND_WORKSPACE_SWITCH_FORWARD_ORDER': 'ctrl+right',
                     'COMMAND_WORKSPACE_CREATE_NEW': 'alt+ctrl+n'}
+    # The first Windows build switched spaces with Alt+Left/Right, taking them from Back/Forward.
+    v.LEGACY_SPACE_KEYS = tuple(dict.fromkeys(v.LEGACY_SPACE_KEYS + ('alt+left', 'alt+right')))
+    v.RESTORED_KEYS = {'COMMAND_PAGE_BACK': 'alt+left', 'COMMAND_PAGE_FORWARD': 'alt+right'}

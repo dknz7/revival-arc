@@ -67,6 +67,10 @@ COPY_URL_KEY = "shift+meta+c"
 PROFILE_KEYS = ("ctrl+meta+left", "ctrl+meta+right")  # the profile switcher's previous/next, handled by the JS
 SPACE_KEYS = {"COMMAND_WORKSPACE_SWITCH_BACK_ORDER": "alt+meta+left", "COMMAND_WORKSPACE_SWITCH_FORWARD_ORDER": "alt+meta+right",
               "COMMAND_WORKSPACE_CREATE_NEW": "ctrl+meta+n"}  # like Arc's spaces; Ctrl+Cmd+N opens Vivaldi's own Create Workspace dialog
+# Keys earlier builds put on the space commands; removed from them so an upgrade does not keep both.
+LEGACY_SPACE_KEYS = ("meta+left", "meta+right", "alt+meta+left", "alt+meta+right", "alt+ctrl+left", "alt+ctrl+right")
+# Keys an earlier build took from a command and this one hands back, if nothing else holds them (set per platform).
+RESTORED_KEYS = {}
 TOGGLE_SIDEBAR_KEY = "meta+s"
 SIDEBAR_WIDTH = 323
 SIDEBAR_BOTTOM = ["NewTab", "FlexibleSpacer", "AccountButton", "FlexibleSpacer", "PanelDownloads", "UpdateButton"]
@@ -178,8 +182,13 @@ def patch_preferences(prefs, default_actions):
             cmd["shortcuts"] = [s for s in cmd.get("shortcuts", []) if s != TOGGLE_SIDEBAR_KEY and s not in taken]
     for name, key in SPACE_KEYS.items():
         cmd = _command(actions, defaults, name)
-        cmd["shortcuts"] = [s for s in cmd["shortcuts"] if s not in ("meta+left", "meta+right", "alt+meta+left", "alt+meta+right", "alt+ctrl+left", "alt+ctrl+right")]
+        cmd["shortcuts"] = [s for s in cmd["shortcuts"] if s not in LEGACY_SPACE_KEYS]
         cmd["shortcuts"].append(key)
+    held = {s for cmd in actions.values() if isinstance(cmd, dict) for s in cmd.get("shortcuts", [])}
+    for name, key in RESTORED_KEYS.items():
+        cmd = _command(actions, defaults, name)
+        if key not in held and key not in cmd["shortcuts"]:
+            cmd["shortcuts"].insert(0, key)
     _command(actions, defaults, "COMMAND_TOGGLE_AUTO_HIDE_TAB_BAR")["shortcuts"] = [TOGGLE_SIDEBAR_KEY]
     _set(new, ("vivaldi", "actions"), actions_list)
 
