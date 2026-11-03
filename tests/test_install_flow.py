@@ -207,5 +207,31 @@ class InstallFlow(unittest.TestCase):
                 self.run_cli("install", "--no-peek")
 
 
+class PromptsAreReplaceable(unittest.TestCase):
+    """The install checks look up their prompt, quit and Settings helpers when called. Bound as defaults instead, they
+    ignored the tests' patches: on a Mac with a terminal, the suite asked the user, quit their Vivaldi and opened
+    System Settings."""
+
+    def test_the_vivaldi_check_uses_the_current_ask_and_quit(self):
+        asked = []
+        with mock.patch.object(vivarc, "vivaldi_running", return_value=True), \
+                mock.patch.object(vivarc, "ask", side_effect=lambda prompt: asked.append(prompt) or "y"), \
+                mock.patch.object(vivarc, "quit_vivaldi") as quit_app:
+            with self.assertRaises(SystemExit):  # the mock never closes, so it says Vivaldi did not close
+                vivarc.ensure_vivaldi_closed()
+        self.assertEqual(len(asked), 1)
+        quit_app.assert_called_once()
+
+    def test_the_permission_check_uses_the_current_ask_and_settings(self):
+        asked = []
+        with mock.patch.object(vivarc, "can_write", return_value=False), \
+                mock.patch.object(vivarc, "ask", side_effect=lambda prompt: asked.append(prompt) or "q"), \
+                mock.patch.object(vivarc, "open_settings") as open_settings:
+            with self.assertRaises(SystemExit):
+                vivarc.preflight("/nowhere")
+        self.assertEqual(len(asked), 1)
+        open_settings.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()

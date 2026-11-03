@@ -358,7 +358,11 @@ def check_owner(path):
             f"  sudo chown -R \"$(whoami)\" \"{path}\"\nthen run the command again (without sudo).")
 
 
-def ensure_vivaldi_closed(ask=ask, quit_app=quit_vivaldi):
+# The helpers below are looked up when called, not bound as defaults, so a replaced module function (tests) is the one
+# used: bound defaults kept the real ones, and the test suite asked the user, quit Vivaldi and opened System Settings.
+def ensure_vivaldi_closed(ask=None, quit_app=None):
+    ask = ask or globals()["ask"]
+    quit_app = quit_app or quit_vivaldi
     if not vivaldi_running():
         return
     answer = ask("Vivaldi is open and must be closed first. Quit it now? [Y/n] ")
@@ -372,8 +376,10 @@ def ensure_vivaldi_closed(ask=ask, quit_app=quit_vivaldi):
     die("Vivaldi has to be closed first. Nothing was changed.")
 
 
-def preflight(resources, ask=ask, open_settings=open_settings):
+def preflight(resources, ask=None, open_settings=None):
     """macOS only lets an app with the 'App Management' permission edit Vivaldi.app. Check before changing anything."""
+    ask = ask or globals()["ask"]
+    open_settings = open_settings or globals()["open_settings"]
     opened = False
     for _ in range(5):
         if can_write(resources):
