@@ -2,7 +2,13 @@
 // the sidebar "+ New Tab" row). The blank tab is navigated to the choice, or closed on Escape.
 (() => {
   const BLANK = /^(chrome|vivaldi):\/\/(newtab|vivaldi-webui\/startpage)/;
-  const isBlank = (tab) => BLANK.test(tab.pendingUrl || tab.url || "");
+  // Vivaldi's Bookmarks, History, Notes, Calendar and Dashboard are its start page with a section; of those, only
+  // Speed Dial is a new tab.
+  const SECTION = /[?&]section=(?!Speed-dials(?:[&#]|$))/i;
+  const isBlank = (tab) => {
+    const url = tab.pendingUrl || tab.url || "";
+    return BLANK.test(url) && !SECTION.test(url);
+  };
   const startedAt = Date.now();
 
   const DEFAULT = {}; // Marks rows that resolve Vivaldi's current default at execution time.

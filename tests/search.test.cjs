@@ -191,6 +191,30 @@ test('switching space closes a bar left open for the space before, keeping that 
   assert.equal(inputs.length, 2, 'the bar closes for space 2 and opens again for space 3');
   assert.deepEqual(calls.removed, []);
 });
+// A tab opened on `url` in the active tab's space: how many times does the bar open on it?
+async function barsOnNewTab(url) {
+  const { context, calls } = setup();
+  (await loadBar(context)).events.keydown({ key: 'Escape', preventDefault() {} });
+  const inputs = [];
+  const make = context.document.createElement;
+  context.document.createElement = tag => { const node = make(tag); if (tag === 'input') inputs.push(node); return node; };
+  calls.onActivated({ tabId: 10, windowId: 1 });
+  context.chrome.tabs.get = async () => ({ id: 10, windowId: 1, vivExtData: '{"workspaceId":1}' });
+  context.Date = { now: () => Date.now() + 6000 };
+  await calls.onCreated({ id: 20, windowId: 1, active: true, url: '', pendingUrl: url, vivExtData: '{"workspaceId":1}' });
+  return inputs.length;
+}
+// Vivaldi's own pages are its start page with a section (Vivaldi's bundle.js); F2 > Bookmarks opens one directly.
+for (const section of ['bookmarks', 'history', 'notes', 'calendar', 'dashboard']) {
+  test(`Vivaldi's ${section} page is not a new tab: the bar stays shut`, async () => {
+    assert.equal(await barsOnNewTab(`chrome://vivaldi-webui/startpage?section=${section}`), 0);
+  });
+}
+for (const url of ['vivaldi://newtab', 'chrome://newtab', 'chrome://vivaldi-webui/startpage', 'chrome://vivaldi-webui/startpage?section=Speed-dials']) {
+  test(`a new tab on ${url} still opens the bar`, async () => {
+    assert.equal(await barsOnNewTab(url), 1);
+  });
+}
 
 for (const failure of ['missing default', 'native request error', 'POST search']) {
   test(`DuckDuckGo fallback when ${failure}`, async () => {
