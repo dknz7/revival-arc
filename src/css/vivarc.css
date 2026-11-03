@@ -22,8 +22,11 @@
 }
 
 /* URL bar: collapsed until focused (Cmd+L), then floats over the sidebar. It also floats while one of its
-   popups is open: Vivaldi puts site permission requests (camera, microphone...) there, and they would be invisible. */
-#browser.vm-on #tabs-tabbar-container .UrlBar-AddressField:not(:focus-within, :has(.addressfield-popup-container)) {
+   popups is open: Vivaldi puts site permission requests (camera, microphone...) there, and they would be invisible.
+   While a window starts (vm-launching, 20-command-bar.js) it stays collapsed even when Vivaldi focuses it on a new
+   tab: the command bar opens there instead. */
+#browser.vm-on #tabs-tabbar-container .UrlBar-AddressField:not(:focus-within, :has(.addressfield-popup-container)),
+#browser.vm-on.vm-launching #tabs-tabbar-container .UrlBar-AddressField {
   height: 0 !important;
   min-height: 0 !important;
   margin: 0 !important;
@@ -33,7 +36,7 @@
   opacity: 0;
   pointer-events: none;
 }
-#browser.vm-on #tabs-tabbar-container .UrlBar-AddressField:is(:focus-within, :has(.addressfield-popup-container)) {
+#browser.vm-on:not(.vm-launching) #tabs-tabbar-container .UrlBar-AddressField:is(:focus-within, :has(.addressfield-popup-container)) {
   position: absolute;
   z-index: 100;
   top: 8px;

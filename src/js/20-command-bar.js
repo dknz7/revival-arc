@@ -535,12 +535,21 @@
   // A window starting on a new tab (launch, Ctrl+N): Vivaldi puts the cursor in its hidden address bar, which then
   // floats over the sidebar. Open the bar on that tab instead, as a new tab does. It keeps the tab: often the window's
   // only one, and closing it would close the window.
+  // Until that is settled, the vm-launching marker holds Vivaldi's address bar collapsed even when focused (vivarc.css),
+  // so it never shows; once the bar has the cursor, or there is no bar to open, the marker goes.
+  let launching = true;
+  let marked = null;
+  window.__vm.onMark?.((browser) => { marked = browser; if (launching) browser.classList.add("vm-launching"); });
+  const launched = () => { launching = false; marked?.classList.remove("vm-launching"); };
   Promise.resolve(window.__vm.ready).then(async (cssLoaded) => {
-    if (!cssLoaded) return;
+    if (!cssLoaded) return false;
     await new Promise((resolve) => setTimeout(resolve, 300)); // let Vivaldi finish opening the window
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
-    if (active && isBlank(active) && !bar) open(active.id, active.windowId, true);
-  });
+    return !!(active && isBlank(active) && !bar && await open(active.id, active.windowId, true));
+  }).catch((error) => {
+    console.warn("[vivarc] launch bar:", error);
+    return false;
+  }).then((opened) => (opened ? setTimeout(launched, 400) : launched())); // 400ms: past the bar's last focus retry
   window.__vm.onShortcut((key) => { if (key === window.__vm.normalise(window.__vm.shortcut("meta+t"))) open(null); });
 
   // Landing in an empty space, from the space bar, a shortcut or Vivaldi's own menu, opens the bar on the space's blank

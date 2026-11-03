@@ -381,11 +381,21 @@ test('a search in an engine says Search too', async () => {
 });
 
 // A window starting with `tabs` (the first is active) once Vivarc's CSS has loaded.
+// `tabs` null: the tab query fails. `held` records whether the address bar is held hidden (the vm-launching marker) at
+// start, and again after Vivaldi re-renders #browser's classes (core.js re-runs its onMark listeners then).
 async function launch(tabs, cssLoaded = true) {
   const { context, calls } = setup();
   let ready;
   context.window.__vm.ready = new Promise(resolve => ready = resolve);
+  const classes = new Set();
+  const browser = { classList: { add: c => classes.add(c), remove: c => classes.delete(c), contains: c => classes.has(c) } };
+  const marks = [];
+  context.window.__vm.onMark = fn => { marks.push(fn); fn(browser); };
   (await loadBar(context)).events.keydown({ key: 'Escape', preventDefault() {} });
+  const held = [classes.has('vm-launching')];
+  classes.clear();
+  marks.forEach(fn => fn(browser));
+  held.push(classes.has('vm-launching'));
   const inputs = [];
   const make = context.document.createElement;
   context.document.createElement = tag => { const node = make(tag); if (tag === 'input') inputs.push(node); return node; };
@@ -393,12 +403,25 @@ async function launch(tabs, cssLoaded = true) {
   calls.removed = [];
   Object.assign(context.chrome.tabs, {
     remove: async id => calls.removed.push(id),
-    query: async q => (q.active ? tabs.slice(0, 1) : tabs),
+    query: async q => { if (!tabs) throw new Error('no tabs'); return q.active ? tabs.slice(0, 1) : tabs; },
   });
   ready(cssLoaded);
   for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
-  return { calls, inputs };
+  marks.forEach(fn => fn(browser)); // a re-render after the launch must not bring the hold back
+  return { calls, inputs, held, stillHeld: classes.has('vm-launching') };
 }
+test("a starting window holds Vivaldi's address bar hidden, through re-renders, until the launch is settled", async () => {
+  for (const [tabs, cssLoaded, bars, why] of [
+    [[blank(10, 1)], true, 1, 'the bar opened'], [[page(10, 1)], true, 0, 'a page, no bar'],
+    [[blank(10, 1)], false, 0, 'no Vivarc CSS'], [null, true, 0, 'the tab query failed'],
+    [[{ id: 10, windowId: 1, get pendingUrl() { throw new Error('odd tab'); } }], true, 0, 'an unexpected error'],
+  ]) {
+    const { inputs, held, stillHeld } = await launch(tabs, cssLoaded);
+    assert.deepEqual(held, [true, true], `held from the start: ${why}`);
+    assert.equal(inputs.length, bars, why);
+    assert.equal(stillHeld, false, `released: ${why}`);
+  }
+});
 test('a window starting on a new tab opens the bar on it, and Escape keeps that tab', async () => {
   const { calls, inputs } = await launch([blank(10, 1), page(11, 1)]);
   assert.equal(inputs.length, 1);
