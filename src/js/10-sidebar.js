@@ -3,7 +3,10 @@
 // (created on first run, or produced by `vivarc import-arc`). Vivaldi's own tab strip is hidden.
 (() => {
   const cfg = window.__vm.config;
+  // Same blank-tab check as 20-command-bar.js (a test keeps the two equal).
   const BLANK = /^(chrome|vivaldi):\/\/(newtab|vivaldi-webui\/startpage)/;
+  const SECTION = /[?&]section=(?!Speed-dials(?:[&#]|$))/i;
+  const isBlankUrl = (url) => BLANK.test(url) && !SECTION.test(url);
 
   const store = window.__vm.store;
   const openFolders = new Set();
@@ -714,8 +717,8 @@
     if (state.pinned) state.pinned.children.forEach((c) => body.append(pinnedNode(c, 0)));
 
     const taken = new Set([...state.bound.values()].map((t) => t.id));
-    const blank = state.tabs.filter((t) => BLANK.test(t.url || ""));
-    const open = state.tabs.filter((t) => !BLANK.test(t.url || "") && !taken.has(t.id));
+    const blank = state.tabs.filter((t) => isBlankUrl(t.url || ""));
+    const open = state.tabs.filter((t) => !isBlankUrl(t.url || "") && !taken.has(t.id));
     const divider = el("div", "vm-divider");
     const clear = el("span", "vm-clear", "Clear");
     clear.addEventListener("click", async () => {
