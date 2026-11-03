@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- Fix: opening Bookmarks, History, Notes or Calendar from Vivaldi's Quick Commands (F2) opened the command bar over the page, and closing the bar then closed the page too. Vivaldi shows these pages on its start page, which Vivarc took for a new tab; only a new tab (or Speed Dial) opens the command bar now.
+- Fix: the sidebar now lists those Vivaldi pages with the open tabs instead of leaving them out.
+
 ## 0.1.16 - 2026-10-28
 - **Uninstall Vivarc**: the installer now also leaves `~/Applications/Uninstall Vivarc.app` next to Update Vivarc. It quits Vivaldi, restores your settings, removes Vivarc and reopens Vivaldi, so removing or reinstalling no longer needs Terminal.
 - Docs: the README and the guide page now say that a sidebar hidden with Cmd+S slides back in when you move the pointer to the left edge of the window.
