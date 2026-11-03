@@ -293,6 +293,128 @@ test('switching tab in this window closes an edit bar, keeping its page; a switc
   assert.deepEqual(calls.removed, []);
 });
 
+// Ctrl+T (or `opener`) with open tabs listed, while bookmark and history lookups wait until answered for their text.
+async function lookingUp(opener = 'vm-open-command-bar') {
+  const space = await spaces({ 10: page(10, 1), 11: page(11, 1) });
+  const { context, made } = space;
+  const waiting = [];
+  const lookup = text => new Promise(resolve => waiting.push({ text, resolve }));
+  context.chrome.bookmarks.search = text => lookup(text);
+  context.chrome.history.search = ({ text }) => lookup(text);
+  const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+  await context.events[opener]();
+  await settle();
+  const input = space.inputs.at(-1);
+  return {
+    ...space, input, settle,
+    pending: text => waiting.filter(w => w.text === text).length,
+    answer: async text => {
+      for (let i = 0; i < 5; i++) {
+        for (const w of waiting.splice(0)) { if (w.text === text) w.resolve([]); else waiting.push(w); }
+        await settle();
+      }
+    },
+    type: text => { input.value = text; return input.events.input(); },
+    // The hint on the row Enter runs: what the bar says Enter does.
+    says: () => {
+      const row = made.filter(node => node.className === 'vm-cmd-list').at(-1).children.find(node => node.className.includes('sel'));
+      return row?.children.find(node => node.className === 'vm-cmd-hint')?.children[0].textContent;
+    },
+  };
+}
+test('Enter goes to a typed address at once, not to the tab listed before typing', async () => {
+  const { calls, input, type, says, settle } = await lookingUp();
+  type('google.com.au');
+  await settle();
+  assert.equal(says(), 'Go to URL');
+  await press(input, 'Enter');
+  assert.deepEqual({ ...calls.navigation.at(-1) }, { url: 'https://google.com.au' });
+});
+test('Enter searches typed words at once, not the tab listed before typing', async () => {
+  const { calls, input, type, says, settle } = await lookingUp();
+  type('hello there');
+  await settle();
+  assert.equal(says(), 'Search');
+  await press(input, 'Enter');
+  assert.equal(calls.request.at(-1).query, 'hello there');
+});
+test('a row picked with the arrow keys stays picked when the lookups answer', async () => {
+  const { calls, input, type, answer, says, settle } = await lookingUp();
+  type('example.test');
+  await settle();
+  await press(input, 'ArrowDown');
+  assert.equal(says(), 'Search');
+  await answer('example.test');
+  assert.equal(says(), 'Search');
+  await press(input, 'Enter');
+  assert.equal(calls.request.at(-1).query, 'example.test');
+});
+test('the bar editing the current URL acts on Enter at once', async () => {
+  const { calls, input } = await lookingUp('vm-edit-url');
+  await press(input, 'Enter');
+  assert.deepEqual(calls.navigation.at(-1), { id: 10, url: 'https://10.test/', active: true });
+});
+test('Enter before the lookups answer leaves no error behind', async () => {
+  const { input, type, answer } = await lookingUp();
+  await press(input, 'g'); // a typed letter: inline completion is on
+  const done = type('google.com.au');
+  await press(input, 'Enter');
+  await answer('google.com.au');
+  await done;
+});
+test('only the latest text is completed inline, not the text an older keystroke looked up', async () => {
+  const { input, type, answer, pending, settle } = await lookingUp();
+  await press(input, 'g');
+  type('goo');
+  await settle();
+  type('goog');
+  await settle();
+  await answer('goo');
+  assert.equal(pending('goog'), 1, "goog's own lookup only: no inline completion of goog started for goo");
+});
+test('a search in an engine says Search too', async () => {
+  const { input, type, says, settle } = await lookingUp();
+  type('yt');
+  await settle();
+  await press(input, 'Tab');
+  assert.equal(says(), 'Search');
+});
+
+// A window starting with `tabs` (the first is active) once Vivarc's CSS has loaded.
+async function launch(tabs, cssLoaded = true) {
+  const { context, calls } = setup();
+  let ready;
+  context.window.__vm.ready = new Promise(resolve => ready = resolve);
+  (await loadBar(context)).events.keydown({ key: 'Escape', preventDefault() {} });
+  const inputs = [];
+  const make = context.document.createElement;
+  context.document.createElement = tag => { const node = make(tag); if (tag === 'input') inputs.push(node); return node; };
+  context.setTimeout = fn => fn();
+  calls.removed = [];
+  Object.assign(context.chrome.tabs, {
+    remove: async id => calls.removed.push(id),
+    query: async q => (q.active ? tabs.slice(0, 1) : tabs),
+  });
+  ready(cssLoaded);
+  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+  return { calls, inputs };
+}
+test('a window starting on a new tab opens the bar on it, and Escape keeps that tab', async () => {
+  const { calls, inputs } = await launch([blank(10, 1), page(11, 1)]);
+  assert.equal(inputs.length, 1);
+  inputs[0].value = 'example.test';
+  await inputs[0].events.input();
+  await press(inputs[0], 'Enter');
+  assert.deepEqual(calls.navigation.at(-1), { id: 10, url: 'https://example.test', active: true }, 'it loads in the new tab');
+  const again = await launch([blank(10, 1)]);
+  await press(again.inputs[0], 'Escape');
+  assert.deepEqual(again.calls.removed, []);
+});
+test('a window starting on a page, or without Vivarc CSS, opens no bar', async () => {
+  assert.equal((await launch([page(10, 1), blank(11, 1)])).inputs.length, 0);
+  assert.equal((await launch([blank(10, 1)], false)).inputs.length, 0);
+});
+
 // A tab opened on `url` in the active tab's space: how many times does the bar open on it?
 async function barsOnNewTab(url) {
   const { context, calls } = setup();

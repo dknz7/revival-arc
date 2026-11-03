@@ -284,9 +284,11 @@
         item.append(iconFor(row.url, row.favicon), el("span", "vm-cmd-title", row.label));
         if (row.sub) item.append(el("span", "vm-cmd-sub", `— ${row.sub}`));
       }
-      if (row.type === "tab" || row.type === "action" || row.type === "engine") {
+      const says = { tab: "Switch to Tab", action: "Run Action", engine: "Tab", url: "Go to URL" }[row.type] ||
+        (row.lead ? "Search" : null);
+      if (says) {
         const hint = el("span", "vm-cmd-hint");
-        hint.append(el("span", null, { tab: "Switch to Tab", action: "Run Action", engine: "Tab" }[row.type]));
+        hint.append(el("span", null, says));
         const arrow = el("span", "vm-cmd-arrow");
         arrow.innerHTML = ARROW_SVG;
         hint.append(arrow);
@@ -325,12 +327,35 @@
       .map((action) => ({ type: "action", action, tab, label: action.label }));
   };
 
+  // The rows that lead for typed text, known without any lookup: its engine (a keyword), its address, and its search.
+  const leadRows = (text) => {
+    // An edited address keeps its own scheme (file:, about:, view-source:...), which looksLikeUrl does not know.
+    const scheme = editing !== null && /^[a-z][a-z0-9+.-]*:/i.exec(editing)?.[0].toLowerCase();
+    const url = scheme && text.toLowerCase().startsWith(scheme) ? text : looksLikeUrl(text) ? toUrl(text) : null;
+    const keyword = !/\s/.test(text) && engines.find((en) => en.keyword.toLowerCase() === text.toLowerCase());
+    return {
+      engine: keyword ? { type: "engine", engine: keyword, label: `Search ${keyword.name}` } : null,
+      url: url ? { type: "url", url, label: text } : null,
+      search: { type: "search", engine: DEFAULT, query: text, label: text, lead: true },
+    };
+  };
+  // Shown as soon as the text changes: tab, bookmark and history lookups can take seconds, and until they answer the
+  // rows would still be those for the text before, which Enter would run.
+  const showLeadRows = () => {
+    if (mode) return;
+    const text = input.value.trim();
+    const lead = leadRows(text);
+    rows = text ? [lead.engine, lead.url, lead.search].filter(Boolean) : [];
+    selected = 0;
+    render();
+  };
+
   const compute = async () => {
     const id = ++seq;
     const text = input.value.trim();
     const out = [];
     if (mode) {
-      out.push({ type: "search", engine: mode, query: text, label: text || "%s" });
+      out.push({ type: "search", engine: mode, query: text, label: text || "%s", lead: true });
     } else if (!text) {
       (await allTabs()).slice(0, 7).forEach((tab) =>
         out.push({ type: "tab", tab, url: tab.url, favicon: tab.favIconUrl, label: tab.title || tab.url }));
@@ -358,18 +383,14 @@
       } catch (_) {}
       if (id !== seq) return;
       const prefix = matches.find((m) => hostOf(m.url).startsWith(needle));
-      const searchRow = { type: "search", engine: DEFAULT, query: text, label: text };
-      // An edited address keeps its own scheme (file:, about:, view-source:...), which looksLikeUrl does not know.
-      const scheme = editing !== null && /^[a-z][a-z0-9+.-]*:/i.exec(editing)?.[0].toLowerCase();
-      const url = scheme && text.toLowerCase().startsWith(scheme) ? text : looksLikeUrl(text) ? toUrl(text) : null;
-      if (url) out.push({ type: "url", url, label: text, sub: "Open" });
+      const lead = leadRows(text);
+      if (lead.url) out.push(lead.url);
       if (prefix) out.push(prefix);
-      out.push(searchRow);
+      out.push(lead.search);
       if (needle.length > 1) out.push(...await matchingActions(needle));
-      const keyword = !/\s/.test(text) && engines.find((en) => en.keyword.toLowerCase() === needle);
-      if (keyword) out.unshift({ type: "engine", engine: keyword, label: `Search ${keyword.name}` });
+      if (lead.engine) out.unshift(lead.engine);
       out.push(...matches.filter((m) => m !== prefix));
-      if (window.__vm.settings.get("searchSuggestions") && !url && text.length > 1) {
+      if (window.__vm.settings.get("searchSuggestions") && !lead.url && text.length > 1) {
         try {
           const engine = await search.defaultEngine();
           const phrases = await search.suggestions(engine, text);
@@ -379,10 +400,14 @@
         } catch (_) {}
       }
     }
-    if (id !== seq) return;
+    if (id !== seq) return false;
+    // A row picked with the arrow keys while the lookups ran stays picked.
+    const picked = selected > 0 ? rows[selected] : null;
     rows = out.map((r) => (r.type === "suggest" ? { ...r, type: "search" } : r));
-    selected = 0;
+    const same = (r) => r.type === picked.type && r.url === picked.url && r.query === picked.query && r.engine === picked.engine;
+    selected = picked ? Math.max(0, rows.findIndex(same)) : 0;
     render();
+    return true; // these rows are for the text in the bar
   };
 
   const setMode = (engine) => {
@@ -399,6 +424,7 @@
   };
 
   const autocomplete = async () => {
+    if (!input) return; // Enter closed the bar first
     const text = input.value;
     if (mode || !text || /\s/.test(text) || !autoCompleted) return;
     const needle = text.toLowerCase();
@@ -407,7 +433,7 @@
       ...((await chrome.bookmarks.search(text).catch(() => [])).map((b) => hostOf(b.url))),
     ];
     const host = hosts.find((h) => h && h.startsWith(needle) && h.length > needle.length);
-    if (host && input.value === text) {
+    if (host && input?.value === text) {
       input.value = host;
       input.setSelectionRange(text.length, host.length);
     }
@@ -479,7 +505,8 @@
     // A click just after opening is the rest of a double or triple click that opened it, not a click away.
     bar.addEventListener("mousedown", (e) => { if (e.target === bar && Date.now() - openedAt > 500) close(true); });
     input.addEventListener("keydown", onKey);
-    input.addEventListener("input", async () => { await compute(); autocomplete(); });
+    // Only the latest text is completed inline: an older keystroke's lookups would complete the text typed since.
+    input.addEventListener("input", async () => { showLeadRows(); if (await compute()) autocomplete(); });
     if (editing !== null) input.value = editing;
     (document.querySelector("#browser") || document.body).append(bar);
     const filled = input.value;
@@ -491,6 +518,7 @@
     focus();
     setTimeout(focus, 60);
     setTimeout(focus, 250);
+    showLeadRows(); // an address filled in for editing: Enter acts on it before the lookups answer
     compute();
     // Like Arc, a new tab scrolls the sidebar to the new-tab area; editing the current page leaves it where it is.
     if (editing === null) window.dispatchEvent(new CustomEvent("vm-command-bar-opened"));
@@ -503,6 +531,15 @@
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
     if (!active) return open(null);
     open(active.id, active.windowId, true, isBlank(active) ? null : active.pendingUrl || active.url || "");
+  });
+  // A window starting on a new tab (launch, Ctrl+N): Vivaldi puts the cursor in its hidden address bar, which then
+  // floats over the sidebar. Open the bar on that tab instead, as a new tab does. It keeps the tab: often the window's
+  // only one, and closing it would close the window.
+  Promise.resolve(window.__vm.ready).then(async (cssLoaded) => {
+    if (!cssLoaded) return;
+    await new Promise((resolve) => setTimeout(resolve, 300)); // let Vivaldi finish opening the window
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+    if (active && isBlank(active) && !bar) open(active.id, active.windowId, true);
   });
   window.__vm.onShortcut((key) => { if (key === window.__vm.normalise(window.__vm.shortcut("meta+t"))) open(null); });
 
