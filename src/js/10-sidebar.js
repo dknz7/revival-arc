@@ -686,7 +686,12 @@
     field.placeholder = "No active page";
     field.setAttribute("aria-label", "Current page URL");
     field.spellcheck = false;
-    field.addEventListener("click", () => field.select());
+    // A click edits the address in the command bar, filled in and selected; the field itself only shows it.
+    field.addEventListener("mousedown", (event) => { if (event.button === 0) event.preventDefault(); });
+    field.addEventListener("click", () => window.dispatchEvent(new CustomEvent("vm-edit-url")));
+    field.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") window.dispatchEvent(new CustomEvent("vm-edit-url"));
+    });
     // Let the field's native copy/select context menu work.
     field.addEventListener("contextmenu", (event) => event.stopPropagation());
     return field;

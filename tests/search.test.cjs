@@ -67,13 +67,13 @@ async function loadBar(context, settingsOpen = false) {
     append(...items) { this.children.push(...items); }
     replaceChildren(...items) { this.children = items; }
     addEventListener(name, fn) { this.events[name] = fn; }
-    remove() {} focus() {} scrollIntoView() {} querySelector() { return null; }
+    remove() {} focus() {} select() { this.selected = true; } scrollIntoView() {} querySelector() { return null; }
   }
   const browser = new Element('body');
   context.document = { body: browser, querySelector: () => browser, createElement: tag => { const node = new Element(tag); nodes.push(node); return node; } };
   context.setTimeout = () => {};
   context.CustomEvent = class {};
-  const events = {};
+  const events = context.events = {};
   Object.assign(context.window, { addEventListener: (name, fn) => events[name] = fn, dispatchEvent() {} });
   Object.assign(context.window.__vm, { config: {}, cssLoaded: true, settings: { get: () => true, isOpen: () => settingsOpen }, normalise: x => x, shortcut: x => x, onShortcut() {} });
   vm.runInContext(source('20-command-bar.js'), context);
@@ -133,21 +133,21 @@ async function spaces(tabs) {
   const { context, calls } = setup();
   (await loadBar(context)).events.keydown({ key: 'Escape', preventDefault() {} });
   vm.runInContext(source('07-workspaces.js'), context);
-  const inputs = [];
+  const inputs = [], made = [];
   const make = context.document.createElement;
-  context.document.createElement = tag => { const node = make(tag); if (tag === 'input') inputs.push(node); return node; };
+  context.document.createElement = tag => { const node = make(tag); made.push(node); if (tag === 'input') inputs.push(node); return node; };
   context.Date = { now: () => Date.now() + 6000 };
   context.setTimeout = fn => fn();
   calls.removed = [];
   const active = { 1: 10 }; // window id -> its active tab
   Object.assign(context.chrome.tabs, {
-    get: async id => tabs[id], remove: async id => calls.removed.push(id),
+    get: async id => tabs[id], remove: async id => calls.removed.push(id), duplicate: async id => calls.duplicated = id,
     query: async q => Object.values(tabs).filter(t => (!q.windowId || t.windowId === q.windowId) && (!q.active || t.id === active[t.windowId])),
   });
   const settle = async () => { for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
   const activate = async (tabId, windowId = 1) => { active[windowId] = tabId; calls.onActivated({ tabId, windowId }); await settle(); };
   await activate(10);
-  return { calls, inputs, activate };
+  return { context, calls, inputs, made, activate };
 }
 const page = (id, space, windowId = 1) => ({ id, windowId, url: `https://${id}.test/`, vivExtData: `{"workspaceId":${space}}` });
 const blank = (id, space, windowId = 1) => ({ id, windowId, url: 'vivaldi://newtab', vivExtData: `{"workspaceId":${space}}` });
@@ -196,6 +196,101 @@ test("landing in a space whose only tab is Vivaldi's Bookmarks page leaves the b
   const { inputs, activate } = await spaces({ 10: page(10, 1), 20: bookmarks });
   await activate(20);
   assert.equal(inputs.length, 0);
+});
+
+// Clicking the sidebar's URL field fires vm-edit-url: the bar edits the current page (tab 10).
+async function editUrl(tabs = { 10: page(10, 1), 11: page(11, 1) }) {
+  const space = await spaces(tabs);
+  space.edit = async () => {
+    await space.context.events['vm-edit-url']();
+    for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+  };
+  await space.edit();
+  return space;
+}
+const press = async (input, key) => { input.events.keydown({ key, preventDefault() {} }); for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); };
+test('clicking the URL opens the bar on the current page, its URL filled in and selected', async () => {
+  const { inputs } = await editUrl();
+  assert.equal(inputs.length, 1);
+  assert.equal(inputs[0].value, 'https://10.test/');
+  assert.equal(inputs[0].selected, true);
+});
+test('an edited URL loads in the current tab, not a new one', async () => {
+  const { calls, inputs } = await editUrl();
+  inputs[0].value = 'example.test';
+  await inputs[0].events.input();
+  await press(inputs[0], 'Enter');
+  assert.deepEqual(calls.navigation.at(-1), { id: 10, url: 'https://example.test', active: true });
+});
+test('Escape, or switching to another tab from the bar, leaves the current page open', async () => {
+  const { calls, inputs, edit } = await editUrl();
+  await press(inputs[0], 'Escape');
+  await edit();
+  inputs[1].value = '';
+  await inputs[1].events.input();
+  await press(inputs[1], 'Enter'); // the first row: open tab 11
+  assert.deepEqual(calls.navigation.at(-1), { id: 11, active: true });
+  assert.deepEqual(calls.removed, []);
+});
+test("the bar's tab actions act on the page being edited", async () => {
+  const { calls, inputs } = await editUrl();
+  inputs[0].value = 'duplicate';
+  await inputs[0].events.input();
+  await press(inputs[0], 'ArrowDown'); // past the search row, to Duplicate Tab
+  await press(inputs[0], 'Enter');
+  assert.equal(calls.duplicated, 10);
+});
+test('a new tab taking over an edit bar drops the edited address, and actions act on the page again', async () => {
+  const { calls, inputs } = await editUrl({ 10: page(10, 1), 11: page(11, 1), 20: blank(20, 1) });
+  await calls.onCreated({ ...blank(20, 1), active: true });
+  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(inputs.length, 1, 'the open bar is reused');
+  assert.equal(inputs[0].value, '');
+  inputs[0].value = 'duplicate';
+  await inputs[0].events.input();
+  await press(inputs[0], 'ArrowDown');
+  await press(inputs[0], 'Enter');
+  assert.equal(calls.duplicated, 10, 'not the blank tab behind the bar');
+});
+for (const url of ['file:///C:/Users/', 'about:blank', 'view-source:https://x.test/']) {
+  test(`editing ${url} keeps it an address: no search, no suggestions sent`, async () => {
+    const { calls, inputs, edit } = await editUrl({ 10: { ...page(10, 1), url } });
+    await press(inputs[0], 'Enter');
+    assert.deepEqual(calls.navigation.at(-1), { id: 10, url, active: true });
+    await edit();
+    const edited = `${url}x`;
+    inputs[1].value = edited;
+    await inputs[1].events.input();
+    await press(inputs[1], 'Enter');
+    assert.deepEqual(calls.navigation.at(-1), { id: 10, url: edited, active: true });
+    assert.equal(calls.fetch.length, 0);
+  });
+}
+test('the rest of a double click does not close the bar it opened; a later click away does', async () => {
+  const { context, calls, inputs, made, edit } = await editUrl();
+  const backdrop = () => made.filter(node => node.id === 'vm-cmd').at(-1);
+  backdrop().events.mousedown({ target: backdrop() });
+  await press(inputs[0], 'Enter');
+  assert.deepEqual(calls.navigation.at(-1), { id: 10, url: 'https://10.test/', active: true }, 'the bar stayed open');
+  await edit();
+  context.Date = { now: () => Date.now() + 7000 };
+  backdrop().events.mousedown({ target: backdrop() });
+  const before = calls.navigation.length;
+  await press(inputs[1], 'Enter');
+  assert.equal(calls.navigation.length, before, 'the bar closed');
+  assert.deepEqual(calls.removed, []);
+});
+test('switching tab in this window closes an edit bar, keeping its page; a switch in another window does not', async () => {
+  const { calls, inputs, activate, edit } = await editUrl({ 10: page(10, 1), 11: page(11, 1), 30: page(30, 3, 2), 31: page(31, 3, 2) });
+  await activate(31, 2);
+  await press(inputs[0], 'Enter');
+  assert.deepEqual(calls.navigation.at(-1), { id: 10, url: 'https://10.test/', active: true }, 'still open after a switch in window 2');
+  await edit();
+  await activate(11);
+  const before = calls.navigation.length;
+  await press(inputs[1], 'Enter');
+  assert.equal(calls.navigation.length, before, 'closed by the switch to tab 11');
+  assert.deepEqual(calls.removed, []);
 });
 
 // A tab opened on `url` in the active tab's space: how many times does the bar open on it?

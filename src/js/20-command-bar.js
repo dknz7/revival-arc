@@ -171,6 +171,8 @@
   let chipHolder = null;
   let targetTab = null;
   let keepTarget = false; // the target is an empty space's own blank tab: closing the bar must not close it
+  let editing = null; // the URL of the current page, edited in the bar: that page is the target, kept, and behind the bar
+  let openedAt = 0;
   let mode = null;
   let rows = [];
   let selected = 0;
@@ -204,6 +206,7 @@
     bar?.remove();
     bar = input = list = chipHolder = targetTab = mode = null;
     keepTarget = false;
+    editing = null;
     rows = [];
     seq++;
     if (removeBlank && blank != null && !keep) chrome.tabs.remove(blank).catch(() => {});
@@ -305,6 +308,7 @@
     (await chrome.tabs.query({ currentWindow: true })).filter((t) => !isBlank(t) && t.id !== targetTab);
 
   const pageBehindBar = async () => {
+    if (editing !== null) return chrome.tabs.get(targetTab).catch(() => null);
     if (keepTarget) return null; // an empty space: nothing behind the bar, and the last page is in another space
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (active && !isBlank(active) && active.id !== targetTab) return active;
@@ -355,14 +359,17 @@
       if (id !== seq) return;
       const prefix = matches.find((m) => hostOf(m.url).startsWith(needle));
       const searchRow = { type: "search", engine: DEFAULT, query: text, label: text };
-      if (looksLikeUrl(text)) out.push({ type: "url", url: toUrl(text), label: text, sub: "Open" });
+      // An edited address keeps its own scheme (file:, about:, view-source:...), which looksLikeUrl does not know.
+      const scheme = editing !== null && /^[a-z][a-z0-9+.-]*:/i.exec(editing)?.[0].toLowerCase();
+      const url = scheme && text.toLowerCase().startsWith(scheme) ? text : looksLikeUrl(text) ? toUrl(text) : null;
+      if (url) out.push({ type: "url", url, label: text, sub: "Open" });
       if (prefix) out.push(prefix);
       out.push(searchRow);
       if (needle.length > 1) out.push(...await matchingActions(needle));
       const keyword = !/\s/.test(text) && engines.find((en) => en.keyword.toLowerCase() === needle);
       if (keyword) out.unshift({ type: "engine", engine: keyword, label: `Search ${keyword.name}` });
       out.push(...matches.filter((m) => m !== prefix));
-      if (window.__vm.settings.get("searchSuggestions") && !looksLikeUrl(text) && text.length > 1) {
+      if (window.__vm.settings.get("searchSuggestions") && !url && text.length > 1) {
         try {
           const engine = await search.defaultEngine();
           const phrases = await search.suggestions(engine, text);
@@ -427,7 +434,8 @@
     autoCompleted = e.key.length === 1 && !e.metaKey && !e.ctrlKey;
   };
 
-  const open = async (tabId, tabWindowId, keep = false) => {
+  // `text` (with `keep`) edits the target tab's own URL: the bar opens filled in with it, selected.
+  const open = async (tabId, tabWindowId, keep = false, text = null) => {
     if (!window.__vm.cssLoaded || window.__vm.settings.isOpen?.()) return false;
     try {
       const win = await chrome.windows.getCurrent();
@@ -440,9 +448,18 @@
     }
     if (!window.__vm.cssLoaded || window.__vm.settings.isOpen?.()) return false;
     if (bar && keep) return false; // an empty space's open never takes over a bar the user opened
-    if (bar) { targetTab = tabId; keepTarget = false; return true; }
+    if (bar) {
+      const wasEditing = editing !== null;
+      targetTab = tabId;
+      keepTarget = false;
+      editing = null;
+      if (wasEditing) { input.value = ""; compute(); } // the edited address is not the new tab's
+      return true;
+    }
     targetTab = tabId;
     keepTarget = keep;
+    editing = keep && text != null ? text : null;
+    openedAt = Date.now();
     mode = null;
     bar = el("div");
     bar.id = "vm-cmd";
@@ -459,20 +476,34 @@
     list = el("div", "vm-cmd-list");
     box.append(head, list);
     bar.append(box);
-    bar.addEventListener("mousedown", (e) => { if (e.target === bar) close(true); });
+    // A click just after opening is the rest of a double or triple click that opened it, not a click away.
+    bar.addEventListener("mousedown", (e) => { if (e.target === bar && Date.now() - openedAt > 500) close(true); });
     input.addEventListener("keydown", onKey);
     input.addEventListener("input", async () => { await compute(); autocomplete(); });
+    if (editing !== null) input.value = editing;
     (document.querySelector("#browser") || document.body).append(bar);
-    const focus = () => input?.focus();
+    const filled = input.value;
+    const focus = () => {
+      if (!input || document.activeElement === input) return;
+      input.focus();
+      if (filled && input.value === filled) input.select(); // the whole URL, until it is changed
+    };
     focus();
     setTimeout(focus, 60);
     setTimeout(focus, 250);
     compute();
-    window.dispatchEvent(new CustomEvent("vm-command-bar-opened"));
+    // Like Arc, a new tab scrolls the sidebar to the new-tab area; editing the current page leaves it where it is.
+    if (editing === null) window.dispatchEvent(new CustomEvent("vm-command-bar-opened"));
     return true;
   };
 
   window.addEventListener("vm-open-command-bar", () => open(null));
+  // The sidebar's URL field: edit the current page's address in the bar, as Arc's Cmd+L does.
+  window.addEventListener("vm-edit-url", async () => {
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+    if (!active) return open(null);
+    open(active.id, active.windowId, true, isBlank(active) ? null : active.pendingUrl || active.url || "");
+  });
   window.__vm.onShortcut((key) => { if (key === window.__vm.normalise(window.__vm.shortcut("meta+t"))) open(null); });
 
   // Landing in an empty space, from the space bar, a shortcut or Vivaldi's own menu, opens the bar on the space's blank
@@ -506,6 +537,13 @@
     lastActive.set(windowId, tabId);
     if (previous != null && previous !== tabId) {
       spaceChanged(previous, tabId, windowId).catch((e) => console.warn("[vivarc] empty space:", e));
+    }
+    // An edit bar belongs to its page: leaving that page in this window (Ctrl+Tab...) closes it, keeping the page.
+    if (editing !== null && tabId !== targetTab) {
+      const edited = targetTab;
+      chrome.windows.getCurrent().then((win) => {
+        if (win.id === windowId && editing !== null && targetTab === edited) close(true);
+      }, () => {});
     }
   });
 
