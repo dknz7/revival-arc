@@ -191,6 +191,13 @@ test('switching space closes a bar left open for the space before, keeping that 
   assert.equal(inputs.length, 2, 'the bar closes for space 2 and opens again for space 3');
   assert.deepEqual(calls.removed, []);
 });
+test("landing in a space whose only tab is Vivaldi's Bookmarks page leaves the bar shut", async () => {
+  const bookmarks = { ...blank(20, 2), url: 'chrome://vivaldi-webui/startpage?section=bookmarks' };
+  const { inputs, activate } = await spaces({ 10: page(10, 1), 20: bookmarks });
+  await activate(20);
+  assert.equal(inputs.length, 0);
+});
+
 // A tab opened on `url` in the active tab's space: how many times does the bar open on it?
 async function barsOnNewTab(url) {
   const { context, calls } = setup();
