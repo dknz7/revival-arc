@@ -222,6 +222,11 @@ for (const url of ['vivaldi://newtab', 'chrome://newtab', 'chrome://vivaldi-webu
     assert.equal(await barsOnNewTab(url), 1);
   });
 }
+test('the sidebar and the command bar agree on what a blank tab is', () => {
+  const rules = name => source(name).match(/^ {2}const (BLANK|SECTION) = .*$/gm);
+  assert.equal(rules('20-command-bar.js').length, 2);
+  assert.deepEqual(rules('10-sidebar.js'), rules('20-command-bar.js'));
+});
 
 for (const failure of ['missing default', 'native request error', 'POST search']) {
   test(`DuckDuckGo fallback when ${failure}`, async () => {
