@@ -53,6 +53,9 @@ class InstallFlow(unittest.TestCase):
             mock.patch.object(vivarc, "vivaldi_running", return_value=False),
             mock.patch.object(vivarc, "app_version", return_value="9.9.9"),
             mock.patch.object(vivarc, "ask", return_value=None),
+            # Never the real ones: they open System Settings and quit the user's Vivaldi.
+            mock.patch.object(vivarc, "open_settings"),
+            mock.patch.object(vivarc, "quit_vivaldi"),
         ]
         for p in patches:
             p.start()
@@ -145,6 +148,8 @@ class InstallFlow(unittest.TestCase):
         with mock.patch.object(vivarc, "can_write", return_value=False):
             with self.assertRaises(SystemExit):
                 self.run_cli("install", "--no-peek")
+        if not vivarc.IS_WINDOWS:  # Windows has its own preflight, with no Settings to open
+            vivarc.open_settings.assert_called_once()  # the stub from setUp, not System Settings
         self.assertEqual(self.prefs("Default"), before)
         self.assertFalse(os.path.exists(os.path.join(self.home, "state.json")))
         self.assertFalse(os.path.exists(os.path.join(self.home, "peek")))
