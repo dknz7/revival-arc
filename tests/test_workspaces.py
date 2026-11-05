@@ -21,6 +21,28 @@ SIDE = {"id": 1792856044277, "name": "Side", "emoji": "🎁", "icon": "<svg/>"}
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class WhichWindow(unittest.TestCase):
+    """Every window's sidebar sees every window's tab events; only its own (or ones that do not say) re-render it."""
+
+    EVENTS = {  # chrome.tabs event -> its arguments, all naming window 7
+        "onCreated": [{"id": 1, "windowId": 7}],
+        "onUpdated": [1, {"title": "x"}, {"id": 1, "windowId": 7}],
+        "onActivated": [{"tabId": 1, "windowId": 7}],
+        "onRemoved": [1, {"windowId": 7, "isWindowClosing": False}],
+        "onMoved": [1, {"windowId": 7, "fromIndex": 0, "toIndex": 1}],
+        "onAttached": [1, {"newWindowId": 7, "newPosition": 0}],
+        "onDetached": [1, {"oldWindowId": 7, "oldPosition": 0}],
+    }
+
+    def test_each_tab_event_names_its_window(self):
+        for ev, args in self.EVENTS.items():
+            self.assertEqual(js("workspaces.eventWindow(ev, args)", ev=ev, args=args), 7, ev)
+
+    def test_an_event_that_does_not_say_has_no_window(self):
+        self.assertIsNone(js("workspaces.eventWindow('onReplaced', [2, 1])"))
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class WhichSpace(unittest.TestCase):
     def test_a_tab_belongs_to_the_workspace_vivaldi_stored_in_its_data(self):
         self.assertEqual(js("workspaces.of(t)", t=tab(1, WORK["id"])), WORK["id"])

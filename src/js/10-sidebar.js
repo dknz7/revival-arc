@@ -862,11 +862,29 @@
   let timer = 0;
   let wantBookmarks = false;
   let failures = 0;
+  // A button held on the panel: re-renders wait for its release (released over the page, the UI never hears the
+  // pointerup, hence the fallback).
+  let pressing = false;
+  let refreshAfterPress = false;
+  let pressFallback = 0;
+  const released = () => {
+    clearTimeout(pressFallback);
+    if (!pressing) return;
+    pressing = false;
+    if (refreshAfterPress) { refreshAfterPress = false; refresh(false); }
+  };
+  const pressed = () => {
+    pressing = true;
+    clearTimeout(pressFallback);
+    pressFallback = setTimeout(released, 2000);
+  };
   function refresh(withBookmarks) {
     wantBookmarks ||= !!withBookmarks;
     clearTimeout(timer);
     timer = setTimeout(async () => {
       if (drag) { refreshAfterDrag = true; return; } // re-rendering would detach the node being dragged
+      // Nor while a button is held: replacing the pressed node between mousedown and mouseup swallows the click.
+      if (pressing) { refreshAfterPress = true; return; }
       refreshAfterDrag = false;
       const bookmarks = wantBookmarks || !state.defaultSpace;
       wantBookmarks = false;
@@ -904,6 +922,7 @@
     if (!panel) {
       panel = el("div");
       panel.id = "vm-panel";
+      panel.addEventListener("pointerdown", pressed, true);
       panel.addEventListener("contextmenu", (e) => showMenu(e, [
         ["New Folder", async () => { await newFolder(null); }],
         ["Edit Theme…", () => window.dispatchEvent(new CustomEvent("vm-open-theme"))],
@@ -955,8 +974,17 @@
         if (data) chrome.tabs.update(tab.id, { vivExtData: data });
       }).catch(() => {});
     });
+    for (const ev of ["pointerup", "pointercancel", "dragstart", "blur"]) window.addEventListener(ev, () => setTimeout(released), true);
+    // Every window runs its own sidebar and sees the tab events of all windows: only this window's events (or ones
+    // that do not say, or any until this window's id is known) re-render it, so another window's page loads do not
+    // keep replacing the panel under the pointer.
+    let ownWindow = null;
+    chrome.windows.getCurrent().then((win) => { ownWindow = win.id; }, () => {});
     for (const ev of ["onCreated", "onRemoved", "onUpdated", "onMoved", "onActivated", "onAttached", "onDetached", "onReplaced"]) {
-      chrome.tabs[ev]?.addListener(() => refresh(false));
+      chrome.tabs[ev]?.addListener((...args) => {
+        const id = spacesOf.eventWindow(ev, args);
+        if (id == null || ownWindow == null || id === ownWindow) refresh(false);
+      });
     }
     setInterval(async () => {
       const brief = (list) => JSON.stringify(list.map((w) => [w.id, w.name, w.emoji, w.icon]));

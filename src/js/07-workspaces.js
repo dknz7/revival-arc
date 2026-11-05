@@ -129,5 +129,11 @@
   const removalLabel = (name, tabCount) =>
     `Delete \u201c${name}\u201d${tabCount ? ` and close its ${tabCount} ${tabCount === 1 ? "tab" : "tabs"}` : ""}`;
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, label, assign, stamp, findRemover, findCreator, findSwitcher, removalLabel, CREATE_HINT };
+  // The window a chrome.tabs event (its name and arguments) belongs to, or undefined when the event does not say.
+  const eventWindow = (ev, [first, second, third] = []) => ({
+    onCreated: first?.windowId, onUpdated: third?.windowId, onActivated: first?.windowId,
+    onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
+  })[ev];
+
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, label, assign, stamp, findRemover, findCreator, findSwitcher, removalLabel, eventWindow, CREATE_HINT };
 })();
