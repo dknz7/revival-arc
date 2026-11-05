@@ -123,6 +123,12 @@
   const configure = async () => {
     await ensureSideTabs();
     for (const delay of [4000, 12000, 30000]) setTimeout(() => ensureSideTabs().catch(() => {}), delay);
+    // Extensions hidden with "Hide Button" open in a drop-down from the puzzle piece instead of more icons in the row
+    // (as the installer sets). Once per profile, apart from VERSION, so turning it off in Vivaldi's settings sticks.
+    if (!(await window.__vm.store.get("extensionsDropdown", false))) {
+      await set("vivaldi.address_bar.extensions.render_in_dropdown", true);
+      await window.__vm.store.set("extensionsDropdown", true);
+    }
     if ((await window.__vm.store.get("bootstrap", 0)) >= VERSION) return;
     await bindShortcuts();
     await tidyToolbars();

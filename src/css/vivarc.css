@@ -891,3 +891,21 @@
   content: ""; position: absolute; top: 0; left: 0; right: 0; height: var(--vm-dia-bar);
   pointer-events: none; -webkit-app-region: drag; app-region: drag;
 }
+
+/* Extensions hidden with "Hide Button" open from the puzzle piece in Vivaldi's drop-down (render_in_dropdown, set by
+   the installer and 05-bootstrap.js): a list, icon then name, instead of Vivaldi's row of bare icons. The name is the
+   button's own title. Vivaldi sizes the popup from its icon count (--popupWidth) and centres it with the same variable,
+   so setting the variable resizes it and keeps it centred under the button. */
+#browser.vm-on .extensionIconPopupMenu { --popupWidth: 260px !important; }
+#browser.vm-on .extensionIconPopupMenu > .toolbar {
+  flex-direction: column !important; flex-wrap: nowrap !important; align-items: stretch !important;
+  height: auto !important; padding: 4px !important; gap: 2px;
+}
+#browser.vm-on .extensionIconPopupMenu .ExtensionDropdownIcon { width: 100% !important; max-width: none !important; }
+#browser.vm-on .extensionIconPopupMenu .ExtensionDropdownIcon > button {
+  width: 100% !important; height: 32px !important; justify-content: flex-start !important; gap: 10px;
+  padding: 0 10px !important; border-radius: 6px;
+}
+#browser.vm-on .extensionIconPopupMenu .ExtensionDropdownIcon > button::after {
+  content: attr(title); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}

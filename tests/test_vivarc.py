@@ -183,6 +183,14 @@ class PatchPreferences(unittest.TestCase):
         self.assertEqual(restored["vivaldi"]["toolbars"]["navigation"], ["Back", "Mine"])
         self.assertTrue(restored["vivaldi"]["windows"]["use_native_decoration"])
 
+    def test_hidden_extensions_open_in_a_drop_down_and_uninstall_puts_the_users_setting_back(self):
+        p = prefs(vivaldi={"address_bar": {"extensions": {"render_in_dropdown": False, "hidden_extensions": ["abc"]}}})
+        new, snap = vivarc.patch_preferences(p, [DEFAULTS])
+        self.assertTrue(new["vivaldi"]["address_bar"]["extensions"]["render_in_dropdown"])
+        self.assertEqual(new["vivaldi"]["address_bar"]["extensions"]["hidden_extensions"], ["abc"])  # the user's choice
+        restored = vivarc.restore_preferences(new, snap)
+        self.assertFalse(restored["vivaldi"]["address_bar"]["extensions"]["render_in_dropdown"])
+
     def test_restore_brings_back_both_toolbars(self):
         p = prefs(vivaldi={"toolbars": {
             "tabbar_before": ["WorkspaceButton", "TabButton"], "tabbar_after": ["VPNButton"]}})

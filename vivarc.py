@@ -100,6 +100,7 @@ TOUCHED = [
     ("vivaldi", "auto_hide", "bookmarks_bar"),
     ("vivaldi", "auto_hide", "show_introduction"),
     ("vivaldi", "status_bar", "display"),
+    ("vivaldi", "address_bar", "extensions", "render_in_dropdown"),
     ("vivaldi", "tabs", "bar", "width"),
     ("vivaldi", "tabs", "bar", "position"),
     # Set by the Dia layout (15-dia.js) at run time, not here; kept so uninstall puts back the user's own.
@@ -236,6 +237,8 @@ def patch_preferences(prefs, default_actions):
                        ("bookmarks_bar", False), ("show_introduction", False)):
         _set(new, ("vivaldi", "auto_hide", key), value)
     _set(new, ("vivaldi", "status_bar", "display"), 2)  # overlay: only appears on hover
+    # Extensions hidden with "Hide Button" open in a drop-down from the puzzle piece instead of more icons in the row.
+    _set(new, ("vivaldi", "address_bar", "extensions", "render_in_dropdown"), True)
     if _get(new, ("vivaldi", "tabs", "bar", "width")) is _MISSING:
         _set(new, ("vivaldi", "tabs", "bar", "width"), SIDEBAR_WIDTH)
     _set(new, ("vivaldi", "tabs", "bar", "position"), 1)
