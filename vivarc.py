@@ -734,6 +734,7 @@ def cmd_update(args):
         pulled = subprocess.run(["git", "-C", HERE, "pull", "--ff-only"], capture_output=True, text=True)
         if pulled.returncode == 0:
             argv = [sys.executable, os.path.join(HERE, "vivarc.py"), "--app", args.app, "--data-dir", args.data_dir, "install", *extra]
+            sys.stdout.flush()  # execve replaces the process: buffered output (piped stdout) would be lost
             os.execve(sys.executable, argv, os.environ)
         say(f"git pull did not work ({pulled.stderr.strip()}); re-applying the code you have.")
     else:
@@ -745,6 +746,7 @@ def cmd_update(args):
                 import windows_support
                 windows_support.update_release(args, extra)
                 return
+            sys.stdout.flush()  # as above: what was said must be out before the process is replaced
             os.execve("/bin/bash", ["/bin/bash", os.path.join(HERE, "install.sh"), *extra], env)
         elif latest is None:
             say("Could not check for a new version (offline?). Re-applying the one you have.")

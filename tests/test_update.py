@@ -120,9 +120,9 @@ class Update(unittest.TestCase):
         os.makedirs(self.copy)
         self.args = mock.Mock(app="/Apps/Vivaldi.app", data_dir="/data", no_peek=False, dry_run=False)
 
-    def run_update(self, here, latest, git_ok=True, running=False):
-        out = io.StringIO()
-        calls = {"install": [], "execve": [], "git": [], "quit": []}
+    def run_update(self, here, latest, git_ok=True, running=False, out=None):
+        out = out or io.StringIO()
+        calls = {"install": [], "execve": [], "git": [], "quit": [], "flushed": None}
         state = {"open": running}
 
         def fake_quit():
@@ -131,6 +131,7 @@ class Update(unittest.TestCase):
 
         def fake_execve(*a):
             calls["execve"].append(a)
+            calls["flushed"] = getattr(out, "written", None)  # what had been written out when the process went
             raise Replaced
 
         def fake_git(cmd, **kwargs):
@@ -161,6 +162,21 @@ class Update(unittest.TestCase):
         self.assertEqual(env["VIVARC_APP"], "/Apps/Vivaldi.app")
         self.assertEqual(env["VIVARC_DATA_DIR"], "/data")
         self.assertIn("9.0.0", out)
+
+    def test_what_was_said_is_written_out_before_the_process_is_replaced(self):
+        # Piped, stdout is block-buffered: os.execve drops whatever was not flushed ("Closing Vivaldi..." went missing).
+        class Piped(io.StringIO):
+            written = ""
+
+            def flush(self):
+                Piped.written = self.getvalue()
+                super().flush()
+
+        with mock.patch.object(vivarc, "IS_WINDOWS", False):  # the macOS hand-over, on any host
+            calls, _ = self.run_update(self.copy, "v9.0.0", running=True, out=Piped())
+        self.assertTrue(calls["execve"])
+        self.assertIn("Closing Vivaldi", calls["flushed"])
+        self.assertIn("9.0.0", calls["flushed"])
 
     def test_closes_a_running_vivaldi_by_itself_before_changing_anything(self):
         calls, out = self.run_update(self.copy, "v" + vivarc.VERSION, running=True)
