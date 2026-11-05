@@ -281,7 +281,12 @@
     return b;
   };
 
-  const editTitle = (field, node, cleanup = () => {}) => {
+  // `save` stores a changed name: a bookmark's by default, a tab folder's for its tabs.
+  let renameField = null; // the name being typed: the sidebar holds its re-renders until it is done
+  // Only while the field is on screen and has the cursor: one that never got it (the sidebar was hidden) holds nothing up.
+  const naming = () => !!renameField?.isConnected && document.activeElement === renameField;
+  const editTitle = (field, node, cleanup = () => {}, save = (title) => chrome.bookmarks.update(node.id, { title })) => {
+    renameField = field;
     field.value = node.title;
     field.focus();
     field.select();
@@ -289,10 +294,12 @@
     const finish = (commit) => {
       if (done) return;
       done = true;
+      if (renameField === field) renameField = null;
       cleanup();
       const title = field.value.trim();
-      if (commit && title && title !== node.title) chrome.bookmarks.update(node.id, { title });
-      else refresh(true);
+      if (commit && title && title !== node.title) {
+        Promise.resolve().then(() => save(title)).catch((error) => console.warn("[vivarc] rename:", error)).finally(() => refresh(false));
+      } else refresh(true);
     };
     field.addEventListener("keydown", (e) => {
       e.stopPropagation();
@@ -302,10 +309,10 @@
     field.addEventListener("blur", () => finish(true));
     field.addEventListener("click", (e) => e.stopPropagation());
   };
-  const startRename = (titleEl, node) => {
+  const startRename = (titleEl, node, save) => {
     const field = el("input", "vm-rename");
     titleEl.replaceWith(field);
-    editTitle(field, node);
+    editTitle(field, node, undefined, save);
   };
   // A favorite tile only shows its icon, so its name is edited in a field floating under its row of the grid.
   const renameFavorite = (tile, node) => {
@@ -456,9 +463,77 @@
     return tile;
   };
 
-  const tabRow = (tab) => {
+  // ---- tab folders: Vivaldi's tab stacks (09-stacks.js) ----
+  const stacksOf = window.__vm.stacks;
+  const { indexBeside } = stacksOf;
+  const closedStacks = new Set(); // folders shut by the user (saved); a folder starts open
+  let shownStacks = []; // the folders on screen, set by render(): what a drop treats as a folder
+  // Read, change, write: every window shares the saved list, so a window's own copy would undo another's change.
+  const setStackClosed = async (id, closed) => {
+    closed ? closedStacks.add(id) : closedStacks.delete(id);
+    const saved = new Set(await store.get("stacks:closed", []));
+    closed ? saved.add(id) : saved.delete(id);
+    await store.set("stacks:closed", [...saved]);
+  };
+  // A folder action from a menu: a failure says so, instead of failing silently.
+  const folderAction = (run, failed) => () => Promise.resolve().then(run).catch((error) => {
+    console.warn("[vivarc] folders:", error);
+    window.dispatchEvent(new CustomEvent("vm-toast", { detail: failed }));
+  }).finally(() => refresh(false));
+  // A stack's name is Vivaldi's to keep (it ignores writes to the tabs' fixedGroupTitle): its own rename call.
+  const nameStack = (id, title) => vivaldi.tabsPrivate.setGroupProperties({ groupExtId: id, groupTitle: title });
+  // Vivaldi's own tab-stack moves (PageActions.createTabStack, moveToIndex with "ungroup").
+  const stackMove = (args) => vivaldi.tabsPrivate.move({ ...args, debug: "Vivarc.folders" });
+  const createFolder = async (dragged, withId) => {
+    const result = await stackMove({ tabIds: [withId, dragged.id], target: withId,
+      tweaks: ["do-not-reparent", "create-new-group", "target-is-tab"] });
+    if (!result?.group) throw new Error("Vivaldi did not make the stack");
+    state.renameId = `stack:${result.group}`; // name it as it is made, like Arc
+  };
+  const joinFolder = async (dragged, members) => {
+    const anchor = members[members.length - 1];
+    await stackMove({ tabIds: [dragged.id], target: stacksOf.ext(anchor).ext_id || anchor.id, windowId: anchor.windowId,
+      tweaks: ["target-is-tab", "into", "do-not-reparent"] });
+  };
+  // Out of their folder, to `index`. Vivaldi only ungroups tabs it really moves: at their own place it answers "nothing to
+  // move". They then step over one neighbour with "ungroup" (a spare tab when they are the whole window), and that
+  // neighbour goes back with a plain one-tab move, which leaves them loose where they were. (Tabs of a stack sit side by
+  // side; with another space's tab between them, Vivaldi's move gathers them, as its own Remove from Stack does.)
+  const leaveFolder = async (tabs, index) => {
+    const ids = tabs.map((t) => t.id);
+    const windowId = tabs[0].windowId;
+    const moved = await stackMove({ tabIds: ids, target: index, windowId, tweaks: ["ungroup"] });
+    if (moved?.success === false && moved.message !== "nothing to move") throw new Error(moved.message || "Vivaldi did not move the tabs");
+    if (moved?.success !== false) return;
+    const start = Math.min(...(await Promise.all(ids.map((id) => chrome.tabs.get(id)))).map((t) => t.index));
+    const total = (await chrome.tabs.query({ windowId })).length;
+    let step = stacksOf.nudge(start, ids.length, total);
+    const spare = step === null ? await chrome.tabs.create({ windowId, active: false, index: total }) : null;
+    if (spare) step = stacksOf.nudge(start, ids.length, total + 1);
+    try {
+      const before = await chrome.tabs.query({ windowId });
+      const neighbour = before.find((t) => t.index === step.neighbour);
+      await stackMove({ tabIds: ids, target: step.target, windowId, tweaks: ["ungroup"] });
+      if (neighbour && !spare) await chrome.tabs.move(neighbour.id, { index: step.neighbour });
+    } finally {
+      if (spare) await chrome.tabs.remove(spare.id).catch(() => {});
+    }
+  };
+  // A tab dropped on a tab row ({ tab }) or a folder's head ({ stack, tabs }); see stacks.dropAction.
+  const dropTab = async (dragged, target, zone) => {
+    const action = stacksOf.dropAction(dragged, target, zone, shownStacks);
+    const members = target.tabs || state.tabs.filter((t) => stacksOf.stackOf(t) === action.stack);
+    const beside = target.tab || (zone === "before" ? target.tabs[target.tabs.length - 1] : target.tabs[0]);
+    if (action.op === "create") await createFolder(dragged, action.with);
+    else if (action.op === "join") await joinFolder(dragged, members);
+    else if (action.op === "leave") await leaveFolder([dragged], indexBeside(dragged, beside, zone));
+    else if (action.op === "move") await chrome.tabs.move(dragged.id, { index: indexBeside(dragged, beside, zone) });
+    refresh(false);
+  };
+
+  const tabRow = (tab, depth = 0) => {
     const row = el("div", "vm-row vm-tab");
-    row.style.paddingLeft = "8px";
+    row.style.paddingLeft = `${8 + depth * 20}px`;
     if (tab.active) row.classList.add("active");
     if (tab.discarded) row.classList.add("discarded");
     row.title = tab.url;
@@ -468,17 +543,21 @@
     row.addEventListener("click", () => chrome.tabs.update(tab.id, { active: true }));
     row.addEventListener("auxclick", (e) => { if (e.button === 1) chrome.tabs.remove(tab.id); });
     wireDrag(row, { type: "tab", tab, url: tab.url });
+    // The middle of the row makes a folder with this tab (or joins its folder); its edges move the tab beside it.
     wireDrop(row, {
+      allowInto: true,
       onDrop: async (zone, data) => {
         if (data.type === "bm") return unpin(data);
-        if (data.tab.id === tab.id) return;
-        // the list shows the highest tab index first, so "before" means a higher index
-        const below = data.tab.index < tab.index;
-        const index = zone === "before" ? (below ? tab.index : tab.index + 1) : (below ? tab.index - 1 : tab.index);
-        await chrome.tabs.move(data.tab.id, { index });
+        await dropTab(data.tab, { tab }, zone);
       },
     });
+    // Out of the folder, just above it.
+    const removeFromFolder = folderAction(() => {
+      const folder = state.tabs.filter((t) => stacksOf.stackOf(t) === stacksOf.stackOf(tab));
+      return leaveFolder([tab], Math.max(...folder.map((t) => t.index)));
+    }, "Could not take the tab out of its folder");
     row.addEventListener("contextmenu", (e) => showMenu(e, [
+      ...(depth ? [["Remove from Folder", removeFromFolder], []] : []),
       ...(state.space ? [
         ["Pin Tab", async () => chrome.bookmarks.create({
           parentId: (state.pinned || await ensureFolder("Pinned")).id, title: tab.title, url: tab.url })],
@@ -496,6 +575,58 @@
       }],
     ]));
     return row;
+  };
+
+  // A tab folder, in the pinned folders' look: its tabs inside, the newest first as in the list.
+  const stackNode = ({ id, tabs }) => {
+    const wrap = el("div", "vm-folder vm-stack");
+    const head = el("div", "vm-row vm-folder-head");
+    head.style.paddingLeft = "8px";
+    const glyph = el("span", "vm-glyph");
+    const name = stacksOf.titleOf(tabs);
+    const title = el("span", "vm-title", name);
+    head.append(glyph, title);
+    const body = el("div", "vm-folder-body");
+    const content = el("div", "vm-folder-content");
+    [...tabs].reverse().forEach((t) => content.append(tabRow(t, 1)));
+    body.append(content);
+    const sync = () => {
+      const open = !closedStacks.has(id);
+      wrap.classList.toggle("open", open);
+      content.inert = !open; // a shut folder's rows stay in the page for the animation; keep them out of reach
+      glyph.innerHTML = open ? ICON_OPEN : ICON_CLOSED;
+      // a shut folder holding the active tab shows it on its head
+      head.classList.toggle("active", !open && tabs.some((t) => t.active));
+    };
+    head.addEventListener("click", () => {
+      setStackClosed(id, !closedStacks.has(id));
+      sync();
+    });
+    head.addEventListener("contextmenu", (e) => showMenu(e, [
+      ["Rename…", () => { state.renameId = `stack:${id}`; refresh(false); }],
+      ["Ungroup", folderAction(() => leaveFolder(tabs, tabs[0].index), "Could not ungroup the folder")],
+      [],
+      // As Clear does: closing every tab of the space would leave it empty, so a new tab stays.
+      ["Close All Tabs", folderAction(async () => {
+        if (tabs.length === state.tabs.length) await chrome.tabs.create({});
+        await chrome.tabs.remove(tabs.map((t) => t.id));
+      }, "Could not close the folder's tabs"), true],
+    ]));
+    // Into the head joins the folder. Above it is outside; below an open head is inside the folder, below a shut one
+    // is outside.
+    wireDrop(head, {
+      allowInto: true,
+      accept: (d) => d.type === "tab",
+      onDrop: (zone, data) => dropTab(data.tab, { stack: id, tabs },
+        zone === "after" && !closedStacks.has(id) ? "into" : zone),
+    });
+    sync();
+    wrap.append(head, body);
+    if (state.renameId === `stack:${id}`) {
+      state.renameId = null;
+      setTimeout(() => startRename(title, { title: name }, (next) => nameStack(id, next)), 0);
+    }
+    return wrap;
   };
 
   // ---- profile switcher ----
@@ -727,12 +858,16 @@
     const taken = new Set([...state.bound.values()].map((t) => t.id));
     const blank = state.tabs.filter((t) => isBlankUrl(t.url || ""));
     const open = state.tabs.filter((t) => !isBlankUrl(t.url || "") && !taken.has(t.id));
+    const listed = stacksOf.entries(open);
+    shownStacks = listed.filter((e) => e.type === "stack").map((e) => e.id);
+    // Clear closes the loose tabs only: a folder is a deliberate grouping.
+    const loose = listed.filter((e) => e.type === "tab").map((e) => e.tab);
     const divider = el("div", "vm-divider");
     const clear = el("span", "vm-clear", "Clear");
     clear.addEventListener("click", async () => {
-      if (!open.length) return;
-      if (open.length + blank.length === state.tabs.length) await chrome.tabs.create({});
-      chrome.tabs.remove(open.map((t) => t.id));
+      if (!loose.length) return;
+      if (loose.length + blank.length === state.tabs.length) await chrome.tabs.create({});
+      chrome.tabs.remove(loose.map((t) => t.id));
     });
     divider.append(clear);
     wireDrop(divider, { accept: isBookmark, onDrop: (_zone, data) => unpin(data) });
@@ -743,7 +878,7 @@
     fresh.addEventListener("click", () => window.dispatchEvent(new CustomEvent("vm-open-command-bar")));
     wireDrop(fresh, { accept: isBookmark, onDrop: (_zone, data) => unpin(data) });
     body.append(fresh);
-    open.sort((a, b) => b.index - a.index).forEach((t) => body.append(tabRow(t)));
+    listed.forEach((e) => body.append(e.type === "stack" ? stackNode(e) : tabRow(e.tab)));
 
     const bar = spaceBar();
     panel.replaceChildren(currentUrlField(), ...(grid ? [grid] : []), body, ...(bar ? [bar] : []));
@@ -889,6 +1024,9 @@
       if (drag) { refreshAfterDrag = true; return; } // re-rendering would detach the node being dragged
       // Nor while a button is held: replacing the pressed node between mousedown and mouseup swallows the click.
       if (pressing) { refreshAfterPress = true; return; }
+      // Nor while a name is being typed: re-rendering would drop the field, and its blur would commit the old name.
+      // Finishing the rename refreshes. Checked again before rendering: a name may start while the tabs load.
+      if (naming()) return;
       refreshAfterDrag = false;
       const bookmarks = wantBookmarks || !state.defaultSpace;
       wantBookmarks = false;
@@ -898,6 +1036,7 @@
         await applySpace();
         bindTabs();
         cacheIcons();
+        if (naming()) { wantBookmarks ||= bookmarks; return; } // finishing the rename refreshes again
         render();
         failures = 0;
       } catch (e) {
@@ -953,7 +1092,8 @@
   window.addEventListener("vm-folders", (e) => {
     for (const id of pinLinks.folderIds(state.pinned)) e.detail === "expand" ? openFolders.add(id) : openFolders.delete(id);
     saveOpen();
-    render();
+    if (naming()) refresh(false); // held until the name is done, like every other re-render
+    else render();
   });
   window.addEventListener("vm-command-bar-opened", () => {
     const scroller = panel?.querySelector(".vm-scroll");
@@ -975,7 +1115,8 @@
       const active = state.active;
       chrome.windows.getCurrent().then((win) => {
         const data = spacesOf.stamp(tab, active, win.id);
-        if (data) chrome.tabs.update(tab.id, { vivExtData: data });
+        // the tab may be gone already (a folder's spare tab is)
+        if (data) return chrome.tabs.update(tab.id, { vivExtData: data });
       }).catch(() => {});
     });
     for (const ev of ["pointerup", "pointercancel", "dragstart", "blur"]) window.addEventListener(ev, () => setTimeout(released), true);
@@ -1010,6 +1151,7 @@
   const init = async () => {
     if (!(await window.__vm.ready)) return;
     (await store.get("open", [])).forEach((id) => openFolders.add(id));
+    (await store.get("stacks:closed", [])).forEach((id) => closedStacks.add(id));
     icons = await store.get("icons", {});
     start();
   };
