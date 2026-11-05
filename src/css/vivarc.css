@@ -777,6 +777,20 @@
   mask-repeat: no-repeat;
 }
 #vm-panel .vm-space-pill.active { border-bottom: 2px solid var(--colorHighlightBg, #7b8cff) !important; }
+/* A space open in another window (Vivaldi keeps a space in one window): a dot in the corner. Its tooltip says a
+   click goes to that window and shift+click brings the space here. */
+#vm-panel .vm-space-pill { position: relative; }
+#vm-panel .vm-space-pill.elsewhere::after {
+  content: "";
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--colorHighlightBg, #7b8cff);
+  pointer-events: none;
+}
 #vm-panel .vm-space-pill:focus-visible { outline: 2px solid var(--colorHighlightBg, #7b8cff); }
 .vm-space-tooltip {
   position: fixed;

@@ -35,6 +35,26 @@
       ((t.lastAccessed ?? 0) === (best.lastAccessed ?? 0) && t.index > best.index) ? t : best));
   };
 
+  // Vivaldi keeps a named space in one window at a time. A click on a space active in another window only focuses
+  // that window, and one active nowhere moves its tabs into this window. The default space (0) is every window's
+  // own, so it is never "elsewhere". activeTabs: chrome.tabs.query({ active: true }), one per window.
+  // Returns { [spaceId]: windowId } for the spaces active in other windows.
+  const elsewhere = (activeTabs, windowId) => {
+    const found = {};
+    for (const t of activeTabs || []) {
+      const id = of(t);
+      if (id && t.windowId !== windowId && !(id in found)) found[id] = t.windowId;
+    }
+    return found;
+  };
+
+  // A space tile's tooltip: what this space is, and what clicking it does.
+  const tileHint = (item, inOtherWindows) => {
+    if (!item.id) return `${item.name} · this window's own tabs`;
+    if (inOtherWindows && item.id in inOtherWindows) return `${item.name} · open in another window. Click to go there, shift+click to bring it here`;
+    return item.name;
+  };
+
   const label = (folder) => folder.title.startsWith(ARC_PREFIX) ? folder.title.slice(ARC_PREFIX.length) : folder.title;
   const same = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
@@ -53,12 +73,27 @@
   // A tab opened while a space is active joins it. Vivaldi does not do this for tabs a mod or a command bar opens,
   // so they would land in the default space. Returns the new vivExtData, or null when nothing needs writing.
   // Every window runs its own copy of the mod and sees the tabs of all windows, so only this window's tabs are stamped.
-  const stamp = (tab, activeSpace, windowId) => {
-    if (!activeSpace || tab?.windowId !== windowId) return null;
+  // A tab a page opens (opener in the same window) joins its opener's space instead: activeSpace comes from the
+  // sidebar's debounced refresh, which can lag by seconds while pages load, and filed such tabs in the wrong space.
+  const stamp = (tab, activeSpace, windowId, opener) => {
+    if (tab?.windowId !== windowId) return null;
+    const space = opener && opener.windowId === tab.windowId ? of(opener) : activeSpace;
+    if (!space) return null;
     let data;
     try { data = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) { data = {}; }
     if ("workspaceId" in data) return null;
-    return JSON.stringify({ ...data, workspaceId: activeSpace });
+    return JSON.stringify({ ...data, workspaceId: space });
+  };
+
+  // Where a new tab (Ctrl+T, + New Tab) goes so it tops its space's list, as in Arc. The list shows the highest tab
+  // index first (stacks.entries), so that is the index of the space's last unpinned tab in this window: chrome.tabs.move
+  // to it puts the new tab just after that one. null when it is already there (or alone), so nothing moves.
+  const topIndex = (tabs, tab) => {
+    const space = of(tab);
+    const last = tabs
+      .filter((t) => t.windowId === tab.windowId && !t.pinned && of(t) === space)
+      .reduce((best, t) => (best == null || t.index > best.index ? t : best), null);
+    return last && last.id !== tab.id ? last.index : null;
   };
 
   // A mod can neither create a workspace (Vivaldi reads its list once) nor press a shortcut for the user: events a
@@ -135,5 +170,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, label, assign, stamp, findRemover, findCreator, findSwitcher, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, elsewhere, tileHint, topIndex, label, assign, stamp, findRemover, findCreator, findSwitcher, removalLabel, eventWindow, CREATE_HINT };
 })();

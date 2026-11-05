@@ -744,26 +744,52 @@
   };
 
   // ---- space bar: Vivaldi workspaces as Arc-style spaces ----
+  const nativeSwitcher = () => {
+    const activate = spacesOf.findSwitcher(window.webpackChunkgapp_browser_react) ||
+      spacesOf.findSwitcher(chrome.extension.getBackgroundPage?.()?.webpackChunkgapp_browser_react);
+    if (!activate) throw new Error("Native workspace switching is unavailable");
+    return activate;
+  };
+  const switchFailed = (error) => {
+    console.warn("[vivarc] switch space:", error);
+    window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not switch space. Use Vivaldi's workspace shortcut." }));
+  };
+  // Vivaldi's own switch: a space active in another window focuses that window; any other moves here.
   const switchSpace = async (item) => {
     try {
-      const activate = spacesOf.findSwitcher(window.webpackChunkgapp_browser_react) ||
-        spacesOf.findSwitcher(chrome.extension.getBackgroundPage?.()?.webpackChunkgapp_browser_react);
-      if (!activate) throw new Error("Native workspace switching is unavailable");
+      const activate = nativeSwitcher();
       const win = await chrome.windows.getCurrent();
       await activate(win.id, item.id);
       refresh(false);
-    } catch (error) {
-      console.warn("[vivarc] switch space:", error);
-      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not switch space. Use Vivaldi's workspace shortcut." }));
-    }
+    } catch (error) { switchFailed(error); }
+  };
+  // Shift+click on a space open in another window brings it here: that window goes to its own default space first,
+  // which frees the space, and then Vivaldi's switch moves its tabs into this window. Where the space is now is read
+  // fresh (the rendered map can be stale while a re-render waits on a rename or a drag), and a second click while a
+  // pull is running is ignored.
+  let pulling = false;
+  const pullSpace = async (item) => {
+    if (pulling) return;
+    pulling = true;
+    try {
+      const activate = nativeSwitcher();
+      const win = await chrome.windows.getCurrent();
+      const other = (await readElsewhere(win.id))[item.id];
+      if (other != null && other !== win.id) await activate(other, 0);
+      await activate(win.id, item.id);
+      await chrome.windows.update(win.id, { focused: true });
+      refresh(false);
+    } catch (error) { switchFailed(error); } finally { pulling = false; }
   };
 
   let spaceTooltip = null;
   const hideSpaceTooltip = () => { spaceTooltip?.remove(); spaceTooltip = null; };
   const spacePill = (item) => {
-    const pill = el("button", `vm-space-pill${item.id === state.active ? " active" : ""}`);
+    const openElsewhere = !!item.id && item.id in (state.elsewhere || {});
+    const hint = spacesOf.tileHint(item, state.elsewhere);
+    const pill = el("button", `vm-space-pill${item.id === state.active ? " active" : ""}${openElsewhere ? " elsewhere" : ""}`);
     pill.type = "button";
-    pill.setAttribute("aria-label", item.name);
+    pill.setAttribute("aria-label", hint);
     pill.setAttribute("aria-pressed", String(item.id === state.active));
     if (item.emoji) pill.textContent = item.emoji;
     else if (typeof item.icon === "string" && item.icon.trim().startsWith("<svg")) {
@@ -774,7 +800,7 @@
     } else pill.textContent = Array.from((item.name || "").trim())[0]?.toLocaleUpperCase() || "?";
     const showName = () => {
       hideSpaceTooltip();
-      spaceTooltip = el("div", "vm-space-tooltip", item.name);
+      spaceTooltip = el("div", "vm-space-tooltip", hint);
       spaceTooltip.setAttribute("role", "tooltip");
       document.body.append(spaceTooltip);
       const rect = pill.getBoundingClientRect();
@@ -786,7 +812,7 @@
     pill.addEventListener("focus", showName);
     pill.addEventListener("mouseleave", hideSpaceTooltip);
     pill.addEventListener("blur", hideSpaceTooltip);
-    pill.addEventListener("click", () => { hideSpaceTooltip(); switchSpace(item); });
+    pill.addEventListener("click", (event) => { hideSpaceTooltip(); (event.shiftKey && openElsewhere ? pullSpace : switchSpace)(item); });
     if (item.id) pill.addEventListener("contextmenu", (e) => { hideSpaceTooltip(); confirmDeleteSpace(item, e); });
     return pill;
   };
@@ -1012,9 +1038,15 @@
   const readWorkspaces = async () => {
     try { return (await vivaldi.prefs.get("vivaldi.workspaces.list"))?.value || []; } catch (_) { return []; }
   };
+  // Spaces active in another window ({ id: windowId }): their tiles say so, and a click there jumps windows.
+  const readElsewhere = async (windowId) => {
+    // normal windows only: a popup's tab must never be mistaken for a window holding a space
+    try { return spacesOf.elsewhere(await chrome.tabs.query({ active: true, windowType: "normal" }), windowId); } catch (_) { return {}; }
+  };
   const loadTabs = async () => {
     state.allTabs = await chrome.tabs.query({ currentWindow: true });
     state.workspaces = await readWorkspaces();
+    state.elsewhere = await readElsewhere(state.allTabs[0]?.windowId);
     ({ active: state.active, tabs: state.tabs } = spacesOf.scope(state.allTabs, state.workspaces));
     if (window.__vm.activeSpace !== state.active) {
       window.__vm.activeSpace = state.active;
@@ -1139,8 +1171,15 @@
     }
     chrome.tabs.onCreated.addListener((tab) => {
       const active = state.active;
-      chrome.windows.getCurrent().then((win) => {
-        const data = spacesOf.stamp(tab, active, win.id);
+      chrome.windows.getCurrent().then(async (win) => {
+        if (tab.windowId !== win.id) return;
+        // Read the tab again: Vivaldi may have given it a space meanwhile (stamp leaves a tab that has one alone), and
+        // the created event's tab can lack openerTabId (measured on 8.2 for tabs made with an opener by tabs.create).
+        const fresh = await chrome.tabs.get(tab.id);
+        const openerId = fresh.openerTabId ?? tab.openerTabId;
+        // a link opened from a page goes with that page (stamp), so read the opener now, not the sidebar's last view
+        const opener = openerId != null ? await chrome.tabs.get(openerId).catch(() => null) : null;
+        const data = spacesOf.stamp(fresh, active, win.id, opener);
         // the tab may be gone already (a folder's spare tab is)
         if (data) return chrome.tabs.update(tab.id, { vivExtData: data });
       }).catch(() => {});
@@ -1151,15 +1190,25 @@
     // keep replacing the panel under the pointer.
     let ownWindow = null;
     chrome.windows.getCurrent().then((win) => { ownWindow = win.id; }, () => {});
+    // Another window switching space (a tab activated or moved there, or the window closed) can change which tiles
+    // read "open in another window": re-render only when that map actually changed.
+    const checkElsewhere = async () => {
+      if (ownWindow == null) return;
+      if (JSON.stringify(await readElsewhere(ownWindow)) !== JSON.stringify(state.elsewhere || {})) refresh(false);
+    };
+    const SPACE_EVENTS = new Set(["onActivated", "onAttached", "onDetached", "onRemoved"]);
     for (const ev of ["onCreated", "onRemoved", "onUpdated", "onMoved", "onActivated", "onAttached", "onDetached", "onReplaced"]) {
       chrome.tabs[ev]?.addListener((...args) => {
         const id = spacesOf.eventWindow(ev, args);
         if (id == null || ownWindow == null || id === ownWindow) refresh(false);
+        else if (SPACE_EVENTS.has(ev)) checkElsewhere();
       });
     }
+    chrome.windows.onRemoved?.addListener(() => checkElsewhere());
     setInterval(async () => {
       const brief = (list) => JSON.stringify(list.map((w) => [w.id, w.name, w.emoji, w.icon]));
       if (brief(await readWorkspaces()) !== brief(state.workspaces)) refresh(false);
+      else checkElsewhere();
     }, 3000);
     try {
       vivaldi.runtimePrivate.onProfilesUpdated.addListener(loadProfiles);

@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- A space open in another window shows a dot on its tile. Click it to go to that window (Vivaldi keeps a space in one window at a time), or shift+click to bring the space into this one. The default space's tooltip says it holds this window's own tabs.
+- New tabs from Ctrl+T, + New Tab and the command bar open at the top of the space's list, as in Arc. Links opened from a page still open next to it.
+- Links opened from a page (middle-click, ctrl+click) stay in that page's space. Before, they could land in another space when the sidebar was slow to catch up after a switch.
 - Peek opens on shift+click on a link (or a middle-button hold) and never on a plain click. Before, alt+click opened it, and so did a plain click in pinned tabs and on Google pages. Shift+click on a link opens Peek instead of a new window. `"peek": false` in `~/.vivarc/config.json` keeps Peek out, including after "Update Vivarc", and the Windows re-apply task now puts Peek back unless it is turned off.
 - Pinned folders slide open and shut instead of appearing at once. With Reduce Motion on, they still open instantly.
 

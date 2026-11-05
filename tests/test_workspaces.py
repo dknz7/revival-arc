@@ -179,6 +179,61 @@ class NewTabs(unittest.TestCase):
         self.assertIsNone(self.stamped({**tab(1, SIDE["id"]), "windowId": 1}, WORK["id"]))
         self.assertIsNone(self.stamped({"id": 1, "windowId": 1, "vivExtData": json.dumps({"workspaceId": 0})}, WORK["id"]))
 
+    # A tab a page opens (middle-click, ctrl+click) belongs with that page. The sidebar's idea of the active space
+    # comes from a debounced refresh and can lag by seconds while pages load; the opener cannot.
+    def stamped_from(self, t, active, opener, window=1):
+        out = js("workspaces.stamp(t, active, window, opener)", t=t, active=active, window=window, opener=opener)
+        return json.loads(out) if out else None
+
+    def test_a_link_from_a_default_space_page_stays_there_even_while_the_sidebar_lags_on_another_space(self):
+        opener = {**tab(9), "windowId": 1}
+        self.assertIsNone(self.stamped_from({**tab(1), "windowId": 1}, WORK["id"], opener))
+
+    def test_a_link_from_a_page_in_a_space_joins_that_space_not_the_one_the_sidebar_last_saw(self):
+        opener = {**tab(9, SIDE["id"]), "windowId": 1}
+        self.assertEqual(self.stamped_from({**tab(1), "windowId": 1}, WORK["id"], opener), {"workspaceId": SIDE["id"]})
+        self.assertEqual(self.stamped_from({**tab(1), "windowId": 1}, 0, opener), {"workspaceId": SIDE["id"]})
+
+    def test_an_opener_in_another_window_does_not_decide(self):
+        opener = {**tab(9, SIDE["id"]), "windowId": 2}
+        self.assertEqual(self.stamped_from({**tab(1), "windowId": 1}, WORK["id"], opener), {"workspaceId": WORK["id"]})
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class NewTabsGoFirst(unittest.TestCase):
+    """A new tab (Ctrl+T, + New Tab) goes to the top of its space's list, as in Arc. The list shows the highest tab
+    index first (stacks.entries), so the top is the space's highest index."""
+
+    def top(self, tabs, me):
+        return js("workspaces.topIndex(tabs, me)", tabs=tabs, me=me)
+
+    def win(self, id, index, workspace=None, pinned=False, window=1):
+        return {**tab(id, workspace, index=index), "windowId": window, "pinned": pinned}
+
+    def test_it_goes_where_its_spaces_last_tab_is_which_the_list_shows_first(self):
+        tabs = [self.win(1, 0), self.win(4, 1), self.win(2, 2), self.win(3, 3), self.win(5, 4, WORK["id"])]
+        self.assertEqual(self.top(tabs, tabs[1]), 3)
+
+    def test_other_spaces_tabs_do_not_count(self):
+        tabs = [self.win(1, 0, WORK["id"]), self.win(2, 1, WORK["id"]), self.win(3, 2, SIDE["id"]), self.win(4, 3, SIDE["id"])]
+        self.assertEqual(self.top(tabs, tabs[0]), 1)
+
+    def test_a_pinned_tab_does_not_count(self):
+        tabs = [self.win(1, 0), self.win(2, 1), self.win(3, 2, pinned=True)]
+        self.assertEqual(self.top(tabs, tabs[0]), 1)
+
+    def test_a_tab_already_at_the_top_stays(self):
+        tabs = [self.win(1, 0), self.win(2, 1), self.win(3, 2, SIDE["id"])]
+        self.assertIsNone(self.top(tabs, tabs[1]))
+
+    def test_the_only_tab_of_its_space_stays(self):
+        tabs = [self.win(1, 0, SIDE["id"]), self.win(2, 1)]
+        self.assertIsNone(self.top(tabs, tabs[1]))
+
+    def test_tabs_in_other_windows_do_not_count(self):
+        tabs = [self.win(1, 0), self.win(2, 1), self.win(3, 5, window=2)]
+        self.assertEqual(self.top(tabs, tabs[0]), 1)
+
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class CreateSpace(unittest.TestCase):
@@ -249,6 +304,49 @@ class SwitchSpace(unittest.TestCase):
 
     def test_no_switcher_when_native_modules_are_missing(self):
         self.assertIsNone(js("workspaces.findSwitcher(undefined)"))
+
+
+def active_in(window_id, workspace=None, id=None):
+    t = tab(id or window_id * 10, workspace, active=True)
+    t["windowId"] = window_id
+    return t
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class Elsewhere(unittest.TestCase):
+    """Vivaldi keeps a named space in one window at a time: a click on one open elsewhere jumps to that window."""
+
+    def elsewhere(self, active_tabs, window_id):
+        return js("workspaces.elsewhere(tabs, me)", tabs=active_tabs, me=window_id)
+
+    def test_a_space_active_in_another_window_is_mapped_to_that_window(self):
+        found = self.elsewhere([active_in(1, WORK["id"]), active_in(2, SIDE["id"])], 1)
+        self.assertEqual(found, {str(SIDE["id"]): 2})
+
+    def test_this_windows_own_space_is_not_elsewhere(self):
+        self.assertEqual(self.elsewhere([active_in(1, WORK["id"])], 1), {})
+
+    def test_the_default_space_is_never_elsewhere_because_every_window_has_its_own(self):
+        self.assertEqual(self.elsewhere([active_in(1, WORK["id"]), active_in(2), active_in(3)], 1), {})
+
+    def test_no_windows_means_nothing_elsewhere(self):
+        self.assertEqual(self.elsewhere([], 1), {})
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class TileHint(unittest.TestCase):
+    def hint(self, item, elsewhere=None):
+        return js("workspaces.tileHint(item, elsewhere)", item=item, elsewhere=elsewhere or {})
+
+    def test_a_plain_space_shows_its_name(self):
+        self.assertEqual(self.hint({"id": WORK["id"], "name": "Work"}), "Work")
+
+    def test_the_default_space_says_it_is_this_windows_own(self):
+        self.assertEqual(self.hint({"id": 0, "name": "DKNZLIFE"}), "DKNZLIFE · this window's own tabs")
+
+    def test_a_space_open_in_another_window_says_what_a_click_and_a_shift_click_do(self):
+        hint = self.hint({"id": SIDE["id"], "name": "Side"}, {str(SIDE["id"]): 2})
+        self.assertEqual(hint, "Side · open in another window. Click to go there, shift+click to bring it here")
 
 
 if __name__ == "__main__":

@@ -70,7 +70,33 @@
   const toUrl = (text) => (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
 
   const toast = (message) => window.dispatchEvent(new CustomEvent("vm-toast", { detail: message }));
-  const openPage = (url) => chrome.tabs.create({ url });
+  // A new tab tops its space's list, as in Arc (workspaces.topIndex). Ctrl+T's blank tab, which Vivaldi puts next to
+  // the active tab, moves there once it has an address; so does one the bar creates (+ New Tab, palette pages), as
+  // Vivaldi's tabs.create ignores `index` (measured on 8.2). A tab the bar creates is given its space at creation,
+  // read from the window's active tab now: the sidebar's stamp would use its debounced view of the active space,
+  // which can lag, and would land after the move. Never moved: a tab in a folder (moving it would split the stack),
+  // a split view's new pane (it belongs beside its partner), and the page whose address Cmd+L edits.
+  const keepInPlace = new Set();
+  const toTop = async (tabId) => {
+    const tab = await chrome.tabs.get(tabId);
+    if (window.__vm.stacks?.stackOf(tab)) return;
+    const index = window.__vm.workspaces.topIndex(await chrome.tabs.query({ windowId: tab.windowId }), tab);
+    if (index != null) await chrome.tabs.move(tabId, { index });
+  };
+  const openNew = async (url) => {
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const space = active ? window.__vm.workspaces.of(active) : 0;
+    const created = await chrome.tabs.create(space ? { url, vivExtData: JSON.stringify({ workspaceId: space }) } : { url });
+    await toTop(created.id).catch((error) => console.warn("[vivarc] new tab to the top:", error));
+    return created;
+  };
+  // Show url in the bar's target tab, or in a new tab when it has none.
+  const show = async (id, isNew, url) => {
+    if (id == null) return openNew(url);
+    await chrome.tabs.update(id, { url, active: true });
+    if (isNew) await toTop(id).catch((error) => console.warn("[vivarc] new tab to the top:", error));
+  };
+  const openPage = (url) => openNew(url);
   const press = (node) => {
     for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
       const Ctor = type.startsWith("pointer") ? PointerEvent : MouseEvent;
@@ -105,6 +131,7 @@
       ? (await chrome.tabs.query({ currentWindow: true })).filter((t) => t.id !== fresh.id && window.__vm.tilingOf(t)?.id === previous.id)
       : [];
     const created = await chrome.tabs.create({ active: true, index: fresh.index + 1 });
+    keepInPlace.add(created.id); // the bar opens on this pane; Enter must not move it away from its partner
     const id = crypto.randomUUID();
     const write = () => Promise.all([fresh, created].map((t, index) =>
       setExtData(t, { tiling: { id, layout, type: "selection", index } })));
@@ -219,13 +246,14 @@
 
   const go = (url) => {
     const id = targetTab;
+    const isNew = editing === null && !keepInPlace.has(id);
     close(false);
-    if (id != null) chrome.tabs.update(id, { url, active: true });
-    else chrome.tabs.create({ url });
+    show(id, isNew, url).catch((error) => console.warn("[vivarc] open:", error));
   };
 
   const runSearch = async (engine, query) => {
     const id = targetTab;
+    const isNew = editing === null && !keepInPlace.has(id);
     const currentInput = input;
     try {
       const chosen = engine === DEFAULT ? await search.defaultEngine() : engine;
@@ -236,16 +264,14 @@
       if (!/^https?:\/\//i.test(request.url)) throw new Error('Invalid search URL returned by Vivaldi.');
       // Do not navigate a stale command bar after it was closed or replaced.
       if (input !== currentInput) return;
-      if (id != null) await chrome.tabs.update(id, { url: request.url, active: true });
-      else await chrome.tabs.create({ url: request.url });
+      await show(id, isNew, request.url);
       close(false);
     } catch (error) {
       console.warn('[vivarc] search failed; trying DuckDuckGo:', error);
       if (input !== currentInput || !input) return;
       try {
         const url = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
-        if (id != null) await chrome.tabs.update(id, { url, active: true });
-        else await chrome.tabs.create({ url });
+        await show(id, isNew, url);
         close(false);
         toast('Search engine unavailable. Using DuckDuckGo.');
       } catch (fallbackError) {

@@ -328,7 +328,8 @@ test('Enter goes to a typed address at once, not to the tab listed before typing
   await settle();
   assert.equal(says(), 'Go to URL');
   await press(input, 'Enter');
-  assert.deepEqual({ ...calls.navigation.at(-1) }, { url: 'https://google.com.au' });
+  // created in the active tab's space (tab 10, space 1), read at that moment rather than left to the sidebar's stamp
+  assert.deepEqual({ ...calls.navigation.at(-1) }, { url: 'https://google.com.au', vivExtData: '{"workspaceId":1}' });
 });
 test('Enter searches typed words at once, not the tab listed before typing', async () => {
   const { calls, input, type, says, settle } = await lookingUp();
