@@ -884,3 +884,10 @@
 #browser.vm-on.vm-dia:is(:has(.OmniDropdown, .CustomizePanelPopup, .extension-popup, .button-popup), .toolbar-edit-mode) #vm-dia-crumb {
   -webkit-app-region: no-drag; app-region: no-drag;
 }
+/* macOS, like Dia: the sidebar's top strip, beside the traffic lights, is title bar too. Drawn after the panel's
+   content, it overrides the panel's no-drag there only (a later drag region wins); pointer events pass through. */
+#browser.vm-on.vm-dia.mac:not(.fullscreen) #vm-panel { position: relative; }
+#browser.vm-on.vm-dia.mac:not(.fullscreen) #vm-panel::after {
+  content: ""; position: absolute; top: 0; left: 0; right: 0; height: var(--vm-dia-bar);
+  pointer-events: none; -webkit-app-region: drag; app-region: drag;
+}
