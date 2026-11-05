@@ -855,6 +855,10 @@
     state.allTabs = await chrome.tabs.query({ currentWindow: true });
     state.workspaces = await readWorkspaces();
     ({ active: state.active, tabs: state.tabs } = spacesOf.scope(state.allTabs, state.workspaces));
+    if (window.__vm.activeSpace !== state.active) {
+      window.__vm.activeSpace = state.active;
+      window.dispatchEvent(new CustomEvent("vm-active-space-changed", { detail: state.active }));
+    }
   };
 
   // Calls inside the debounce window are merged, and a request to reload bookmarks is never lost to a later
