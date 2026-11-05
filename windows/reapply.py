@@ -3,7 +3,8 @@
 Run by the RevivalArc-Reapply scheduled task (elevated, see deploy.ps1) from C:\\Program Files\\RevivalArc, with the
 embedded Python in isolated mode. A Vivaldi update replaces the version folder, which drops vivarc.js and the block in
 window.html; this script checks the newest version folder and, only when Vivarc is missing (or with --force), writes
-the bundle and the window.html block again, never with Peek.
+the bundle and the window.html block again. Peek goes back in when the install downloaded it and config.json does not
+turn it off; it only reads ~/.vivarc/peek, as it already reads config.json and icons.js, and downloads nothing.
 
 The task runs elevated, so this script writes ONLY into Vivaldi's install folder and its own log folder, never into
 the user's profile (a user-writable folder could be swapped for a junction that redirects an elevated write). That is
@@ -145,7 +146,7 @@ def reapply(app, data_dir, force=False):
     if not force and has_vivarc(v, resources):
         return "in-place", version
     v.preflight(resources)
-    v.write_bundle(resources, False)  # reads ~/.vivarc (config, icons), writes only into Vivaldi's folder; no Peek
+    v.write_bundle(resources, v.peek_enabled())  # reads ~/.vivarc (config, icons, peek), writes only into Vivaldi's folder
     v.write_atomic(html_path, v.inject_window_html(v.read_text(html_path)), newline="\n")
     if not has_vivarc(v, resources):
         raise RuntimeError(f"wrote Vivarc but it is still missing from {resources}")
@@ -177,6 +178,9 @@ def main(argv=None):
             toast("Revival Arc: re-apply failed", f"See {LOG}")
         return error.code if isinstance(error, SystemExit) and isinstance(error.code, int) and error.code else 1
 
+    said = output.getvalue().strip()
+    if said:  # a successful run can still have something to say, e.g. "Peek left out: ..."
+        safe_log(said)
     if outcome == "reapplied":
         running = vivaldi_running()
         safe_log(f"{'force-' if args.force else ''}re-applied Vivarc to Vivaldi {version}"

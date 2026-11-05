@@ -14,6 +14,7 @@ sys.path.insert(0, str(ROOT / "windows"))
 import module_state  # noqa: E402
 import reapply  # noqa: E402
 import vivarc  # noqa: E402
+from peek_fixture import PEEK_CSS, PEEK_JS  # noqa: E402
 
 STOCK = b"<html>\n<body>\n</body>\n</html>\n"
 REAL_VIVALDI_RUNNING = reapply.vivaldi_running
@@ -74,11 +75,30 @@ class Reapply(unittest.TestCase):
         self.run_task()
         self.assertEqual(list(self.home.iterdir()), [])
 
-    def test_never_includes_peek_even_when_it_is_downloaded(self):
+    def plant_peek(self):
         peek = self.home / "peek"
         peek.mkdir()
-        (peek / "VividPeek.js").write_text("/* PEEK-SENTINEL */")
-        (peek / "VividPeek.css").write_text(".peek-sentinel {}")
+        (peek / "VividPeek.js").write_text(PEEK_JS, encoding="utf8")
+        (peek / "VividPeek.css").write_text(PEEK_CSS, encoding="utf8")
+
+    def test_puts_a_downloaded_peek_back_set_to_open_on_shift_click_only(self):
+        self.plant_peek()
+        self.run_task()
+        bundle = self.bundle()
+        self.assertIn("PEEK-SENTINEL", bundle)
+        self.assertIn('clickOpenModifiers: ["shift"],', bundle)
+        self.assertIn("autoOpenList: [],", bundle)
+
+    def test_logs_why_a_downloaded_peek_was_left_out(self):
+        self.plant_peek()
+        (self.home / "peek" / "VividPeek.js").write_text("/* PEEK-SENTINEL */ const ICON_CONFIG = {};", encoding="utf8")
+        self.assertEqual(self.run_task(), 0)
+        self.assertNotIn("PEEK-SENTINEL", self.bundle())
+        self.assertIn("Peek left out", self.log_file.read_text(encoding="utf8"))
+
+    def test_leaves_a_downloaded_peek_out_when_the_config_turns_it_off(self):
+        self.plant_peek()
+        (self.home / "config.json").write_text('{"peek": false}', encoding="utf8")
         self.run_task()
         self.assertNotIn("PEEK-SENTINEL", self.bundle())
         self.assertNotIn("peek-sentinel", self.bundle())

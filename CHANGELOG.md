@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Peek opens on shift+click on a link (or a middle-button hold) and never on a plain click. Before, alt+click opened it, and so did a plain click in pinned tabs and on Google pages. Shift+click on a link opens Peek instead of a new window. `"peek": false` in `~/.vivarc/config.json` keeps Peek out, including after "Update Vivarc", and the Windows re-apply task now puts Peek back unless it is turned off.
 - Pinned folders slide open and shut instead of appearing at once. With Reduce Motion on, they still open instantly.
 
 ## 0.1.16 - 2026-10-28

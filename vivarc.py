@@ -98,6 +98,17 @@ PEEK_FILES = {
     "VividPeek.js": ("Javascripts/VividPeek.js", "54c45b3ab0f3be6554a13ebb70a8b13100592502ed9e7a7582db7401b7ac818a"),
     "VividPeek.css": ("CSS/VividPeek.css", "8196dec18bac4f46bfb12c246a366456f42cbb42b6e9af77183b1ad0c95b08f7"),
 }
+# Peek's own defaults open it on a plain click in pinned tabs and on Google, and on alt+click. Vivarc opens it on
+# shift+click on a link only (and on Peek's middle-button hold). Peek's modifier branch has no link check, which
+# with shift would swallow every shift+click on a page (range selection, extending a text selection), so the third
+# pair adds one. The file is pinned by checksum, so the text below is exact; a new PEEK_COMMIT that changes it makes
+# tame_peek refuse, and Peek is left out rather than opening on every click.
+PEEK_TRIGGERS = (
+    ('    clickOpenModifiers: ["alt"],\n', '    clickOpenModifiers: ["shift"],\n'),
+    ('    autoOpenList: [\n      "pin",\n      "*.google.com",\n    ],\n', '    autoOpenList: [],\n'),
+    ('        } else if (this.#isConfiguredClickOpenModifierEvent(event)) {\n',
+     '        } else if (link && this.#isConfiguredClickOpenModifierEvent(event)) {\n'),
+)
 
 _MISSING = object()
 TOUCHED = [
@@ -509,6 +520,15 @@ def sync_guide():
     shutil.copy2(os.path.join(HERE, "src/start/index.html"), start_dir)
 
 
+def tame_peek(js):
+    """Set Peek's triggers to shift+click on a link only (see PEEK_TRIGGERS). Raises ValueError if the text has changed."""
+    for old, new in PEEK_TRIGGERS:
+        if js.count(old) != 1:
+            raise ValueError(f"VividPeek.js has changed, so its triggers cannot be set (looking for: {old.strip()[:60]})")
+        js = js.replace(old, new)
+    return js
+
+
 def write_bundle(resources, with_peek):
     extras, pre = [], [("vivarc.css", style_script("vivarc-css", read_text(os.path.join(HERE, "src/css/vivarc.css"))))]
     icons = os.path.join(HOME_DIR, "icons.js")
@@ -516,9 +536,14 @@ def write_bundle(resources, with_peek):
         pre.append(("icons.js", read_text(icons)))
     peek_dir = os.path.join(HOME_DIR, "peek")
     if with_peek and os.path.exists(os.path.join(peek_dir, "VividPeek.js")):
-        extras.append(("peek-stubs.js", read_text(os.path.join(HERE, "src/optional/peek-stubs.js"))))
-        extras.append(("VividPeek.js", read_text(os.path.join(peek_dir, "VividPeek.js"))))
-        extras.append(("VividPeek.css", style_script("vivarc-peek-css", read_text(os.path.join(peek_dir, "VividPeek.css")))))
+        try:
+            peek_js = tame_peek(read_text(os.path.join(peek_dir, "VividPeek.js")))
+        except ValueError as error:
+            say(f"Peek left out: {error}")
+        else:
+            extras.append(("peek-stubs.js", read_text(os.path.join(HERE, "src/optional/peek-stubs.js"))))
+            extras.append(("VividPeek.js", peek_js))
+            extras.append(("VividPeek.css", style_script("vivarc-peek-css", read_text(os.path.join(peek_dir, "VividPeek.css")))))
     start_page = pathlib.Path(HOME_DIR, "start", "index.html").as_uri()
     config = {**load_config(), "startUrl": start_page, "platform": platform.system()}
     bundle = build_bundle(os.path.join(HERE, "src/js"), config, extras, pre)

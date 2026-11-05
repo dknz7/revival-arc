@@ -9,6 +9,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import vivarc  # noqa: E402
+from peek_fixture import PEEK_CSS, PEEK_JS  # noqa: E402
 
 DEFAULTS = {
     "COMMAND_NEW_TAB": {"shortcuts": ["meta+t"], "gestures": ["2"]},
@@ -322,6 +323,80 @@ class PeekChoice(unittest.TestCase):
     def test_peek_true_in_the_config_does_not_override_the_flag(self):
         self.config({"peek": True})
         self.assertFalse(vivarc.peek_enabled(no_peek=True))
+
+
+class PeekTriggers(unittest.TestCase):
+    """Peek opens on shift+click (or a middle-button hold) only, never on a plain click."""
+
+    def test_shift_click_replaces_alt_click(self):
+        js = vivarc.tame_peek(PEEK_JS)
+        self.assertIn('clickOpenModifiers: ["shift"],', js)
+        self.assertNotIn('clickOpenModifiers: ["alt"],', js)
+
+    def test_a_plain_click_never_opens_peek(self):
+        js = vivarc.tame_peek(PEEK_JS)
+        self.assertIn("autoOpenList: [],", js)
+        self.assertNotIn('"*.google.com"', js)
+        self.assertNotIn('"pin"', js)
+
+    def test_shift_click_off_a_link_is_left_to_the_page(self):
+        # Peek's modifier branch has no link check: with shift, it would swallow every shift+click (range selection,
+        # extending a text selection) and clear the selection, link or not.
+        js = vivarc.tame_peek(PEEK_JS)
+        self.assertIn("} else if (link && this.#isConfiguredClickOpenModifierEvent(event)) {", js)
+        self.assertNotIn("} else if (this.#isConfiguredClickOpenModifierEvent(event)) {", js)
+
+    def test_the_rest_of_peek_is_left_as_it_was(self):
+        js = vivarc.tame_peek(PEEK_JS)
+        self.assertIn("/* PEEK-SENTINEL */", js)
+        self.assertIn('longPressButtons: ["middle"],', js)
+
+    def test_a_changed_peek_is_refused_rather_than_left_opening_on_every_click(self):
+        for changed in (PEEK_JS.replace('["alt"]', '["ctrl"]'), PEEK_JS.replace('"pin",', '"pin", "x.com",'),
+                        PEEK_JS.replace("} else if (this.#is", "} else if (event && this.#is"), PEEK_JS * 2):
+            with self.subTest(changed=changed[:60]), self.assertRaises(ValueError):
+                vivarc.tame_peek(changed)
+
+
+class PeekInTheBundle(unittest.TestCase):
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.resources = tempfile.mkdtemp()
+        for d in (self.home, self.resources):
+            self.addCleanup(shutil.rmtree, d, True)
+        patch = mock.patch.object(vivarc, "HOME_DIR", self.home)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def plant_peek(self, js):
+        os.makedirs(os.path.join(self.home, "peek"))
+        with open(os.path.join(self.home, "peek", "VividPeek.js"), "w", encoding="utf8") as f:
+            f.write(js)
+        with open(os.path.join(self.home, "peek", "VividPeek.css"), "w", encoding="utf8") as f:
+            f.write(PEEK_CSS)
+
+    def bundle(self):
+        with open(os.path.join(self.resources, "vivarc.js"), encoding="utf8") as f:
+            return f.read()
+
+    def test_the_bundled_peek_opens_on_shift_click_only(self):
+        self.plant_peek(PEEK_JS)
+        vivarc.write_bundle(self.resources, True)
+        bundle = self.bundle()
+        self.assertIn("PEEK-SENTINEL", bundle)
+        self.assertIn('clickOpenModifiers: ["shift"],', bundle)
+        self.assertIn("autoOpenList: [],", bundle)
+        self.assertNotIn('"*.google.com"', bundle)
+
+    def test_a_peek_that_cannot_be_set_up_is_left_out_and_the_rest_still_installs(self):
+        self.plant_peek("/* PEEK-SENTINEL */ const ICON_CONFIG = {};")
+        with mock.patch.object(vivarc, "say") as say:
+            vivarc.write_bundle(self.resources, True)
+        bundle = self.bundle()
+        self.assertNotIn("PEEK-SENTINEL", bundle)
+        self.assertNotIn("peek-sentinel", bundle)
+        self.assertIn("[vivarc] core started", bundle)
+        self.assertIn("Peek left out", say.call_args.args[0])
 
 
 if __name__ == "__main__":

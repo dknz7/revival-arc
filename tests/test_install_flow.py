@@ -10,6 +10,7 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import vivarc  # noqa: E402
 import module_state  # noqa: E402
+from peek_fixture import PEEK_CSS, PEEK_JS  # noqa: E402
 
 REAL_DEFS = os.path.join(vivarc.DEFAULT_APP, vivarc.RESOURCES, "prefs_definitions.json")
 FAKE_DEFS = {"vivaldi": {"actions": {"default_mac": [{
@@ -95,10 +96,10 @@ class InstallFlow(unittest.TestCase):
     def plant_peek(self):
         peek = os.path.join(self.home, "peek")
         os.makedirs(peek, exist_ok=True)
-        with open(os.path.join(peek, "VividPeek.js"), "w") as f:
-            f.write("/* PEEK-SENTINEL */")
-        with open(os.path.join(peek, "VividPeek.css"), "w") as f:
-            f.write(".peek-sentinel {}")
+        with open(os.path.join(peek, "VividPeek.js"), "w", encoding="utf8") as f:
+            f.write(PEEK_JS)
+        with open(os.path.join(peek, "VividPeek.css"), "w", encoding="utf8") as f:
+            f.write(PEEK_CSS)
 
     def bundle(self):
         with open(os.path.join(self.app, vivarc.RESOURCES, "vivarc.js")) as f:

@@ -186,7 +186,7 @@ python3 ~/.vivarc/app/vivarc.py status      # what is installed
 | Cmd+L       | Edit the address                                                                                                               |
 | Cmd+E       | Vivaldi's own Quick Commands                                                                                                   |
 
-**Also:** an optional link preview (Peek, by [PaRr0tBoY](https://github.com/PaRr0tBoY/Awesome-Vivaldi), downloaded from upstream and verified at install), and an importer for your Arc spaces and site icons.
+**Also:** an optional link preview (Peek, by [PaRr0tBoY](https://github.com/PaRr0tBoY/Awesome-Vivaldi), downloaded from upstream and verified at install; shift+click a link to open it), and an importer for your Arc spaces and site icons.
 
 ## Coming from Arc or Chrome
 
