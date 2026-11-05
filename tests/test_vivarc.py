@@ -141,6 +141,48 @@ class PatchPreferences(unittest.TestCase):
         new, _ = vivarc.patch_preferences(p, [DEFAULTS])
         self.assertEqual(new["vivaldi"]["toolbars"]["tabbar_after"], ["AccountButton", "PanelDownloads"])
 
+    def test_restore_brings_back_the_address_toolbar_and_window_frame_the_dia_layout_changes(self):
+        p = prefs(vivaldi={"toolbars": {"navigation": ["Back", "Mine"]}, "windows": {"use_native_decoration": True}})
+        _, snap = vivarc.patch_preferences(p, [DEFAULTS])
+        # the Dia layout, switched on later by the JS
+        dia = prefs(vivaldi={"toolbars": {"navigation": ["Back", "Forward", "Reload"]}, "windows": {"use_native_decoration": False},
+                             "address_bar": {"visible": True}})
+        restored = vivarc.restore_preferences(dia, snap)
+        self.assertEqual(restored["vivaldi"]["toolbars"]["navigation"], ["Back", "Mine"])
+        self.assertTrue(restored["vivaldi"]["windows"]["use_native_decoration"])
+
+    def test_restore_removes_the_dia_values_when_the_user_had_never_set_them(self):
+        _, snap = vivarc.patch_preferences(prefs(), [DEFAULTS])
+        dia = prefs(vivaldi={"toolbars": {"navigation": ["Back"]}, "windows": {"use_native_decoration": False}})
+        restored = vivarc.restore_preferences(dia, snap)
+        self.assertNotIn("navigation", restored.get("vivaldi", {}).get("toolbars", {}))
+        self.assertNotIn("windows", restored["vivaldi"])
+
+    def test_a_reinstall_adds_values_an_older_snapshot_never_kept_and_keeps_the_rest(self):
+        older = {"vivaldi.address_bar.visible": {"present": True, "value": True}}
+        fresh = {"vivaldi.address_bar.visible": {"present": True, "value": False},
+                 "vivaldi.toolbars.navigation": {"present": True, "value": ["Back", "Mine"]}}
+        merged = vivarc.merge_snapshot(older, fresh)
+        self.assertTrue(merged["vivaldi.address_bar.visible"]["value"])  # the original, not today's
+        self.assertEqual(merged["vivaldi.toolbars.navigation"]["value"], ["Back", "Mine"])
+
+    def test_a_reinstall_while_the_dia_layout_is_on_never_keeps_its_values_as_the_users(self):
+        dia_row = vivarc.DIA_VALUES["vivaldi.toolbars.navigation"]
+        fresh = {"vivaldi.toolbars.navigation": {"present": True, "value": dia_row},
+                 "vivaldi.windows.use_native_decoration": {"present": True, "value": False}}
+        merged = vivarc.merge_snapshot({}, fresh)
+        # "not set": uninstall then falls back to Vivaldi's default instead of leaving the Dia row
+        self.assertFalse(merged["vivaldi.toolbars.navigation"]["present"])
+        self.assertFalse(merged["vivaldi.windows.use_native_decoration"]["present"])
+        restored = vivarc.restore_preferences(prefs(vivaldi={"toolbars": {"navigation": dia_row}}), merged)
+        self.assertNotIn("navigation", restored.get("vivaldi", {}).get("toolbars", {}))
+
+    def test_uninstalling_a_profile_the_js_set_up_leaves_the_users_own_toolbar_and_frame(self):
+        mine = prefs(vivaldi={"toolbars": {"navigation": ["Back", "Mine"]}, "windows": {"use_native_decoration": True}})
+        restored = vivarc.restore_preferences(mine, vivarc.blank_snapshot())
+        self.assertEqual(restored["vivaldi"]["toolbars"]["navigation"], ["Back", "Mine"])
+        self.assertTrue(restored["vivaldi"]["windows"]["use_native_decoration"])
+
     def test_restore_brings_back_both_toolbars(self):
         p = prefs(vivaldi={"toolbars": {
             "tabbar_before": ["WorkspaceButton", "TabButton"], "tabbar_after": ["VPNButton"]}})

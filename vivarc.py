@@ -102,6 +102,9 @@ TOUCHED = [
     ("vivaldi", "status_bar", "display"),
     ("vivaldi", "tabs", "bar", "width"),
     ("vivaldi", "tabs", "bar", "position"),
+    # Set by the Dia layout (15-dia.js) at run time, not here; kept so uninstall puts back the user's own.
+    ("vivaldi", "toolbars", "navigation"),
+    ("vivaldi", "windows", "use_native_decoration"),
 ]
 
 
@@ -130,6 +133,33 @@ def _delete(d, path):
     for parent, key in zip(reversed(chain[:-1]), reversed(path[:-1])):
         if parent[key] == {}:
             del parent[key]
+
+
+# The Dia layout's values for the prefs it sets (15-dia.js; a test keeps the two in step). Never a user's original:
+# found where no original was kept (a reinstall while the layout is on), they are kept as "not set", so uninstall falls
+# back to Vivaldi's default rather than leave the layout's row behind.
+DIA_VALUES = {
+    "vivaldi.toolbars.navigation": ["Back", "Forward", "Reload", "FlexibleSpacer", "Extensions"],
+    "vivaldi.windows.use_native_decoration": False,
+}
+
+
+def merge_snapshot(stored, fresh):
+    """A reinstall keeps the first snapshot (the user's originals) and adds what it never kept, from the fresh one."""
+    merged = dict(stored)
+    for key, entry in fresh.items():
+        if key in merged:
+            continue
+        if key in DIA_VALUES and entry["present"] and entry["value"] == DIA_VALUES[key]:
+            entry = {"present": False, "value": None}
+        merged[key] = entry
+    return merged
+
+
+def blank_snapshot():
+    """For a profile the JS set up on its own: Vivarc's prefs back to Vivaldi's defaults. The Dia layout's prefs are
+    left alone (the layout puts them back itself): they may be the user's own."""
+    return {".".join(path): {"present": False, "value": None} for path in TOUCHED if ".".join(path) not in DIA_VALUES}
 
 
 def _snapshot(prefs):
@@ -628,7 +658,7 @@ def cmd_install(args):
         shutil.copy2(prefs_path, os.path.join(backup, directory, "Preferences"))
         prefs = read_json(prefs_path)
         new, snap = patch_preferences(prefs, actions)
-        state["profiles"].setdefault(directory, snap)
+        state["profiles"][directory] = merge_snapshot(state["profiles"].get(directory, {}), snap)
         write_json(prefs_path, new)
         say(f"  {name}: configured")
 
@@ -746,7 +776,7 @@ def cmd_uninstall(args):
             say(f"  {directory}: restored")
     ls_path = os.path.join(args.data_dir, "Local State")
     if os.path.exists(ls_path):
-        blank = {".".join(path): {"present": False, "value": None} for path in TOUCHED}
+        blank = blank_snapshot()
         for directory, _name in find_profiles(read_json(ls_path)):
             prefs_path = os.path.join(args.data_dir, directory, "Preferences")
             if directory in state["profiles"] or not os.path.exists(prefs_path):
