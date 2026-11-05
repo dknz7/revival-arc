@@ -802,3 +802,16 @@
   justify-content: center;
   padding-block: 0 !important;
 }
+
+/* Keep favorite tiles distinct from each space color: lighter tiles on pale colors, dark ones on near-white. Glass keeps its own tiles. */
+#browser.vm-on.vm-themed:not(.vm-glass) #vm-panel .vm-fav {
+  background: color-mix(in srgb, var(--vm-fav-color) var(--vm-fav-opacity), transparent);
+  outline: 1px solid color-mix(in srgb, var(--vm-fav-color) 18%, transparent);
+  outline-offset: -1px;
+}
+#browser.vm-on.vm-themed:not(.vm-glass) #vm-panel .vm-fav:hover {
+  background: color-mix(in srgb, var(--vm-fav-color) var(--vm-fav-hover-opacity), transparent);
+}
+#browser.vm-on.vm-themed:not(.vm-glass) #vm-panel .vm-fav.active {
+  background: color-mix(in srgb, var(--vm-fav-color) var(--vm-fav-active-opacity), transparent);
+}

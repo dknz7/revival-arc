@@ -23,11 +23,17 @@
     browser.classList.toggle("vm-themed", theme.on);
     const style = browser.style;
     if (!theme.on) {
-      for (const k of ["--vm-tint", "--vm-fg", "--vm-grain", "--vm-noise"]) style.removeProperty(k);
+      for (const k of ["--vm-tint", "--vm-fg", "--vm-grain", "--vm-noise", "--vm-fav-color", "--vm-fav-opacity", "--vm-fav-hover-opacity", "--vm-fav-active-opacity"]) style.removeProperty(k);
       return;
     }
     style.setProperty("--vm-tint", `hsl(${theme.hue} ${theme.sat}% ${theme.light}%)`);
     style.setProperty("--vm-fg", fgFor(theme.light));
+    // Pale colored spaces get a lighter tile; near-white spaces need a dark tile for separation.
+    const pale = theme.light > 58 && theme.light < 87;
+    style.setProperty("--vm-fav-color", theme.light >= 87 ? "#1b1b1f" : "#fff");
+    style.setProperty("--vm-fav-opacity", pale ? "46%" : theme.light >= 87 ? "20%" : "16%");
+    style.setProperty("--vm-fav-hover-opacity", pale ? "58%" : theme.light >= 87 ? "27%" : "23%");
+    style.setProperty("--vm-fav-active-opacity", pale ? "64%" : theme.light >= 87 ? "30%" : "24%");
     style.setProperty("--vm-grain", String(theme.grain / 100 * 0.35));
     style.setProperty("--vm-noise", noise);
   };
