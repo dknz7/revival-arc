@@ -240,7 +240,9 @@
 }
 #vm-panel .vm-divider:hover .vm-clear { opacity: 0.7; }
 #vm-panel .vm-clear:hover { opacity: 1; background-color: color-mix(in srgb, var(--colorFg) 14%, transparent); }
-#vm-panel .vm-newtab { opacity: 0.6; }
+/* "+ New Tab" is centred in its row (the row stays full width, to click and to hover). */
+#vm-panel .vm-newtab { opacity: 0.6; justify-content: center; padding-inline: 0 !important; }
+#vm-panel .vm-newtab .vm-title { flex: 0 0 auto; }
 #vm-panel .vm-plus { display: flex; justify-content: center; width: 18px; font-size: 18px; line-height: 1; }
 
 .vm-menu {
