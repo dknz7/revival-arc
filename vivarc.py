@@ -705,8 +705,10 @@ def cmd_install(args):
     if IS_WINDOWS:
         say(f"Done. Open Vivaldi. Update and uninstall launchers: {HOME_DIR}")
         return
-    say("Done. Open Vivaldi. After a Vivaldi update, open \"Update Vivarc\" to bring Vivarc back. Find it in Finder: "
-        "Cmd+Shift+H, then the Applications folder. Drag it to your Dock to keep it close.")
+    where = ("in Applications, next to Vivaldi" if os.path.dirname(UPDATE_APP) == SYSTEM_APPS
+             else "in Finder: Cmd+Shift+H, then the Applications folder")
+    say(f"Done. Open Vivaldi. After a Vivaldi update, open \"Update Vivarc\" to bring Vivarc back. Find it {where}. "
+        "Drag it to your Dock to keep it close.")
 
 
 def cmd_apply(args):
