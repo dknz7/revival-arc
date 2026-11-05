@@ -91,7 +91,32 @@
     return null;
   };
 
-  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, ROW_ITEMS };
+  // Vivaldi's translator takes its own language codes, not always the page's: taobao.com says zh-CN, and translating
+  // from "zh-CN" (or "auto") fails with unsupported_language while "zh-Hans" works (measured on 8.2). Vivaldi's own
+  // popup converts with getTranslationCode; this finds it like the store, and falls back to that function's 8.2 table.
+  const CODES_82 = { "en-US": "en", "es-ES": "es", kmr: "ku", nb: "no", "pt-PT": "pt", sr: "sr-Cyrl", "zh-CN": "zh-Hans",
+    "zh-TW": "zh-Hant", "de-CH": "de", "en-GB": "en", "ja-KS": "ja", "sr-Latn": "sr", nn: "no", iw: "he", me: "hr" };
+  const translatorCode = (code, convert) => {
+    if (typeof convert === "function") { try { return convert(code) || code; } catch (_) {} }
+    return CODES_82[code] || code;
+  };
+  const findCodes = (chunks) => {
+    try {
+      let load;
+      chunks.push([[Symbol("vivarc-translation-codes")], {}, (require) => { load = require; }]);
+      for (const [id, factory] of Object.entries(load?.m || {})) {
+        if (!String(factory).includes("getTranslationCode")) continue;
+        let exported;
+        try { exported = load(id); } catch (_) { continue; }
+        for (const codes of Object.values(exported || {})) {
+          if (typeof codes?.getTranslationCode === "function") return (code) => codes.getTranslationCode(code);
+        }
+      }
+    } catch (_) {}
+    return null;
+  };
+
+  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, ROW_ITEMS };
   if (!window.__vm.store) return;
 
   const { store, settings } = window.__vm;
@@ -158,6 +183,14 @@
     }
     try { return translation ? translation(tabId) : null; } catch (_) { return null; }
   };
+  let codes; // Vivaldi's getTranslationCode, looked up at the first translation (null: CODES_82 is used)
+  const codesOf = () => {
+    if (codes === undefined) {
+      codes = findCodes(window.webpackChunkgapp_browser_react) ||
+        findCodes(chrome.extension?.getBackgroundPage?.()?.webpackChunkgapp_browser_react);
+    }
+    return codes;
+  };
   const showTranslate = (tab) => {
     if (!translateNode || !tab) return;
     const action = translateOf(tab.url, translationOf(tab.id));
@@ -175,7 +208,7 @@
       const back = (ok) => resolve(!chrome.runtime.lastError && ok !== false);
       try {
         if (action.revert) vivaldi.tabsPrivate.revertTranslatePage(tab.id, back);
-        else vivaldi.tabsPrivate.translatePage(tab.id, action.from, "en", back);
+        else vivaldi.tabsPrivate.translatePage(tab.id, translatorCode(action.from, codesOf()), "en", back);
       } catch (_) { resolve(false); }
     });
     if (done) return;

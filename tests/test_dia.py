@@ -195,6 +195,28 @@ class TranslationState(unittest.TestCase):
         """
         self.assertIsNone(js("(() => {" + fake + "return window.__vm.dia.findTranslation(chunks); })()"))
 
+    def test_the_language_is_sent_in_the_translators_own_code(self):
+        # measured on taobao.com (page says zh-CN): "zh-CN" and "auto" fail with unsupported_language, "zh-Hans" works;
+        # Vivaldi's own popup converts with getTranslationCode, so the button does too
+        code = "window.__vm.dia.translatorCode(lang, convert)"
+        convert = "(c) => ({ 'zh-CN': 'zh-Hans' })[c] || c"
+        self.assertEqual(js(f"(() => {{ const convert = {convert}; return {code}; }})()", lang="zh-CN"), "zh-Hans")
+        self.assertEqual(js(f"(() => {{ const convert = {convert}; return {code}; }})()", lang="de"), "de")
+
+    def test_without_vivaldis_converter_its_82_table_is_used(self):
+        for page, sent in (("zh-CN", "zh-Hans"), ("zh-TW", "zh-Hant"), ("nb", "no"), ("iw", "he"), ("zh-Hans", "zh-Hans"), ("ja", "ja")):
+            self.assertEqual(js("window.__vm.dia.translatorCode(lang, null)", lang=page), sent, page)
+
+    def test_the_converter_comes_from_vivaldis_modules(self):
+        fake = """
+          const codes = { getTranslationCode: (c) => c === "zh-CN" ? "zh-Hans" : c, getTargetTranslationCode() {} };
+          const require = (id) => id === "5" ? { Z: codes } : { Z: {} };
+          require.m = { 4: function () { return "no"; }, 5: function () { return "getTranslationCode:"; } };
+          const chunks = { push: ([ids, extra, run]) => run(require) };
+        """
+        self.assertEqual(js("(() => {" + fake + "return window.__vm.dia.findCodes(chunks)('zh-CN'); })()"), "zh-Hans")
+        self.assertIsNone(js("window.__vm.dia.findCodes(undefined)"))
+
     def test_no_store_means_no_button_rather_than_an_error(self):
         self.assertIsNone(js("window.__vm.dia.findTranslation(undefined)"))
         self.assertIsNone(js("window.__vm.dia.findTranslation({ push: ([ids, extra, run]) => run(Object.assign(() => ({}), { m: {} })) })"))
