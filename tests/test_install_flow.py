@@ -50,6 +50,9 @@ class InstallFlow(unittest.TestCase):
             mock.patch.object(vivarc, "LEGACY_UPDATE_COMMAND", os.path.join(self.tmp, "Applications", "Update Vivarc.command")),
             mock.patch.object(vivarc, "UNINSTALL_COMMAND", os.path.join(self.tmp, "home", "Uninstall Vivarc.command")),
             mock.patch.object(vivarc, "UNINSTALL_APP", os.path.join(self.tmp, "Applications", "Uninstall Vivarc.app")),
+            # Never the real ones: install and uninstall remove these (the launchers an earlier install left elsewhere).
+            mock.patch.object(vivarc, "LEGACY_APPS", [os.path.join(self.tmp, "OtherApplications", name)
+                                                      for name in ("Update Vivarc.app", "Uninstall Vivarc.app")]),
             mock.patch.object(vivarc, "vivaldi_running", return_value=False),
             mock.patch.object(vivarc, "app_version", return_value="9.9.9"),
             mock.patch.object(vivarc, "ask", return_value=None),
@@ -196,6 +199,18 @@ class InstallFlow(unittest.TestCase):
         vivarc.write_update_command(vivarc.LEGACY_UPDATE_COMMAND)
         self.run_cli("install", "--no-peek")
         self.assertFalse(os.path.exists(vivarc.LEGACY_UPDATE_COMMAND))
+
+    def test_install_moves_the_launchers_out_of_the_other_applications_folder_and_leaves_other_apps_alone(self):
+        old_update, old_uninstall = vivarc.LEGACY_APPS
+        vivarc.write_update_app(old_update, vivarc.UPDATE_COMMAND)   # an earlier install's, in the other folder
+        os.makedirs(os.path.join(old_uninstall, "Contents"))          # not Vivarc's: same name, no Vivarc mark
+        self.run_cli("install", "--no-peek")
+        self.assertTrue(os.path.exists(os.path.join(vivarc.UPDATE_APP, "Contents", "Info.plist")))
+        self.assertFalse(os.path.exists(old_update))
+        self.assertTrue(os.path.exists(old_uninstall))
+        vivarc.write_update_app(old_update, vivarc.UPDATE_COMMAND)
+        self.run_cli("uninstall")
+        self.assertFalse(os.path.exists(old_update))
 
     def test_install_only_turns_the_reminder_on_when_the_user_says_yes(self):
         self.run_cli("install", "--no-peek")

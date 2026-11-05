@@ -127,7 +127,7 @@ supported; `import-arc --arc-dir` can read a compatible exported macOS Arc folde
 
 ## Update, uninstall or start fresh (macOS)
 
-Both tools are small apps that the installer leaves in the `Applications` folder inside your home folder. To find them: in Finder press Cmd+Shift+H, then open `Applications` (not the one in the sidebar). Drag them to your Dock to keep them close. They open Terminal, so Terminal needs the **App Management** permission, the same one as at install (macOS asks, and the installer's steps apply again).
+Both tools are small apps that the installer leaves in `/Applications`, next to Vivaldi (on an account that cannot write there, in the `Applications` folder inside your home folder: in Finder press Cmd+Shift+H, then open `Applications`). An earlier install's copies in the other folder are removed. Drag them to your Dock to keep them close. They open Terminal, so Terminal needs the **App Management** permission, the same one as at install (macOS asks, and the installer's steps apply again).
 
 **Update, or bring Vivarc back after a Vivaldi update.** Vivaldi updates replace the app and remove Vivarc.
 

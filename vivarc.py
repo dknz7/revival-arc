@@ -34,10 +34,24 @@ IS_WINDOWS = platform.system() == "Windows"
 DEFAULT_APP = os.environ.get("VIVARC_APP", "/Applications/Vivaldi.app")
 DEFAULT_DATA = os.environ.get("VIVARC_DATA_DIR", os.path.join(HOME, "Library", "Application Support", "Vivaldi"))
 UPDATE_COMMAND = os.path.join(HOME_DIR, "Update Vivarc.command")
-UPDATE_APP = os.path.join(HOME, "Applications", "Update Vivarc.app")
+SYSTEM_APPS = "/Applications"
+HOME_APPS = os.path.join(HOME, "Applications")
+
+
+def launcher_dir(writable):
+    """Where Update and Uninstall Vivarc go: /Applications, with Vivaldi, where the user can write there (an admin,
+    no sudo needed); else the Applications folder in the home folder."""
+    return SYSTEM_APPS if writable else HOME_APPS
+
+
+APPS_DIR = launcher_dir(os.access(SYSTEM_APPS, os.W_OK))
+UPDATE_APP = os.path.join(APPS_DIR, "Update Vivarc.app")
 LEGACY_UPDATE_COMMAND = os.path.join(HOME, "Applications", "Update Vivarc.command")
 UNINSTALL_COMMAND = os.path.join(HOME_DIR, "Uninstall Vivarc.command")
-UNINSTALL_APP = os.path.join(HOME, "Applications", "Uninstall Vivarc.app")
+UNINSTALL_APP = os.path.join(APPS_DIR, "Uninstall Vivarc.app")
+# The same apps in the other folder, from an earlier install: removed, so there is one of each.
+LEGACY_APPS = [os.path.join(folder, name) for folder in (SYSTEM_APPS, HOME_APPS) if folder != APPS_DIR
+               for name in ("Update Vivarc.app", "Uninstall Vivarc.app")]
 UPDATE_MARK = "# Created by Vivarc"
 RELEASES_LATEST = "https://github.com/KASOGIT/vivarc/releases/latest"
 REMINDER_LABEL = "com.vivarc.reminder"
@@ -678,6 +692,8 @@ def cmd_install(args):
     write_uninstall_command(UNINSTALL_COMMAND)
     if not IS_WINDOWS:
         write_update_app(UNINSTALL_APP, UNINSTALL_COMMAND)
+        for app in LEGACY_APPS:
+            remove_update_app(app)
     remove_update_command(LEGACY_UPDATE_COMMAND)
     if IS_WINDOWS:
         say("Automatic reminders are not available on Windows.")
@@ -805,6 +821,8 @@ def cmd_uninstall(args):
     remove_update_command(UNINSTALL_COMMAND)
     if not IS_WINDOWS:
         remove_update_app(UNINSTALL_APP)
+        for app in LEGACY_APPS:
+            remove_update_app(app)
     disable_reminder()
     if args.purge:
         shutil.rmtree(HOME_DIR, ignore_errors=True)

@@ -191,6 +191,14 @@ class PatchPreferences(unittest.TestCase):
         restored = vivarc.restore_preferences(new, snap)
         self.assertFalse(restored["vivaldi"]["address_bar"]["extensions"]["render_in_dropdown"])
 
+    def test_the_launchers_go_to_applications_where_the_user_can_write_there(self):
+        self.assertEqual(vivarc.launcher_dir(True), "/Applications")
+        self.assertEqual(vivarc.launcher_dir(False), os.path.join(vivarc.HOME, "Applications"))
+
+    def test_the_other_folders_launchers_are_the_ones_cleaned_up(self):
+        self.assertNotIn(vivarc.APPS_DIR, {os.path.dirname(p) for p in vivarc.LEGACY_APPS})
+        self.assertEqual({os.path.basename(p) for p in vivarc.LEGACY_APPS}, {"Update Vivarc.app", "Uninstall Vivarc.app"})
+
     def test_restore_brings_back_both_toolbars(self):
         p = prefs(vivaldi={"toolbars": {
             "tabbar_before": ["WorkspaceButton", "TabButton"], "tabbar_after": ["VPNButton"]}})
