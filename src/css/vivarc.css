@@ -868,8 +868,8 @@
 #browser.vm-on.vm-dia #vm-cmd { padding-left: var(--vm-dia-left, 0px); padding-right: var(--vm-dia-right, 0px); }
 #browser.vm-on.vm-dia #vm-cmd .vm-cmd-box { max-width: calc(100% - 32px); }
 
-/* Breadcrumb: "site / title" (a click edits the address in the command bar), then Copy link. Everything else in the
-   row is title bar: drag to move, double-click to maximise. */
+/* Breadcrumb: "site / title" (a click edits the address in the command bar), then Translate and Copy link. Everything
+   else in the row is title bar: drag to move, double-click to maximise. */
 #vm-dia-crumb {
   display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; height: 100%; padding: 0 6px 0 10px;
   -webkit-app-region: drag; app-region: drag;
@@ -884,12 +884,15 @@
 #vm-dia-crumb .vm-dia-sep { opacity: 0.3; flex: 0 0 auto; }
 #vm-dia-crumb.vm-dia-no-site :is(.vm-dia-site, .vm-dia-sep) { display: none; }
 #vm-dia-crumb .vm-dia-title { opacity: 0.9; overflow: hidden; text-overflow: ellipsis; }
-#vm-dia-crumb .vm-dia-share {
+#vm-dia-crumb :is(.vm-dia-translate, .vm-dia-share) {
   display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto;
   padding: 5px 10px; border-radius: 8px; font-size: 12px;
   background: color-mix(in srgb, currentColor 8%, transparent);
 }
-#vm-dia-crumb .vm-dia-share:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+#vm-dia-crumb :is(.vm-dia-translate, .vm-dia-share):hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+/* Translate, left of Copy link, only on a page that is not in English: shown, it takes the free space before the pair. */
+#vm-dia-crumb .vm-dia-translate[hidden] { display: none; }
+#vm-dia-crumb .vm-dia-translate:not([hidden]) + .vm-dia-share { margin-left: 0; }
 /* With the breadcrumb in the row, it is the row's free space (and its drag area): Copy link then sits by the window
    buttons, as in Dia. Vivaldi's spacer stays for a row without it. */
 #browser.vm-on.vm-dia .toolbar-mainbar:has(#vm-dia-crumb) > .toolbar-spacer-flexible { display: none !important; }

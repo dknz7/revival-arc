@@ -119,6 +119,87 @@ class Breadcrumb(unittest.TestCase):
         self.assertEqual(self.crumb("https://example.test/a"), {"site": "example.test", "title": "https://example.test/a"})
 
 
+# Vivaldi's translation state for a tab, as its store holds it (measured on Vivaldi 8.2): a language once Chromium has
+# determined it, `translateStep`, and after a translation `isTranslated` with the languages it went between.
+GERMAN = {"pageLanguage": "de", "translateStep": "before_translate", "error": "no_error", "autoTranslate": False}
+TRANSLATED = {**GERMAN, "translateStep": "after_translate", "isTranslated": True, "originalLang": "de", "translatedLang": "en"}
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the Dia layout's JavaScript")
+class Translate(unittest.TestCase):
+    """A Translate button left of Copy link, only on a page that is not in English, using Vivaldi's own translation."""
+
+    def button(self, state, url="https://de.wikipedia.org/wiki/Berlin"):
+        return js("window.__vm.dia.translateOf(url, state)", url=url, state=state)
+
+    def test_a_page_in_another_language_is_translated_from_it_into_english(self):
+        self.assertEqual(self.button(GERMAN), {"revert": False, "from": "de", "label": "Translate"})
+        self.assertEqual(self.button({"pageLanguage": "zh-CN", "translateStep": "idle"})["from"], "zh-CN")
+
+    def test_an_english_page_has_no_button(self):
+        for lang in ("en", "en-US", "en-GB", "EN"):
+            self.assertIsNone(self.button({"pageLanguage": lang, "translateStep": "idle"}), lang)
+
+    def test_a_language_not_yet_or_never_determined_has_no_button(self):
+        # Vivaldi's store says "" until Chromium has determined it (a tab not shown yet, a page just navigated) and maps
+        # Chromium's "und" to ""; chrome.tabs.detectLanguage says "und"
+        for state in (None, {"pageLanguage": "", "translateStep": "idle"}, {"pageLanguage": "und", "translateStep": "idle"}):
+            self.assertIsNone(self.button(state), state)
+
+    def test_vivaldis_own_pages_and_other_schemes_have_no_button(self):
+        for url in ("chrome://vivaldi-webui/startpage", "vivaldi://settings", "chrome-extension://abc/page.html",
+                    "file:///C:/notes.txt", "about:blank", "", None):
+            self.assertIsNone(self.button(GERMAN, url=url), url)
+
+    def test_a_translated_page_offers_its_original_back(self):
+        self.assertEqual(self.button(TRANSLATED), {"revert": True, "label": "Show original"})
+        # translated by Vivaldi's own popup from English into another language: still one click back
+        self.assertEqual(self.button({**TRANSLATED, "pageLanguage": "en", "originalLang": "en", "translatedLang": "fr"})["revert"], True)
+
+    def test_after_show_original_it_offers_translate_again(self):
+        # measured: a revert leaves translateStep at "after_translate" and turns isTranslated off
+        self.assertEqual(self.button({**TRANSLATED, "isTranslated": False}), {"revert": False, "from": "de", "label": "Translate"})
+
+    def test_while_translating_it_says_so(self):
+        self.assertEqual(self.button({**GERMAN, "translateStep": "translating"})["label"], "Translating\u2026")
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the Dia layout's JavaScript")
+class TranslationState(unittest.TestCase):
+    """The state is read from Vivaldi's own store, found in its webpack modules."""
+
+    FAKE = """
+      const store = { getPageState: (tabId) => ({ tabId, pageLanguage: "ja", translateStep: "idle" }) };
+      const modules = {
+        1: function () { return "nothing to see"; },
+        2: function () { return "case\\"VIVALDI_TABS_LANGUAGE_DETERMINED\\":"; },
+        3: function () { return "a module that is not the store"; },
+      };
+      const exportsOf = { 2: Object.defineProperty({}, "Z", { enumerable: true, get: () => store }), 3: { Z: {} } };
+      const loaded = [];
+      const require = (id) => { loaded.push(id); if (!(id in exportsOf)) throw new Error("not loaded: " + id); return exportsOf[id]; };
+      require.m = modules;
+      const chunks = { push: ([ids, extra, run]) => run(require) };
+    """
+
+    def test_the_state_comes_from_vivaldis_translation_store(self):
+        out = js("(() => {" + self.FAKE + "return [window.__vm.dia.findTranslation(chunks)(42), loaded]; })()")
+        self.assertEqual(out[0], {"tabId": 42, "pageLanguage": "ja", "translateStep": "idle"})
+        self.assertEqual(out[1], ["2"], "only the module that mentions the store's action is loaded")
+
+    def test_a_module_that_mentions_it_but_holds_no_store_is_passed_over(self):
+        fake = """
+          const require = (id) => ({ Z: { dispatch() {} } });
+          require.m = { 7: function () { return "VIVALDI_TABS_LANGUAGE_DETERMINED"; } };
+          const chunks = { push: ([ids, extra, run]) => run(require) };
+        """
+        self.assertIsNone(js("(() => {" + fake + "return window.__vm.dia.findTranslation(chunks); })()"))
+
+    def test_no_store_means_no_button_rather_than_an_error(self):
+        self.assertIsNone(js("window.__vm.dia.findTranslation(undefined)"))
+        self.assertIsNone(js("window.__vm.dia.findTranslation({ push: ([ids, extra, run]) => run(Object.assign(() => ({}), { m: {} })) })"))
+
+
 # One window of the module, running for real against fake Vivaldi prefs and profile store. The scenario (argv[2]):
 # prefs and kept values to start from, the window, the saved setting (which arrives after start, as in Vivaldi),
 # optionally the switch flipped afterwards (`then`), and a pref write that fails (`failAt`, 1-based).

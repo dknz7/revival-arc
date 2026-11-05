@@ -1,5 +1,6 @@
 // Vivarc's Dia layout (setting "Dia layout"): a slim row over the page (Vivaldi's menu, back, forward, reload, a
-// "site / title" breadcrumb, copy link, extensions and the window buttons) with the sidebar up to the window's top.
+// "site / title" breadcrumb, translate (on a page not in English), copy link, extensions and the window buttons) with
+// the sidebar up to the window's top.
 // Vivaldi draws that row, and its own window buttons in it, once its address row is on (and, on Windows, its own window
 // frame instead of the system's). Turning the layout on keeps the user's values for those prefs; off puts them back.
 // The page column's left edge is tracked in --vm-dia-left, so the row follows a resized or hidden (Ctrl+S) sidebar.
@@ -59,7 +60,38 @@
     right: Math.round(width - box.right - (parseFloat(marginRight) || 0)),
   });
 
-  window.__vm.dia = { target, plan, crumbOf, columnEdges, ROW_ITEMS };
+  // The Translate button for a tab, from Vivaldi's own translation state for it ({pageLanguage, isTranslated,
+  // translateStep}, as its address-bar button reads it): null keeps it hidden. Only a web page whose language Chromium
+  // has determined, and is not English, gets it; a translated page gets "Show original" instead, whatever its language.
+  // "Translating…" stays clickable: a translation asked for while the tab was hidden stays at that step, and a new
+  // click is what finishes it.
+  const translateOf = (url, state) => {
+    if (!/^https?:/i.test(url || "")) return null;
+    if (state?.isTranslated) return { revert: true, label: "Show original" };
+    const from = state?.pageLanguage || "";
+    if (!from || from === "und" || /^en(-|$)/i.test(from)) return null;
+    return { revert: false, from, label: state.translateStep === "translating" ? "Translating…" : "Translate" };
+  };
+
+  // Vivaldi's translation state per tab lives in its own store, which its address-bar button reads. A mod has no API
+  // for it: the store is found in webpack's modules as findRemover (07-workspaces.js) finds Vivaldi's workspace manager.
+  const findTranslation = (chunks) => {
+    try {
+      let load;
+      chunks.push([[Symbol("vivarc-translation")], {}, (require) => { load = require; }]);
+      for (const [id, factory] of Object.entries(load?.m || {})) {
+        if (!String(factory).includes("VIVALDI_TABS_LANGUAGE_DETERMINED")) continue;
+        let exported;
+        try { exported = load(id); } catch (_) { continue; }
+        for (const store of Object.values(exported || {})) {
+          if (typeof store?.getPageState === "function") return (tabId) => store.getPageState(tabId);
+        }
+      }
+    } catch (_) {}
+    return null;
+  };
+
+  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, ROW_ITEMS };
   if (!window.__vm.store) return;
 
   const { store, settings } = window.__vm;
@@ -105,6 +137,52 @@
     return e;
   };
   const activeTab = async () => (await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []))[0];
+  const toast = (detail) => window.dispatchEvent(new CustomEvent("vm-toast", { detail }));
+
+  // Translate: Vivaldi's own page translation (what its address-bar button does), into English. The store is looked up
+  // once, when first needed; without it the button stays hidden.
+  let translateNode = null;
+  let translation = null;
+  let lookedAt = 0;
+  let warned = false;
+  let asked = null; // the tab a click asked to translate, until Vivaldi says how it went
+  const translationOf = (tabId) => {
+    if (!translation && Date.now() - lookedAt > 5000) {
+      lookedAt = Date.now();
+      translation = findTranslation(window.webpackChunkgapp_browser_react) ||
+        findTranslation(chrome.extension?.getBackgroundPage?.()?.webpackChunkgapp_browser_react);
+      if (!translation && !warned) {
+        warned = true;
+        console.warn("[vivarc] Dia layout: Vivaldi's translation state not found, no Translate button");
+      }
+    }
+    try { return translation ? translation(tabId) : null; } catch (_) { return null; }
+  };
+  const showTranslate = (tab) => {
+    if (!translateNode || !tab) return;
+    const action = translateOf(tab.url, translationOf(tab.id));
+    translateNode.hidden = !action;
+    if (!action) return;
+    translateNode.lastChild.textContent = action.label;
+    translateNode.title = action.revert ? "Show the page in its own language" : "Translate this page into English";
+  };
+  const translate = async () => {
+    const tab = await activeTab();
+    const action = tab && translateOf(tab.url, translationOf(tab.id));
+    if (!action) return;
+    if (!action.revert) asked = tab.id;
+    const done = await new Promise((resolve) => {
+      const back = (ok) => resolve(!chrome.runtime.lastError && ok !== false);
+      try {
+        if (action.revert) vivaldi.tabsPrivate.revertTranslatePage(tab.id, back);
+        else vivaldi.tabsPrivate.translatePage(tab.id, action.from, "en", back);
+      } catch (_) { resolve(false); }
+    });
+    if (done) return;
+    asked = null;
+    toast(action.revert ? "Could not show the original page" : "Could not translate the page");
+  };
+
   const fill = (tab) => {
     if (!crumb || !tab) return;
     const { site, title } = crumbOf(tab);
@@ -112,6 +190,7 @@
     crumb.classList.toggle("vm-dia-no-site", !site);
     titleNode.textContent = title;
     crumb.title = tab.url || "";
+    showTranslate(tab);
   };
   const make = () => {
     crumb = el("div");
@@ -121,6 +200,10 @@
     const text = el("button", "vm-dia-text");
     text.append(siteNode, el("span", "vm-dia-sep", "/"), titleNode);
     text.addEventListener("click", () => window.dispatchEvent(new CustomEvent("vm-edit-url")));
+    translateNode = el("button", "vm-dia-translate");
+    translateNode.hidden = true;
+    translateNode.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg><span>Translate</span>';
+    translateNode.addEventListener("click", translate);
     const share = el("button", "vm-dia-share");
     share.title = "Copy link";
     share.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg><span>Copy link</span>';
@@ -130,7 +213,7 @@
       const copied = await navigator.clipboard?.writeText(tab.url).then(() => true, () => false);
       window.dispatchEvent(new CustomEvent("vm-toast", { detail: copied ? "Copied link" : "Could not copy the link" }));
     });
-    crumb.append(text, share);
+    crumb.append(text, translateNode, share);
     activeTab().then(fill);
   };
 
@@ -179,6 +262,21 @@
           (change.title !== undefined || change.url !== undefined || change.status !== undefined)) fill(tab);
     });
     chrome.tabs.onReplaced?.addListener(() => activeTab().then(fill));
+    // Chromium determines a page's language only once the page is shown, after it loads, and a translation takes a
+    // moment: Vivaldi's events say when. They come in bursts, for tabs in every window; Vivaldi's store has the new
+    // state by the time they reach this window (measured), the short wait just takes a burst as one.
+    let soon = 0;
+    const refresh = () => { clearTimeout(soon); soon = setTimeout(() => activeTab().then(showTranslate), 50); };
+    const tabsPrivate = vivaldi.tabsPrivate;
+    for (const name of ["onLanguageDetermined", "onIsPageTranslatedChanged", "onShowTranslationUI"]) {
+      tabsPrivate?.[name]?.addListener(refresh);
+    }
+    tabsPrivate?.onPageTranslated?.addListener((tabId, _from, _to, error) => {
+      refresh();
+      if (tabId !== asked) return;
+      asked = null;
+      if (error && error !== "no_error") toast("Could not translate the page");
+    });
     let last = null;
     const follow = (values, writer) => {
       if (values.diaLayout === last) return;

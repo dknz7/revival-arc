@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Dia layout: a **Translate** button left of Copy link, on pages that are not in English. It translates the page into English in place with Vivaldi's own translation, which the Dia layout otherwise hides with the address bar. Once the page is translated, the button says **Show original**.
 - A space open in another window shows a dot on its tile. Click it to go to that window (Vivaldi keeps a space in one window at a time), or shift+click to bring the space into this one. The default space's tooltip says it holds this window's own tabs.
 - New tabs from Ctrl+T, + New Tab and the command bar open at the top of the space's list, as in Arc. Links opened from a page still open next to it.
 - Links opened from a page (middle-click, ctrl+click) stay in that page's space. Before, they could land in another space when the sidebar was slow to catch up after a switch.

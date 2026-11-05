@@ -170,6 +170,8 @@ python3 ~/.vivarc/app/vivarc.py status      # what is installed
 
 **Settings.** Cmd+T, type `settings` (or right-click the sidebar, _Vivarc Settings…_) to switch features on and off live, per profile, including an optional **Liquid Glass** look (translucent sidebar, menus and command bar with an opacity slider from clear to frosted, following Apple's guidance; it falls back to solid surfaces with Reduce Transparency or Increase Contrast).
 
+**Translate, in the Dia layout.** On a page that is not in English, a **Translate** button sits left of _Copy link_ and translates the page into English in place, with Vivaldi's own translation. Once translated, it says **Show original**.
+
 **A theme editor.** Hover the space name and click the palette: pick a colour, intensity and grain. Saved per profile, so each one gets its own look.
 
 <p align="center">
