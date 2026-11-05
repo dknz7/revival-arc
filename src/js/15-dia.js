@@ -52,7 +52,14 @@
     return { site, title: tab?.title || url };
   };
 
-  window.__vm.dia = { target, plan, crumbOf, ROW_ITEMS };
+  // The page column's distance from the window's left and right edges, measured outside the page card's own margins
+  // (the layout's gap, not something beside the page): the row over it reaches the window's corner.
+  const columnEdges = (box, marginLeft, marginRight, width) => ({
+    left: Math.round(box.left - (parseFloat(marginLeft) || 0)),
+    right: Math.round(width - box.right - (parseFloat(marginRight) || 0)),
+  });
+
+  window.__vm.dia = { target, plan, crumbOf, columnEdges, ROW_ITEMS };
   if (!window.__vm.store) return;
 
   const { store, settings } = window.__vm;
@@ -133,9 +140,10 @@
   const pageEdges = new ResizeObserver(() => {
     const browser = document.querySelector("#browser");
     if (!browser || !page) return;
-    const box = page.getBoundingClientRect();
-    browser.style.setProperty("--vm-dia-left", `${Math.round(box.left)}px`);
-    browser.style.setProperty("--vm-dia-right", `${Math.round(window.innerWidth - box.right)}px`);
+    const style = getComputedStyle(page);
+    const { left, right } = columnEdges(page.getBoundingClientRect(), style.marginLeft, style.marginRight, window.innerWidth);
+    browser.style.setProperty("--vm-dia-left", `${left}px`);
+    browser.style.setProperty("--vm-dia-right", `${right}px`);
   });
   // The row is Vivaldi's and is re-rendered by it: the breadcrumb goes back after Reload whenever it goes missing.
   const place = () => {

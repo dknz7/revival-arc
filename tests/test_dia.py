@@ -85,6 +85,21 @@ class Switch(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the Dia layout's JavaScript")
+class Column(unittest.TestCase):
+    def edges(self, left, right, margin_left, margin_right, width=1496):
+        return js("window.__vm.dia.columnEdges(box, ml, mr, w)", box={"left": left, "right": right},
+                  ml=f"{margin_left}px", mr=f"{margin_right}px", w=width)
+
+    def test_the_cards_own_margin_is_not_space_beside_the_page(self):
+        # sidebar on the left, card inset 8px on the right: the row still reaches the window's right corner
+        self.assertEqual(self.edges(323, 1488, 0, 8), {"left": 323, "right": 0})
+
+    def test_a_sidebar_on_the_right_and_a_hidden_sidebar(self):
+        self.assertEqual(self.edges(8, 1173, 8, 0), {"left": 0, "right": 323})
+        self.assertEqual(self.edges(0, 1488, 0, 8), {"left": 0, "right": 0})
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the Dia layout's JavaScript")
 class Breadcrumb(unittest.TestCase):
     def crumb(self, url, title=""):
         return js("window.__vm.dia.crumbOf(tab)", tab={"url": url, "title": title})
