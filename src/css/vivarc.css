@@ -431,6 +431,9 @@
   position: relative;
   isolation: isolate;
 }
+/* The window frame around the sidebar and the page (the strip under the sidebar, the rounded corners) takes the
+   space color too, like Arc, instead of Vivaldi's theme background. */
+#browser.vm-on.vm-themed:not(.vm-glass) { background-color: var(--vm-tint) !important; background-image: none !important; }
 /* isolation makes the bar its own stacking context, painted under the page: lift it while the address bar or
    one of its popups (site permission requests) is open, or they are cut off at the sidebar's edge */
 #browser.vm-themed #tabs-tabbar-container:is(:focus-within, :has(.addressfield-popup-container)) { z-index: 1; }
