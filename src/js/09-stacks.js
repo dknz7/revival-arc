@@ -56,11 +56,16 @@
   // the step, so a plain move of that one tab puts the order back. Measured on Vivaldi 8.2: stepping right over the next
   // tab takes the target start + count (start + 1 is inside the block: nothing to move); stepping left, start - 1.
   // Null when there is nowhere else to go (they are all the window's tabs).
+  // `to`: where the block starts after the step (for Vivaldi 8.3, which takes a tab to land before, not an index).
   const nudge = (start, count, total) => {
-    if (start + count < total) return { target: start + count, neighbour: start + count };
-    if (start - 1 >= 0) return { target: start - 1, neighbour: start - 1 };
+    if (start + count < total) return { target: start + count, neighbour: start + count, to: start + 1 };
+    if (start - 1 >= 0) return { target: start - 1, neighbour: start - 1, to: start - 1 };
     return null;
   };
+
+  // Vivaldi 8.3's move target for tabs to start at `index`: the tab they land before, among the window's other tabs
+  // in order (`others`, their ids), or "last" past the end. 8.3 reads a number only as a tab id, never as an index.
+  const anchor = (others, index) => others[index] ?? "last";
 
   // The index a tab moved beside `tab` lands at. The list shows the highest tab index first, so "before" (above) is the
   // higher index. Beside itself it stays where it is.
@@ -70,5 +75,5 @@
     return zone === "before" ? (below ? tab.index : tab.index + 1) : (below ? tab.index - 1 : tab.index);
   };
 
-  window.__vm.stacks = { stackOf, entries, titleOf, dropAction, nudge, indexBeside, ext };
+  window.__vm.stacks = { stackOf, entries, titleOf, dropAction, nudge, anchor, indexBeside, ext };
 })();

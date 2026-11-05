@@ -118,11 +118,19 @@ class Ungroup(unittest.TestCase):
 
     def test_a_folder_with_tabs_after_it_steps_over_the_next_tab(self):
         # measured: [com*, org*, net] to 1 is "nothing to move"; to 2 gives [net, com, org], net then back to 2
-        self.assertEqual(self.nudge(0, 2, 3), {"target": 2, "neighbour": 2})
+        self.assertEqual(self.nudge(0, 2, 3), {"target": 2, "neighbour": 2, "to": 1})
 
     def test_a_folder_at_the_end_of_the_window_steps_back_over_the_tab_before(self):
         # seen live: [org, com*, net*] moved to 2 is "nothing to move"; to 0 gives [com, net, org], org back to 0
-        self.assertEqual(self.nudge(1, 2, 3), {"target": 0, "neighbour": 0})
+        self.assertEqual(self.nudge(1, 2, 3), {"target": 0, "neighbour": 0, "to": 0})
+
+    def test_vivaldi_8_3_lands_tabs_before_a_tab_or_last(self):
+        # 8.3 takes the tab to land before (a number is always a tab id there), not an index
+        anchor = lambda others, index: js("window.__vm.stacks.anchor(o, i)", o=others, i=index)
+        self.assertEqual(anchor([11, 12, 13], 0), 11)
+        self.assertEqual(anchor([11, 12, 13], 2), 13)
+        self.assertEqual(anchor([11, 12, 13], 3), "last")
+        self.assertEqual(anchor([], 0), "last")
 
     def test_a_folder_that_is_the_whole_window_has_nowhere_to_go(self):
         self.assertIsNone(self.nudge(0, 2, 2))

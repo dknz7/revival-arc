@@ -482,19 +482,44 @@
   }).finally(() => refresh(false));
   // A stack's name is Vivaldi's to keep (it ignores writes to the tabs' fixedGroupTitle): its own rename call.
   const nameStack = (id, title) => vivaldi.tabsPrivate.setGroupProperties({ groupExtId: id, groupTitle: title });
-  // Vivaldi's own tab-stack moves (PageActions.createTabStack, moveToIndex with "ungroup").
+  // Vivaldi's own tab-stack moves (PageActions.createTabStack, moveToIndex with "ungroup"). Vivaldi 8.3 changed them:
+  // "target-is-tab" is gone (its argument check rejects it), a number is always a tab id that the tabs land before (or
+  // "first" / "last"), and an index no longer resolves. Which Vivaldi this is gets found once, with no side effects: an
+  // empty move with the old tweak, which 8.3 rejects in its argument check and 8.2 answers with "nothing to move".
   const stackMove = (args) => vivaldi.tabsPrivate.move({ ...args, debug: "Vivarc.folders" });
+  let modernMove = null;
+  const isModern = async () => {
+    if (modernMove !== null) return modernMove;
+    try {
+      await stackMove({ tabIds: [], target: 0, tweaks: ["target-is-tab"] });
+      modernMove = false;
+    } catch (error) {
+      if (!/Value must be one of/.test(String(error))) throw error;
+      modernMove = true;
+    }
+    return modernMove;
+  };
+  // The target for tabs to start at `index` (where chrome.tabs.move would put them): the index on 8.2; on 8.3 the tab
+  // they land before, among the window's other tabs.
+  const placeAt = async (ids, windowId, index) => {
+    if (!(await isModern())) return index;
+    const others = (await chrome.tabs.query({ windowId })).filter((t) => !ids.includes(t.id)).sort((a, b) => a.index - b.index);
+    return stacksOf.anchor(others.map((t) => t.id), index);
+  };
   const createFolder = async (dragged, withId) => {
-    const result = await stackMove({ tabIds: [withId, dragged.id], target: withId,
-      tweaks: ["do-not-reparent", "create-new-group", "target-is-tab"] });
+    const tweaks = (await isModern()) ? ["do-not-reparent", "create-new-group"]
+      : ["do-not-reparent", "create-new-group", "target-is-tab"];
+    const result = await stackMove({ tabIds: [withId, dragged.id], target: withId, tweaks });
     if (!result?.group) throw new Error("Vivaldi did not make the stack");
     state.renameId = `stack:${result.group}`; // name it as it is made, like Arc
   };
   const joinFolder = async (dragged, members) => {
     const anchor = members[members.length - 1];
-    await stackMove({ tabIds: [dragged.id], target: stacksOf.ext(anchor).ext_id || anchor.id, windowId: anchor.windowId,
-      tweaks: ["target-is-tab", "into", "do-not-reparent"] });
+    const tweaks = (await isModern()) ? ["into", "do-not-reparent"] : ["target-is-tab", "into", "do-not-reparent"];
+    await stackMove({ tabIds: [dragged.id], target: stacksOf.ext(anchor).ext_id || anchor.id, windowId: anchor.windowId, tweaks });
   };
+  const stillStacked = async (ids) =>
+    (await Promise.all(ids.map((id) => chrome.tabs.get(id).catch(() => null)))).some((t) => t && stacksOf.stackOf(t));
   // Out of their folder, to `index`. Vivaldi only ungroups tabs it really moves: at their own place it answers "nothing to
   // move". They then step over one neighbour with "ungroup" (a spare tab when they are the whole window), and that
   // neighbour goes back with a plain one-tab move, which leaves them loose where they were. (Tabs of a stack sit side by
@@ -502,9 +527,9 @@
   const leaveFolder = async (tabs, index) => {
     const ids = tabs.map((t) => t.id);
     const windowId = tabs[0].windowId;
-    const moved = await stackMove({ tabIds: ids, target: index, windowId, tweaks: ["ungroup"] });
+    const moved = await stackMove({ tabIds: ids, target: await placeAt(ids, windowId, index), windowId, tweaks: ["ungroup"] });
     if (moved?.success === false && moved.message !== "nothing to move") throw new Error(moved.message || "Vivaldi did not move the tabs");
-    if (moved?.success !== false) return;
+    if (!(await stillStacked(ids))) return; // out, wherever Vivaldi was asked to put them
     const start = Math.min(...(await Promise.all(ids.map((id) => chrome.tabs.get(id)))).map((t) => t.index));
     const total = (await chrome.tabs.query({ windowId })).length;
     let step = stacksOf.nudge(start, ids.length, total);
@@ -513,7 +538,8 @@
     try {
       const before = await chrome.tabs.query({ windowId });
       const neighbour = before.find((t) => t.index === step.neighbour);
-      await stackMove({ tabIds: ids, target: step.target, windowId, tweaks: ["ungroup"] });
+      const target = (await isModern()) ? await placeAt(ids, windowId, step.to) : step.target;
+      await stackMove({ tabIds: ids, target, windowId, tweaks: ["ungroup"] });
       if (neighbour && !spare) await chrome.tabs.move(neighbour.id, { index: step.neighbour });
     } finally {
       if (spare) await chrome.tabs.remove(spare.id).catch(() => {});
