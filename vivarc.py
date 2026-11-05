@@ -472,6 +472,12 @@ def load_config():
     return read_json(path) if os.path.exists(path) else {}
 
 
+def peek_enabled(no_peek=False):
+    """--no-peek turns Peek off for one run; "peek": false in config.json turns it off for every run after, including
+    the ones "Update Vivarc" starts (it passes no flags)."""
+    return not no_peek and load_config().get("peek") is not False
+
+
 def backup_dir():
     path = os.path.join(HOME_DIR, "backup", time.strftime("%Y%m%d-%H%M%S"))
     os.makedirs(path, exist_ok=True)
@@ -659,7 +665,8 @@ def cmd_install(args):
     if not os.path.exists(config_path):
         write_json(config_path, {})
 
-    if not args.no_peek:
+    with_peek = peek_enabled(args.no_peek)
+    if with_peek:
         try:
             fetch_peek()
             say("Peek (community mod, GPL-3.0) downloaded and verified")
@@ -683,7 +690,7 @@ def cmd_install(args):
     save_state(state)
 
     try:
-        apply_js(app, resources, not args.no_peek)
+        apply_js(app, resources, with_peek)
     except PermissionError as error:
         permission_hint(error)
     write_update_command(UPDATE_COMMAND)
@@ -717,7 +724,7 @@ def cmd_apply(args):
     preflight(resources)
     sync_guide()
     try:
-        apply_js(args.app, resources, os.path.exists(os.path.join(HOME_DIR, "peek", "VividPeek.js")))
+        apply_js(args.app, resources, peek_enabled() and os.path.exists(os.path.join(HOME_DIR, "peek", "VividPeek.js")))
     except PermissionError as error:
         permission_hint(error)
     say(f"Re-applied to Vivaldi {app_version(args.app)}" + (". Restart Vivaldi to see it." if vivaldi_running() else ""))

@@ -87,6 +87,49 @@ class InstallFlow(unittest.TestCase):
         self.assertIn("[vivarc] core started", bundle)
         self.assertFalse(os.path.exists(os.path.join(self.home, "css")))
 
+    def write_config(self, config):
+        os.makedirs(self.home, exist_ok=True)
+        with open(os.path.join(self.home, "config.json"), "w") as f:
+            json.dump(config, f)
+
+    def plant_peek(self):
+        peek = os.path.join(self.home, "peek")
+        os.makedirs(peek, exist_ok=True)
+        with open(os.path.join(peek, "VividPeek.js"), "w") as f:
+            f.write("/* PEEK-SENTINEL */")
+        with open(os.path.join(peek, "VividPeek.css"), "w") as f:
+            f.write(".peek-sentinel {}")
+
+    def bundle(self):
+        with open(os.path.join(self.app, vivarc.RESOURCES, "vivarc.js")) as f:
+            return f.read()
+
+    def test_install_downloads_peek_by_default(self):
+        with mock.patch.object(vivarc, "fetch_peek", side_effect=self.plant_peek) as fetch:
+            self.run_cli("install")
+        fetch.assert_called_once()
+        self.assertIn("PEEK-SENTINEL", self.bundle())
+
+    def test_peek_false_in_the_config_keeps_install_from_downloading_or_bundling_it(self):
+        self.write_config({"peek": False})
+        with mock.patch.object(vivarc, "fetch_peek", side_effect=self.plant_peek) as fetch:
+            self.run_cli("install")  # no --no-peek: the "Update Vivarc" launcher passes none
+        fetch.assert_not_called()
+        self.assertNotIn("PEEK-SENTINEL", self.bundle())
+
+    def test_apply_bundles_a_downloaded_peek_by_default(self):
+        self.plant_peek()
+        self.run_cli("apply")
+        self.assertIn("PEEK-SENTINEL", self.bundle())
+
+    def test_peek_false_in_the_config_keeps_apply_from_bundling_a_downloaded_peek(self):
+        self.plant_peek()
+        self.write_config({"peek": False})
+        self.run_cli("apply")
+        bundle = self.bundle()
+        self.assertNotIn("PEEK-SENTINEL", bundle)
+        self.assertNotIn("peek-sentinel", bundle)
+
     def test_running_install_twice_keeps_the_original_snapshot(self):
         self.run_cli("install", "--no-peek")
         self.run_cli("install", "--no-peek")

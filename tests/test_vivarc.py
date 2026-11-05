@@ -1,9 +1,11 @@
 import copy
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import vivarc  # noqa: E402
@@ -287,6 +289,39 @@ class BundleOrder(unittest.TestCase):
             out = vivarc.build_bundle(d, {}, extras=[("peek", "PEEK();")], pre=[("icons", "ICONS();")])
         self.assertLess(out.index("ICONS();"), out.index("CORE();"))
         self.assertLess(out.index("CORE();"), out.index("PEEK();"))
+
+
+class PeekChoice(unittest.TestCase):
+    """--no-peek lasts one run; "peek": false in config.json lasts, so "Update Vivarc" (which passes no flag) keeps it."""
+
+    def setUp(self):
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, True)
+        patch = mock.patch.object(vivarc, "HOME_DIR", self.home)
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def config(self, value):
+        with open(os.path.join(self.home, "config.json"), "w") as f:
+            json.dump(value, f)
+
+    def test_peek_is_on_with_no_config_file(self):
+        self.assertTrue(vivarc.peek_enabled())
+
+    def test_peek_is_on_when_the_config_does_not_mention_it(self):
+        self.config({"suggestions": "off"})
+        self.assertTrue(vivarc.peek_enabled())
+
+    def test_the_no_peek_flag_turns_it_off(self):
+        self.assertFalse(vivarc.peek_enabled(no_peek=True))
+
+    def test_peek_false_in_the_config_turns_it_off_without_the_flag(self):
+        self.config({"peek": False})
+        self.assertFalse(vivarc.peek_enabled())
+
+    def test_peek_true_in_the_config_does_not_override_the_flag(self):
+        self.config({"peek": True})
+        self.assertFalse(vivarc.peek_enabled(no_peek=True))
 
 
 if __name__ == "__main__":
