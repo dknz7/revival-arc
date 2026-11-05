@@ -14,6 +14,8 @@
       fromConfig: (c) => c.compactBottomBar, onClass: "vm-compact-bottom" },
     { key: "searchSuggestions", label: "Search suggestions", hint: "Show suggestions from your default search engine, when its Suggest URL is configured.", default: true,
       fromConfig: (c) => (c.suggestions === undefined ? undefined : ["default", "ddg"].includes(c.suggestions)) },
+    { key: "diaLayout", label: "Dia layout", hint: "A slim row over the page for back, forward, reload, the page's site and title, and the window buttons, with the sidebar up to the top. Off puts your own toolbar and window frame back.",
+      default: false, onClass: "vm-dia" },
   ];
 
   const resolve = (schema, config, saved) => Object.fromEntries(schema.map((s) => {
@@ -67,5 +69,6 @@
 
   channel.onmessage = (e) => update(e.data);
   window.__vm.onMark(apply);
-  store.get("settings", {}).then(update);
+  // Resolves once the saved settings are in: until then the values are the defaults, not the user's.
+  api.loaded = store.get("settings", {}).then(update);
 })();

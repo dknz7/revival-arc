@@ -815,3 +815,70 @@
 #browser.vm-on.vm-themed:not(.vm-glass) #vm-panel .vm-fav.active {
   background: color-mix(in srgb, var(--vm-fav-color) var(--vm-fav-active-opacity), transparent);
 }
+
+/* Dia layout (15-dia.js, setting "Dia layout"): Vivaldi's address row, turned on by the layout, becomes a slim row
+   over the page column only; the sidebar runs up to the window's top; the page is a rounded card. --vm-dia-left is
+   the page column's left edge, so the row follows a resized sidebar, and one hidden with Ctrl+S. */
+#browser.vm-on.vm-dia { --vm-dia-bar: 46px; }
+#browser.vm-on.vm-dia #main { position: relative; }
+#browser.vm-on.vm-dia #main > .mainbar {
+  position: absolute; top: 0; left: var(--vm-dia-left, 0px); right: var(--vm-dia-right, 0px); z-index: 2;
+  height: var(--vm-dia-bar); background: transparent !important;
+}
+#browser.vm-on.vm-dia #main > .mainbar .toolbar-mainbar {
+  height: var(--vm-dia-bar); background: transparent !important; border: 0 !important; box-shadow: none !important;
+}
+#browser.vm-on.vm-dia #main > .inner { height: 100% !important; }
+#browser.vm-on.vm-dia:not(.fullscreen) #webview-container {
+  margin: var(--vm-dia-bar) 8px 8px 0 !important;
+  border-radius: 10px; overflow: hidden; box-shadow: 0 1px 6px rgb(0 0 0 / 25%);
+}
+/* With the sidebar on the right, the gap goes on the left. */
+#browser.vm-on.vm-dia:not(.fullscreen):has(#tabs-tabbar-container.right) #webview-container { margin: var(--vm-dia-bar) 0 8px 8px !important; }
+/* The sidebar keeps its tiles, folders and tabs. Its own row of buttons moves up to the top row; its address field
+   stays, collapsed, for Ctrl+L. The URL field gives way to the breadcrumb. */
+#browser.vm-on.vm-dia #tabs-tabbar-container .toolbar-tabbar-before > :not(.UrlBar-AddressField) { display: none !important; }
+#browser.vm-on.vm-dia #tabs-tabbar-container .toolbar-tabbar-before:not(:focus-within, :has(.addressfield-popup-container)) {
+  height: 0 !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; border: 0 !important; overflow: hidden;
+}
+#browser.vm-on.vm-dia #vm-panel .vm-current-url { display: none; }
+#browser.vm-on.vm-dia #vm-panel { padding-top: 8px; }
+/* macOS draws its traffic lights at the window's top-left, which is now the sidebar: leave them room, and drop
+   the space Vivaldi keeps for them in the row. */
+#browser.vm-on.vm-dia.mac:not(.fullscreen) #vm-panel { padding-top: var(--vm-dia-bar); }
+#browser.vm-on.vm-dia.mac .window-buttongroup.on-mainbar { display: none !important; }
+/* The command bar centres on the page column; its backdrop still covers the whole window, so a click on the sidebar
+   closes it as before. */
+#browser.vm-on.vm-dia #vm-cmd { padding-left: var(--vm-dia-left, 0px); padding-right: var(--vm-dia-right, 0px); }
+#browser.vm-on.vm-dia #vm-cmd .vm-cmd-box { max-width: calc(100% - 32px); }
+
+/* Breadcrumb: "site / title" (a click edits the address in the command bar), then Copy link. Everything else in the
+   row is title bar: drag to move, double-click to maximise. */
+#vm-dia-crumb {
+  display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; height: 100%; padding: 0 6px 0 10px;
+  -webkit-app-region: drag; app-region: drag;
+}
+#vm-dia-crumb button { -webkit-app-region: no-drag; app-region: no-drag; font: inherit; color: inherit; background: none; border: 0; cursor: pointer; }
+#vm-dia-crumb .vm-dia-text {
+  display: flex; align-items: center; gap: 6px; flex: 0 1 auto; min-width: 0; max-width: 100%;
+  padding: 4px 8px; border-radius: 8px; font-size: 13px; white-space: nowrap; overflow: hidden;
+}
+#vm-dia-crumb .vm-dia-text:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+#vm-dia-crumb .vm-dia-site { opacity: 0.45; flex: 0 0 auto; }
+#vm-dia-crumb .vm-dia-sep { opacity: 0.3; flex: 0 0 auto; }
+#vm-dia-crumb.vm-dia-no-site :is(.vm-dia-site, .vm-dia-sep) { display: none; }
+#vm-dia-crumb .vm-dia-title { opacity: 0.9; overflow: hidden; text-overflow: ellipsis; }
+#vm-dia-crumb .vm-dia-share {
+  display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto;
+  padding: 5px 10px; border-radius: 8px; font-size: 12px;
+  background: color-mix(in srgb, currentColor 8%, transparent);
+}
+#vm-dia-crumb .vm-dia-share:hover { background: color-mix(in srgb, currentColor 14%, transparent); }
+/* With the breadcrumb in the row, it is the row's free space (and its drag area): Copy link then sits by the window
+   buttons, as in Dia. Vivaldi's spacer stays for a row without it. */
+#browser.vm-on.vm-dia .toolbar-mainbar:has(#vm-dia-crumb) > .toolbar-spacer-flexible { display: none !important; }
+/* A drag region wins over anything drawn on top of it: while one of Vivaldi's popups is open (as Vivaldi itself does
+   for its own drag areas), or the toolbar is being edited, the row is not title bar. */
+#browser.vm-on.vm-dia:is(:has(.OmniDropdown, .CustomizePanelPopup, .extension-popup, .button-popup), .toolbar-edit-mode) #vm-dia-crumb {
+  -webkit-app-region: no-drag; app-region: no-drag;
+}

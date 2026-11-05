@@ -462,10 +462,25 @@ for (const url of ['vivaldi://newtab', 'chrome://newtab', 'chrome://vivaldi-webu
     assert.equal(await barsOnNewTab(url), 1);
   });
 }
-test('the sidebar and the command bar agree on what a blank tab is', () => {
+test('the palette switches the layout: Layout: Dia while it is off, Layout: Arc while it is on', async () => {
+  for (const [on, next] of [[false, true], [true, false]]) {
+    const { context } = setup();
+    const input = await loadBar(context);
+    const set = [];
+    Object.assign(context.window.__vm.settings, { get: key => (key === 'diaLayout' ? on : true), set: (key, value) => set.push([key, value]) });
+    input.value = 'layout';
+    await input.events.input();
+    input.events.keydown({ key: 'ArrowDown', preventDefault() {} }); // past the search row, to the one layout action
+    input.events.keydown({ key: 'Enter', preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(set, [['diaLayout', next]], `from ${on ? 'Dia' : 'Arc'}`);
+  }
+});
+test('the sidebar, the Dia breadcrumb and the command bar agree on what a blank tab is', () => {
   const rules = name => source(name).match(/^ {2}const (BLANK|SECTION) = .*$/gm);
   assert.equal(rules('20-command-bar.js').length, 2);
   assert.deepEqual(rules('10-sidebar.js'), rules('20-command-bar.js'));
+  assert.deepEqual(rules('15-dia.js'), rules('20-command-bar.js'));
 });
 
 for (const failure of ['missing default', 'native request error', 'POST search']) {

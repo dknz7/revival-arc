@@ -160,6 +160,11 @@
       toast("Expanded all folders");
     } },
     { label: "Vivarc Settings", words: "preferences options configure features toggle glass", run: () => window.dispatchEvent(new CustomEvent("vm-open-settings")) },
+    // The "Dia layout" setting: whichever layout is not the current one.
+    { label: "Layout: Dia", words: "layout dia top bar toolbar row", when: () => !window.__vm.settings.get("diaLayout"),
+      run: () => { window.__vm.settings.set("diaLayout", true); toast("Dia layout"); } },
+    { label: "Layout: Arc", words: "layout arc sidebar classic", when: () => !!window.__vm.settings.get("diaLayout"),
+      run: () => { window.__vm.settings.set("diaLayout", false); toast("Arc layout"); } },
     { label: "Edit Theme", words: "color appearance sidebar", run: () => window.dispatchEvent(new CustomEvent("vm-open-theme")) },
   ];
   const ACTION_SVG =
