@@ -20,6 +20,8 @@ FAKE_DEFS = {"vivaldi": {"actions": {"default_mac": [{
 }], "default": [{}], "default_linux": [{}]}}}
 
 
+@unittest.skipIf(vivarc.IS_WINDOWS, "a fake macOS app; on Windows main() swaps the real ask, vivaldi_running and "
+                                    "quit_vivaldi back in over the mocks, so a test could quit the user's Vivaldi")
 class InstallFlow(unittest.TestCase):
     """Runs install and uninstall against a fake Vivaldi app and data folder (a fresh-profile simulation)."""
 
