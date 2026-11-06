@@ -86,7 +86,8 @@ async function reset() {
   ctx.roles = { H }; ctx.tabs = {}; ctx.spaces = {};
   for (const k of ["W", "O", "V", "N"]) delete ctx[k];
   await unbusy(true);
-  return s.wins.length === 1 && s.all.length === 0 && s.spaces.length === 0 && s.wins[0].tabs.length === 1;
+  const clean = s.wins.length === 1 && s.all.length === 0 && s.spaces.length === 0 && s.wins[0].tabs.length === 1;
+  return { clean, why: clean ? null : `${s.wins.length} windows, ${s.spaces.length} spaces, record ${J(s.all)}, ${s.wins.map((w) => w.tabs.length).join("+")} tabs` };
 }
 
 async function mkSpaces(names = ["X", "Y", "Z"]) {
@@ -263,7 +264,7 @@ const SET = {
 };
 const SPLIT = new Set(["split-shown", "split-parked"]);
 const gesture = (row, col, expect) => def(`T.${row}.${col}`, {
-  gesture: true, busyThroughAct: SPLIT.has(row), setup: SET[row],
+  gesture: true, clicks: true, busyThroughAct: SPLIT.has(row), setup: SET[row],
   act: () => clickTile(ctx.W, "X", col === "shift" ? { shift: true } : col === "new" ? { shift: true, ctrl: true } : {}),
   expect,
 });
@@ -290,7 +291,7 @@ gesture("empty", "click", (s) => [recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W,
 gesture("empty", "shift", (s) => [recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X"))]);
 gesture("empty", "new", (s) => { const n = newWindow(s); return [n == null ? "no new window" : null, n != null ? recIs(s, n, sp("X")) : null, n != null ? showsSpace(s, n, sp("X")) : null]; });
 def("T.default.click", {
-  gesture: true, setup: SET["shown-here"], act: () => clickTile(ctx.W, "default"),
+  gesture: true, clicks: true, setup: SET["shown-here"], act: () => clickTile(ctx.W, "default"),
   expect: (s) => [recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0), allIn(s, sp("X"), ctx.W)],
 });
 
@@ -526,16 +527,23 @@ async function setLayout(dia) {
 }
 const layoutIn = (win) => h.ev(`document.querySelector("#browser")?.classList.contains("vm-dia") ?? null`, win);
 
+// The acts' own reports: a string act ("clicked", "ok", "dropped", or what went wrong) and the menus' { error }.
+// Acts that return data (dots, counts, the Dia button's state) are judged by their case's expect.
+const ACTED = new Set(["clicked", "ok", "dropped"]);
+const actFailure = (r) => typeof r === "string" ? (ACTED.has(r) ? null : `the act did not happen: ${r}`)
+  : r && typeof r === "object" && !Array.isArray(r) && r.error ? `the act did not happen: ${r.error}` : null;
+
 async function runCase(c, layout) {
   const t0 = Date.now();
   const out = { id: c.id, layout };
   try {
-    if (!(await reset())) out.resetNote = "reset not clean";
+    const r0 = await reset();
+    if (!r0.clean) throw new Error(`reset not clean: ${r0.why}`);
     await busy();
     await mkSpaces();
     await c.setup();
     if (ctx.W && (await layoutIn(ctx.W)) !== (layout === "dia")) throw new Error(`W is not in the ${layout} layout`);
-    if (c.ready) await c.ready(); else if (ctx.W) await waitTile(ctx.W, "X");
+    if (!(c.ready ? await c.ready() : ctx.W ? await waitTile(ctx.W, "X") : true)) throw new Error("setup never got ready (the tile, row or button it waits for did not appear)");
     await busy(); // a fresh 9.5 s for the act
     if (!c.busyThroughAct) await unbusy();
     const before = await h.stable(ctx.H, { quietMs: 1200 });
@@ -548,7 +556,9 @@ async function runCase(c, layout) {
       if (!invariants(await h.snap(ctx.H)).length) { heldAtMs = Date.now() - mark; break; }
     }
     const after = await h.stable(ctx.H, { quietMs: 1500, capMs: 15000 });
-    const bad = [...invariants(after).map((v) => `invariant: ${v}`), ...(await c.expect(after, before, result)).filter(Boolean)];
+    // An act that did not happen fails the case, whatever the snapshot says: "nothing changed" must not pass by default.
+    const notActed = c.clicks ? (result === "clicked" ? null : `the click did not happen: ${J(result)}`) : actFailure(result);
+    const bad = [...(notActed ? [notActed] : []), ...invariants(after).map((v) => `invariant: ${v}`), ...(await c.expect(after, before, result)).filter(Boolean)];
     Object.assign(out, { pass: !bad.length, bad, heldAtMs: c.timed ? heldAtMs : undefined, before: brief(before), after: brief(after), result,
       digestBefore: digest(before), digestAfter: digest(after), ms: Date.now() - t0 });
   } catch (e) {
@@ -567,10 +577,15 @@ const layouts = LAYOUT === "both" ? ["dia", "arc"] : [LAYOUT];
 const results = [];
 for (const layout of layouts) {
   const on = await setLayout(layout === "dia");
-  if (on !== (layout === "dia")) { console.log(`FAIL ${layout} layout: could not set it (vm-dia ${on})`); continue; }
+  if (on !== (layout === "dia")) {
+    console.log(`FAIL ${layout} layout: could not set it (vm-dia ${on}), none of its cases ran`);
+    results.push({ id: "layout", layout, pass: false });
+    continue;
+  }
   // Arc: the tile rows (gesture table and dots) and the button's absence; Dia: everything that is not Arc-only.
   const set = C.filter((c) => (c.layout ? c.layout === layout : layout === "dia" || c.gesture))
     .filter((c) => !ONLY.length || ONLY.some((p) => c.id.startsWith(p)));
+  if (!set.length) console.log(`${layout}: no case matches --only ${ONLY.join(",")}`);
   const mine = [];
   for (const c of set) mine.push(await runCase(c, layout));
   for (const [alias, ids] of Object.entries(ALIASES)) {
@@ -588,4 +603,7 @@ await reset().catch(() => {});
 await setLayout(false).catch(() => {});
 h.close();
 server.close();
-process.exit(results.every((r) => r.pass) ? 0 : 1);
+// Success needs at least one case run and every one passed: a skipped layout or an --only that matched nothing fails.
+const ran = results.filter((r) => !r.alias && r.id !== "layout").length;
+if (!ran) console.log("FAIL no case ran");
+process.exit(ran && results.every((r) => r.pass) ? 0 : 1);
