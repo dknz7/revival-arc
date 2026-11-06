@@ -68,7 +68,9 @@
   };
 
   // What a gesture on a space tile does (spec: "Gestures on a space tile"). A plain click never moves tabs between
-  // windows: it shows the space here, focuses the window showing it, or sends the window that holds it to it.
+  // windows on purpose: it shows the space here, focuses the window showing it, or sends the window that holds it to
+  // it. The one exception: on a space split across windows, showing it gathers every tab into the window it lives in
+  // (Vivaldi's switch moves them all), as repair 3 would.
   // Pure. tabs: every tab in every normal window (the active ones carry `active`); record: Map spaceId -> windowId,
   // empty when Vivaldi's record can't be read, in which case the active tabs stand in for it (as shownIn does).
   // -> { kind: "none"|"show"|"focus"|"show-there"|"pull"|"new-window", window?: number }

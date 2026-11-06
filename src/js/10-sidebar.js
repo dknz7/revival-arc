@@ -761,50 +761,51 @@
   };
   // One entry for every gesture on a tile. The snapshot (tabs, Vivaldi's record, this window) is read fresh, because
   // the rendered state can be stale while a re-render waits on a rename or a drag; spacesOf.tileAction decides, and
-  // this carries it out. A plain click never moves tabs between windows; only a pull and a move to a new window do.
-  // The guard covers a pull or a move under way, since a switch during one would race it. It expires after 10 s so a
-  // stuck move can't lock the tiles for good; a click it ignores says so.
+  // this carries it out. A plain click never moves tabs between windows, with one exception: on a space split across
+  // windows it gathers every tab into the window the space lives in, as repair 3 would. Only a pull and a move to a
+  // new window move tabs on purpose.
+  // The guard covers a pull or a move under way, since a switch during one would race it. It is claimed before the
+  // first await (a fast double click must not pass the check twice) and released as soon as the gesture turns out to
+  // be a plain one. It expires after 10 s so a stuck move can't lock the tiles for good; a click it ignores says so.
   const PULL_GUARD_MS = 10000;
   let pullingUntil = 0;
-  const pullingNow = () => Date.now() < pullingUntil;
-  const guarded = async (run) => {
-    pullingUntil = Date.now() + PULL_GUARD_MS;
-    try { await run(); } finally { pullingUntil = 0; }
-  };
   const actOnTile = async (item, event) => {
-    if (pullingNow()) {
+    if (Date.now() < pullingUntil) {
       window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Still moving a space…" }));
       return;
     }
+    const claim = Date.now() + PULL_GUARD_MS;
+    pullingUntil = claim;
+    // only release a claim that is still ours: an earlier move outliving its expiry must not clear a later one
+    const release = () => { if (pullingUntil === claim) pullingUntil = 0; };
     try {
       const wantsNew = spacesOf.wantsNewWindow(event);
       const win = await chrome.windows.getCurrent();
       const tabs = await chrome.tabs.query({ windowType: "normal" });
       const record = window.__vm.native?.record()?.all() ?? new Map();
       const action = spacesOf.tileAction({ id: item.id, here: win.id, tabs, record, shift: !!event?.shiftKey, newWindow: wantsNew });
+      if (action.kind !== "pull" && action.kind !== "new-window") release();
       if (action.kind === "none") return;
-      if (action.kind === "new-window") { await guarded(() => spaceToNewWindow(item)); return; }
+      if (action.kind === "focus") { await window.__vm.native.focus(action.window); refresh(false); return; } // needs no switch
       const activate = nativeSwitcher(); // throws here, before any side effect, when Vivaldi's switch is missing
       if (action.kind === "show") {
         await activate(win.id, item.id);
-      } else if (action.kind === "focus") {
-        await window.__vm.native.focus(action.window);
       } else if (action.kind === "show-there") {
         // A10: the switch doesn't focus, so the window comes to the front after it shows the space.
         await activate(action.window, item.id);
         await window.__vm.native.focus(action.window);
+      } else if (action.kind === "new-window") {
+        await spaceToNewWindow(item);
       } else if (action.kind === "pull") {
         // Frees the space first: the window showing it goes to its own default, then Vivaldi's switch moves every
         // tab of the space here. A parked space is shown nowhere, so there is nothing to free.
-        await guarded(async () => {
-          const shown = spacesOf.shownIn(record.size ? [] : tabs.filter((t) => t.active), record.size ? record : null, item.id);
-          if (shown != null && shown !== win.id) await activate(shown, 0);
-          await activate(win.id, item.id);
-          await chrome.windows.update(win.id, { focused: true });
-        });
+        const shown = spacesOf.shownIn(record.size ? [] : tabs.filter((t) => t.active), record.size ? record : null, item.id);
+        if (shown != null && shown !== win.id) await activate(shown, 0);
+        await activate(win.id, item.id);
+        await chrome.windows.update(win.id, { focused: true });
       }
       refresh(false);
-    } catch (error) { switchFailed(error); }
+    } catch (error) { switchFailed(error); } finally { release(); }
   };
   // Ctrl+shift+click (cmd+shift+click on a Mac) sends a space to a new window of its own: the reverse of the pull.
   // Where it is active (this window included) that window goes to its default space first, which frees the space;
