@@ -35,22 +35,29 @@
       ((t.lastAccessed ?? 0) === (best.lastAccessed ?? 0) && t.index > best.index) ? t : best));
   };
 
-  // Vivaldi keeps a named space in one window at a time. A click on a space active in another window only focuses
-  // that window, and one active nowhere moves its tabs into this window. The default space (0) is every window's
-  // own, so it is never "elsewhere". activeTabs: chrome.tabs.query({ active: true }), one per window.
-  // Returns { [spaceId]: windowId } for the spaces active in other windows.
-  const elsewhere = (activeTabs, windowId) => {
-    const found = {};
-    for (const t of activeTabs || []) {
-      const id = of(t);
-      if (id && t.windowId !== windowId && !(id in found)) found[id] = t.windowId;
+  // The window a named space lives in: the one Vivaldi's record shows it in; a parked space (shown nowhere) lives where
+  // most of its tabs are, the lowest window id on a tie; one with no tabs lives nowhere (null). The default space (0)
+  // is every window's own, so it lives nowhere. tabs: every tab in every normal window; record: Map spaceId -> windowId.
+  const livesIn = (tabs, record, id) => {
+    if (!id) return null;
+    if (record?.has(id)) return record.get(id);
+    const counts = new Map();
+    for (const t of tabs || []) if (of(t) === id) counts.set(t.windowId, (counts.get(t.windowId) || 0) + 1);
+    let best = null;
+    for (const [windowId, n] of counts) {
+      if (best === null || n > counts.get(best) || (n === counts.get(best) && windowId < best)) best = windowId;
     }
-    return found;
+    return best;
   };
 
-  // The window a named space is active in, this one included (elsewhere leaves it out), or null when it is active
-  // nowhere. Sending a space to a new window frees it there first.
-  const activeWindowOf = (activeTabs, id) => (activeTabs || []).find((t) => id && of(t) === id)?.windowId ?? null;
+  // The spaces that live in a window other than `here`, shown or parked: the dots on the space bar, sorted.
+  const dotsFor = (tabs, record, here) => {
+    const ids = new Set([...(record?.keys() || []), ...(tabs || []).map(of)]);
+    return [...ids].filter((id) => {
+      const home = livesIn(tabs, record, id);
+      return home !== null && home !== here;
+    }).sort((a, b) => a - b);
+  };
 
   // A click on a tile that sends its space to a new window: ctrl+shift on Windows, cmd+shift on a Mac.
   const wantsNewWindow = (event, windows = window.__vm.windows) =>
@@ -58,11 +65,11 @@
 
   // A space tile's tooltip: what this space is, and what clicking it does. Sending it to a new window is
   // ctrl+shift+click on Windows and cmd+shift+click on a Mac, where ctrl+click is a right-click.
-  const tileHint = (item, inOtherWindows, windows = window.__vm.windows) => {
+  const tileHint = (item, livesElsewhere, windows = window.__vm.windows) => {
     if (!item.id) return `${item.name} · this window's own tabs`;
     const toNew = `${windows ? "ctrl" : "cmd"}+shift+click to move it to a new window`;
-    if (inOtherWindows && item.id in inOtherWindows) {
-      return `${item.name} · open in another window. Click to go there, shift+click to bring it here, ${toNew}`;
+    if (livesElsewhere) {
+      return `${item.name} · lives in another window. Click to go there, shift+click to bring it here, ${toNew}`;
     }
     return `${item.name} · ${toNew}`;
   };
@@ -200,5 +207,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, elsewhere, activeWindowOf, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, dotsFor, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
 })();

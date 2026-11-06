@@ -774,7 +774,8 @@
     try {
       const activate = nativeSwitcher();
       const win = await chrome.windows.getCurrent();
-      const other = (await readElsewhere(win.id))[item.id];
+      // the window Vivaldi's record shows it in (a parked space is shown nowhere, so there is nothing to free)
+      const other = window.__vm.native?.record()?.all().get(item.id);
       if (other != null && other !== win.id) await activate(other, 0);
       await activate(win.id, item.id);
       await chrome.windows.update(win.id, { focused: true });
@@ -803,7 +804,7 @@
     let activate = null, holder = null, fresh = null;
     try {
       activate = nativeSwitcher();
-      holder = spacesOf.activeWindowOf(await chrome.tabs.query({ active: true, windowType: "normal" }), item.id);
+      holder = window.__vm.native?.record()?.all().get(item.id) ?? null;
       if (holder != null) await activate(holder, 0);
       fresh = await chrome.windows.create({ url: "about:blank", focused: true });
       const helper = fresh.tabs?.[0]?.id;
@@ -832,8 +833,8 @@
   let spaceTooltip = null;
   const hideSpaceTooltip = () => { spaceTooltip?.remove(); spaceTooltip = null; };
   const spacePill = (item) => {
-    const openElsewhere = !!item.id && item.id in (state.elsewhere || {});
-    const hint = spacesOf.tileHint(item, state.elsewhere);
+    const openElsewhere = !!item.id && (state.dots || []).includes(item.id);
+    const hint = spacesOf.tileHint(item, openElsewhere);
     const pill = el("button", `vm-space-pill${item.id === state.active ? " active" : ""}${openElsewhere ? " elsewhere" : ""}`);
     pill.type = "button";
     pill.setAttribute("aria-label", hint);
@@ -1089,16 +1090,19 @@
   const readWorkspaces = async () => {
     try { return (await vivaldi.prefs.get("vivaldi.workspaces.list"))?.value || []; } catch (_) { return []; }
   };
-  // Spaces active in another window ({ id: windowId }): their tiles say so, and a click there jumps windows.
-  const readElsewhere = async (windowId) => {
+  // Spaces that live in another window, shown or parked (sorted ids): their tiles carry a dot, and a click there jumps windows.
+  const readDots = async (windowId) => {
     // normal windows only: a popup's tab must never be mistaken for a window holding a space
-    try { return spacesOf.elsewhere(await chrome.tabs.query({ active: true, windowType: "normal" }), windowId); } catch (_) { return {}; }
+    try {
+      const tabs = await chrome.tabs.query({ windowType: "normal" });
+      return spacesOf.dotsFor(tabs, window.__vm.native?.record()?.all() ?? new Map(), windowId);
+    } catch (_) { return []; }
   };
   let warnedNoRecord = false;
   const loadTabs = async () => {
     state.allTabs = await chrome.tabs.query({ currentWindow: true });
     state.workspaces = await readWorkspaces();
-    state.elsewhere = await readElsewhere(state.allTabs[0]?.windowId);
+    state.dots = await readDots(state.allTabs[0]?.windowId);
     ({ active: state.active, tabs: state.tabs } = spacesOf.scope(state.allTabs, state.workspaces));
     // Vivaldi's record says which space this window shows; the active tab's space is the fallback when it can't be read.
     const ownWindow = state.allTabs[0]?.windowId;
@@ -1240,24 +1244,24 @@
     let ownWindow = null;
     chrome.windows.getCurrent().then((win) => { ownWindow = win.id; }, () => {});
     // Another window switching space (a tab activated or moved there, or the window closed) can change which tiles
-    // read "open in another window": re-render only when that map actually changed.
-    const checkElsewhere = async () => {
+    // carry a dot: re-render only when the dots actually changed.
+    const checkDots = async () => {
       if (ownWindow == null) return;
-      if (JSON.stringify(await readElsewhere(ownWindow)) !== JSON.stringify(state.elsewhere || {})) refresh(false);
+      if (JSON.stringify(await readDots(ownWindow)) !== JSON.stringify(state.dots || [])) refresh(false);
     };
     const SPACE_EVENTS = new Set(["onActivated", "onAttached", "onDetached", "onRemoved"]);
     for (const ev of ["onCreated", "onRemoved", "onUpdated", "onMoved", "onActivated", "onAttached", "onDetached", "onReplaced"]) {
       chrome.tabs[ev]?.addListener((...args) => {
         const id = spacesOf.eventWindow(ev, args);
         if (id == null || ownWindow == null || id === ownWindow) refresh(false);
-        else if (SPACE_EVENTS.has(ev)) checkElsewhere();
+        else if (SPACE_EVENTS.has(ev)) checkDots();
       });
     }
-    chrome.windows.onRemoved?.addListener(() => checkElsewhere());
+    chrome.windows.onRemoved?.addListener(() => checkDots());
     setInterval(async () => {
       const brief = (list) => JSON.stringify(list.map((w) => [w.id, w.name, w.emoji, w.icon]));
       if (brief(await readWorkspaces()) !== brief(state.workspaces)) refresh(false);
-      else checkElsewhere();
+      else checkDots();
     }, 3000);
     try {
       vivaldi.runtimePrivate.onProfilesUpdated.addListener(loadProfiles);

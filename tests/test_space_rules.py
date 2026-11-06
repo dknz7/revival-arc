@@ -142,5 +142,47 @@ class NoStamping(unittest.TestCase):
         self.assertNotIn("stamp", js("Object.keys(workspaces)"))
 
 
+def in_window(window_id, workspace, id):
+    return {"id": id, "windowId": window_id, "vivExtData": json.dumps({"workspaceId": workspace} if workspace else {})}
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class LivesIn(unittest.TestCase):
+    """A space lives where Vivaldi's record shows it; parked, where most of its tabs are. A dot marks a space living elsewhere."""
+
+    def lives(self, tabs, record, space):
+        return js("workspaces.livesIn(tabs, new Map(record), id)", tabs=tabs, record=record, id=space)
+
+    def dots(self, tabs, record, here):
+        return js("workspaces.dotsFor(tabs, new Map(record), here)", tabs=tabs, record=record, here=here)
+
+    def test_shown_in_a_window_lives_there(self):
+        tabs = [in_window(1, 5, 10), in_window(2, 5, 11), in_window(2, 5, 12)]
+        self.assertEqual(self.lives(tabs, [[5, 1]], 5), 1, "the record beats the tab count")
+
+    def test_parked_lives_where_its_tabs_are(self):
+        self.assertEqual(self.lives([in_window(3, 5, 10), in_window(1, 6, 11)], [], 5), 3)
+
+    def test_split_lives_where_it_is_shown_else_with_most_tabs_ties_to_lowest_window(self):
+        split = [in_window(2, 5, 10), in_window(2, 5, 11), in_window(4, 5, 12)]
+        self.assertEqual(self.lives(split, [[5, 4]], 5), 4)
+        self.assertEqual(self.lives(split, [], 5), 2)
+        tie = [in_window(4, 5, 10), in_window(2, 5, 11)]
+        self.assertEqual(self.lives(tie, [], 5), 2)
+
+    def test_no_tabs_lives_nowhere(self):
+        self.assertIsNone(self.lives([in_window(1, 6, 10)], [], 5))
+        self.assertIsNone(self.lives([], [], 5))
+
+    def test_the_default_space_lives_nowhere(self):
+        self.assertIsNone(self.lives([in_window(1, 0, 10)], [[0, 1]], 0))
+
+    def test_dots_are_spaces_living_in_other_windows_shown_or_parked(self):
+        tabs = [in_window(1, 5, 10), in_window(2, 6, 11), in_window(3, 7, 12), in_window(1, 8, 13), in_window(1, 0, 14)]
+        # 5 shown here, 6 shown in 2, 7 parked in 3, 8 parked here, default never
+        self.assertEqual(self.dots(tabs, [[5, 1], [6, 2]], 1), [6, 7])
+        self.assertEqual(self.dots([], [], 1), [])
+
+
 if __name__ == "__main__":
     unittest.main()
