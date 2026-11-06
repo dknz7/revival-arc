@@ -1,4 +1,4 @@
-// Vivarc's Dia layout (setting "Dia layout"): a slim row over the page (Vivaldi's menu, back, forward, reload, a
+// Vivarc's Dia layout (setting "Dia layout"): a slim row over the page (Vivaldi's menu, a hide-sidebar button, back, forward, reload, a
 // "site / title" breadcrumb, translate (on a page not in English), copy link, extensions and the window buttons) with
 // the sidebar up to the window's top.
 // Vivaldi draws that row, and its own window buttons in it, once its address row is on (and, on Windows, its own window
@@ -116,7 +116,46 @@
     return null;
   };
 
-  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, ROW_ITEMS };
+  // The sidebar is Vivaldi's tab bar, and the button after Vivaldi's menu button hides and shows it: Vivaldi's own
+  // COMMAND_MAIN_TOGGLE_TAB_BAR (not auto-hide), which flips the pref below (measured on 8.2). Shown unless the pref is false.
+  const TABS = "vivaldi.tabs.visible";
+  const TOGGLE = "COMMAND_MAIN_TOGGLE_TAB_BAR";
+  const ACTIONS = "vivaldi.actions";
+  const sidebarShown = (value) => value !== false;
+  // The tooltip: what a click does, then the key this profile binds to the command (the first one) in brackets, named
+  // as the spaces hint names keys (Ctrl, Cmd, Option on a Mac, Alt otherwise).
+  const sidebarLabel = (shown, shortcuts, windows) => {
+    const names = { ctrl: "Ctrl", meta: "Cmd", alt: windows ? "Alt" : "Option", shift: "Shift" };
+    const key = (Array.isArray(shortcuts) ? shortcuts : []).find((s) => typeof s === "string" && s);
+    const named = key && key.split("+").map((k) => {
+      const part = k.trim().toLowerCase();
+      return names[part] || (part.length === 1 || /^f\d+$/.test(part) ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1));
+    }).join("+");
+    return `${shown ? "Hide" : "Show"} sidebar${named ? ` (${named})` : ""}`;
+  };
+
+  // Vivaldi's action executor, which runs a command by name as its own buttons and shortcuts do
+  // (executeActions("button", { vivaldiWindowId }, "COMMAND_…")); found in webpack's modules as findRemover
+  // (07-workspaces.js) finds the workspace manager. Returns (windowId) => runs the command, or null.
+  const findToggler = (chunks) => {
+    try {
+      let load;
+      chunks.push([[Symbol("vivarc-toggle-sidebar")], {}, (require) => { load = require; }]);
+      for (const [id, factory] of Object.entries(load?.m || {})) {
+        if (!String(factory).includes("Lookup failed for command")) continue;
+        let exported;
+        try { exported = load(id); } catch (_) { continue; }
+        for (const executor of Object.values(exported || {})) {
+          if (typeof executor?.executeActions === "function") {
+            return (windowId) => executor.executeActions("button", { vivaldiWindowId: windowId }, TOGGLE);
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  };
+
+  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, sidebarShown, sidebarLabel, findToggler, ROW_ITEMS };
   if (!window.__vm.store) return;
 
   const { store, settings } = window.__vm;
@@ -250,6 +289,68 @@
     activeTab().then(fill);
   };
 
+  // The hide-sidebar button: its tooltip follows the pref the command flips (so a keyboard toggle too) and the key bound
+  // to it. The command runs through Vivaldi's executor; without it the same pref is flipped.
+  let sideNode = null;
+  let sideShown = true;
+  let sideKeys = [];
+  let sideRun; // undefined: not looked up yet; null: no executor found (the pref is flipped instead)
+  let sideWarned = false;
+  const sideWarn = (message) => {
+    if (sideWarned) return;
+    sideWarned = true;
+    console.warn(`[vivarc] Dia layout: ${message}`);
+  };
+  const sideLabel = () => {
+    if (!sideNode) return;
+    const label = sidebarLabel(sideShown, sideKeys, windows);
+    sideNode.title = label;
+    sideNode.setAttribute("aria-label", label);
+  };
+  const sideRead = async () => {
+    try {
+      sideShown = sidebarShown(await prefs.get(TABS));
+      sideKeys = (await prefs.get(ACTIONS))?.[0]?.[TOGGLE]?.shortcuts || [];
+    } catch (_) {}
+    sideLabel();
+  };
+  const sideToggle = async () => {
+    try {
+      if (sideRun === undefined) {
+        sideRun = findToggler(window.webpackChunkgapp_browser_react) ||
+          findToggler(chrome.extension?.getBackgroundPage?.()?.webpackChunkgapp_browser_react);
+        if (!sideRun) sideWarn("Vivaldi's command runner not found, the sidebar button flips the tab bar's pref instead");
+      }
+      if (sideRun) sideRun((await chrome.windows.getCurrent()).id);
+      else await prefs.set(TABS, !sideShown);
+    } catch (error) {
+      console.warn("[vivarc] Dia layout: could not hide or show the sidebar:", error);
+    }
+  };
+  const makeSide = () => {
+    sideNode = el("button", "vm-dia-sidebar");
+    sideNode.id = "vm-dia-sidebar";
+    sideNode.type = "button";
+    sideNode.tabIndex = -1;
+    sideNode.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4.5" width="18" height="15" rx="3"/><path d="M9.5 4.5v15"/></svg>';
+    sideNode.addEventListener("click", sideToggle);
+    sideLabel();
+  };
+  // Right after Vivaldi's menu button, before Back (on a Mac, which has no in-window menu, just before Back). Back is the
+  // anchor that must be there: without it the button stays out of the row, with one warning.
+  const placeSide = (row) => {
+    const back = row.querySelector("[data-name='Back']")?.closest(".button-toolbar");
+    if (!back || back.parentElement !== row) {
+      sideNode?.remove();
+      sideWarn("Back not found in the top row, no sidebar button");
+      return;
+    }
+    if (!sideNode) makeSide();
+    const menu = row.querySelector(":scope > button.vivaldi");
+    if (menu && menu.parentElement === row) { if (menu.nextElementSibling !== sideNode) menu.after(sideNode); }
+    else if (back.previousElementSibling !== sideNode) back.before(sideNode);
+  };
+
   // The page column's edges, for the row over it and the command bar centred on it: they move with a resized or hidden
   // sidebar, and a sidebar or panels on the right.
   let page = null;
@@ -264,7 +365,7 @@
   // The row is Vivaldi's and is re-rendered by it: the breadcrumb goes back after Reload whenever it goes missing.
   const place = () => {
     const browser = document.querySelector("#browser");
-    if (!browser?.classList.contains("vm-dia")) { crumb?.remove(); return; }
+    if (!browser?.classList.contains("vm-dia")) { crumb?.remove(); sideNode?.remove(); return; }
     const container = document.querySelector("#webview-container");
     if (container && container !== page) {
       if (page) pageEdges.unobserve(page);
@@ -277,6 +378,7 @@
     const anchor = row.querySelector("[data-name='Reload']")?.closest(".button-toolbar");
     if (anchor) { if (anchor.nextElementSibling !== crumb) anchor.after(crumb); }
     else if (crumb.parentElement !== row) row.prepend(crumb);
+    placeSide(row);
   };
 
   const start = () => {
@@ -310,6 +412,9 @@
       asked = null;
       if (error && error !== "no_error") toast("Could not translate the page");
     });
+    // The tab bar's pref and the key bound to its command, for the sidebar button's tooltip (changes in any window).
+    sideRead();
+    vivaldi.prefs.onChanged?.addListener((path) => { if (path === TABS || path === ACTIONS) sideRead(); });
     let last = null;
     const follow = (values, writer) => {
       if (values.diaLayout === last) return;

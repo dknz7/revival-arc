@@ -222,6 +222,68 @@ class TranslationState(unittest.TestCase):
         self.assertIsNone(js("window.__vm.dia.findTranslation({ push: ([ids, extra, run]) => run(Object.assign(() => ({}), { m: {} })) })"))
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the Dia layout's JavaScript")
+class SidebarButton(unittest.TestCase):
+    """The button after Vivaldi's menu button hides and shows the sidebar (Vivaldi's tab bar) with Vivaldi's own
+    COMMAND_MAIN_TOGGLE_TAB_BAR, found in its webpack modules by the marker of its action executor."""
+
+    def label(self, shown, shortcuts, windows=True):
+        return js("window.__vm.dia.sidebarLabel(shown, shortcuts, windows)", shown=shown, shortcuts=shortcuts, windows=windows)
+
+    def test_the_tooltip_follows_the_state(self):
+        self.assertEqual(self.label(True, []), "Hide sidebar")
+        self.assertEqual(self.label(False, []), "Show sidebar")
+
+    def test_a_bound_key_follows_the_name_in_brackets(self):
+        self.assertEqual(self.label(True, ["ctrl+s"]), "Hide sidebar (Ctrl+S)")
+        self.assertEqual(self.label(False, ["ctrl+shift+f10"]), "Show sidebar (Ctrl+Shift+F10)")
+        self.assertEqual(self.label(True, ["alt+left"]), "Hide sidebar (Alt+Left)")
+
+    def test_the_first_key_is_shown_and_none_means_no_brackets(self):
+        self.assertEqual(self.label(True, ["ctrl+s", "f4"]), "Hide sidebar (Ctrl+S)")
+        for none in ([], None, [""]):
+            self.assertEqual(self.label(True, none), "Hide sidebar", none)
+
+    def test_on_a_mac_keys_are_named_as_the_spaces_hint_names_them(self):
+        self.assertEqual(self.label(True, ["meta+s"], windows=False), "Hide sidebar (Cmd+S)")
+        self.assertEqual(self.label(True, ["alt+meta+s"], windows=False), "Hide sidebar (Option+Cmd+S)")
+        self.assertEqual(self.label(True, ["alt+s"], windows=True), "Hide sidebar (Alt+S)")
+
+    def test_only_a_pref_set_to_false_means_hidden(self):
+        for value, shown in ((True, True), (False, False), (None, True), (0, True)):
+            self.assertEqual(js("window.__vm.dia.sidebarShown(value)", value=value), shown, value)
+
+    FAKE = """
+      const calls = [];
+      const executor = { executeActions: (...args) => { calls.push(args); } };
+      const require = (id) => { if (id !== "2") throw new Error("not loaded: " + id); return { Z: executor }; };
+      require.m = { 1: function () { return "nothing to see"; }, 2: function () { return 'console.warn("[execute actions]: Lookup failed for command",n)'; } };
+      const chunks = { push: ([ids, extra, run]) => run(require) };
+    """
+
+    def test_the_command_runs_through_vivaldis_own_executor(self):
+        out = js("(() => {" + self.FAKE + "window.__vm.dia.findToggler(chunks)(7); return calls; })()")
+        self.assertEqual(out, [["button", {"vivaldiWindowId": 7}, "COMMAND_MAIN_TOGGLE_TAB_BAR"]])
+
+    def test_without_the_marker_there_is_no_runner_rather_than_an_error(self):
+        self.assertIsNone(js("window.__vm.dia.findToggler(undefined)"))
+        self.assertIsNone(js("window.__vm.dia.findToggler({ push: ([ids, extra, run]) => run(Object.assign(() => ({}), { m: {} })) })"))
+        fake = """
+          const require = () => ({ Z: { executeActions() {} } });
+          require.m = { 1: function () { return "executeActions only"; } };
+          const chunks = { push: ([ids, extra, run]) => run(require) };
+        """
+        self.assertIsNone(js("(() => {" + fake + "return window.__vm.dia.findToggler(chunks); })()"))
+
+    def test_a_module_that_has_the_marker_but_no_executor_is_passed_over(self):
+        fake = """
+          const require = () => ({ Z: { dispatch() {} } });
+          require.m = { 1: function () { return "Lookup failed for command"; } };
+          const chunks = { push: ([ids, extra, run]) => run(require) };
+        """
+        self.assertIsNone(js("(() => {" + fake + "return window.__vm.dia.findToggler(chunks); })()"))
+
+
 # One window of the module, running for real against fake Vivaldi prefs and profile store. The scenario (argv[2]):
 # prefs and kept values to start from, the window, the saved setting (which arrives after start, as in Vivaldi),
 # optionally the switch flipped afterwards (`then`), and a pref write that fails (`failAt`, 1-based).

@@ -868,6 +868,14 @@
 #browser.vm-on.vm-dia #vm-cmd { padding-left: var(--vm-dia-left, 0px); padding-right: var(--vm-dia-right, 0px); }
 #browser.vm-on.vm-dia #vm-cmd .vm-cmd-box { max-width: calc(100% - 32px); }
 
+/* Hide/show sidebar, between Vivaldi's menu button and Back: the size, radius and hover of the row's own buttons. */
+#vm-dia-sidebar {
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 34px; height: 34px; margin: 0 3px 0 0;
+  padding: 0; border: 0; border-radius: 8px; background: none; color: inherit; cursor: pointer;
+  -webkit-app-region: no-drag; app-region: no-drag;
+}
+#vm-dia-sidebar:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+
 /* Breadcrumb: "site / title" (a click edits the address in the command bar), then Translate and Copy link. Everything
    else in the row is title bar: drag to move, double-click to maximise. */
 #vm-dia-crumb {
