@@ -50,6 +50,14 @@
     return best;
   };
 
+  // The window currently showing a named space, or null (parked). Vivaldi's record decides; only when the record cannot
+  // be found (record null) does the window whose active tab is in the space stand in. activeTabs: one per window.
+  const shownIn = (activeTabs, record, id) => {
+    if (!id) return null;
+    if (record) return record.get(id) ?? null;
+    return (activeTabs || []).find((t) => of(t) === id)?.windowId ?? null;
+  };
+
   // The spaces that live in a window other than `here`, shown or parked: the dots on the space bar, sorted.
   const dotsFor = (tabs, record, here) => {
     const ids = new Set([...(record?.keys() || []), ...(tabs || []).map(of)]);
@@ -207,5 +215,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, dotsFor, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
 })();

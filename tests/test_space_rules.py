@@ -177,6 +177,23 @@ class LivesIn(unittest.TestCase):
     def test_the_default_space_lives_nowhere(self):
         self.assertIsNone(self.lives([in_window(1, 0, 10)], [[0, 1]], 0))
 
+    def shown(self, active_tabs, record, space):
+        return js("workspaces.shownIn(tabs, record === null ? null : new Map(record), id)", tabs=active_tabs, record=record, id=space)
+
+    def test_the_record_says_which_window_shows_a_space(self):
+        active = [in_window(1, 5, 10), in_window(2, 6, 11)]
+        self.assertEqual(self.shown(active, [[6, 2]], 6), 2)
+        self.assertIsNone(self.shown(active, [[6, 2]], 5), "the record wins over the active tab: 5 is parked")
+
+    def test_with_no_record_the_window_whose_active_tab_is_in_the_space_shows_it(self):
+        active = [in_window(1, 5, 10), in_window(2, 6, 11)]
+        self.assertEqual(self.shown(active, None, 6), 2)
+        self.assertIsNone(self.shown(active, None, 7))
+        self.assertIsNone(self.shown(active, None, 0))
+
+    def test_with_no_record_a_shown_space_still_lives_in_the_window_holding_its_tabs(self):
+        self.assertEqual(self.lives([in_window(2, 6, 11), in_window(2, 6, 12), in_window(1, 6, 13)], [], 6), 2)
+
     def test_dots_are_spaces_living_in_other_windows_shown_or_parked(self):
         tabs = [in_window(1, 5, 10), in_window(2, 6, 11), in_window(3, 7, 12), in_window(1, 8, 13), in_window(1, 0, 14)]
         # 5 shown here, 6 shown in 2, 7 parked in 3, 8 parked here, default never

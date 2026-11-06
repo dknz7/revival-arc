@@ -753,6 +753,12 @@
     console.warn("[vivarc] switch space:", error);
     window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not switch space. Use Vivaldi's workspace shortcut." }));
   };
+  // The window showing a space: Vivaldi's record; the active tab's space stands in only when the record can't be found.
+  const shownWindowOf = async (id) => {
+    const record = window.__vm.native?.record()?.all() ?? null;
+    const activeTabs = record ? [] : await chrome.tabs.query({ active: true, windowType: "normal" });
+    return spacesOf.shownIn(activeTabs, record, id);
+  };
   // Vivaldi's own switch: a space active in another window focuses that window; any other moves here.
   const switchSpace = async (item) => {
     if (pulling) return; // a pull or a move to a new window is under way: a switch now would race it
@@ -774,8 +780,8 @@
     try {
       const activate = nativeSwitcher();
       const win = await chrome.windows.getCurrent();
-      // the window Vivaldi's record shows it in (a parked space is shown nowhere, so there is nothing to free)
-      const other = window.__vm.native?.record()?.all().get(item.id);
+      // the window showing it (a parked space is shown nowhere, so there is nothing to free)
+      const other = await shownWindowOf(item.id);
       if (other != null && other !== win.id) await activate(other, 0);
       await activate(win.id, item.id);
       await chrome.windows.update(win.id, { focused: true });
@@ -804,7 +810,7 @@
     let activate = null, holder = null, fresh = null;
     try {
       activate = nativeSwitcher();
-      holder = window.__vm.native?.record()?.all().get(item.id) ?? null;
+      holder = await shownWindowOf(item.id);
       if (holder != null) await activate(holder, 0);
       fresh = await chrome.windows.create({ url: "about:blank", focused: true });
       const helper = fresh.tabs?.[0]?.id;
