@@ -334,8 +334,32 @@
     return null;
   };
 
-  const removalLabel = (name, tabCount) =>
-    `Delete \u201c${name}\u201d${tabCount ? ` and close its ${tabCount} ${tabCount === 1 ? "tab" : "tabs"}` : ""}`;
+  // What deleting space `id` closes, given every normal window's tabs: how many tabs, in how many windows, and
+  // whether some window holds nothing else (so it closes too).
+  const removalScope = (tabs, id) => {
+    const byWindow = new Map();
+    for (const t of Array.isArray(tabs) ? tabs : []) {
+      const w = byWindow.get(t.windowId) || { all: 0, mine: 0 };
+      w.all += 1;
+      if (of(t) === id) w.mine += 1;
+      byWindow.set(t.windowId, w);
+    }
+    const holding = [...byWindow.values()].filter((w) => w.mine > 0);
+    return {
+      tabCount: holding.reduce((n, w) => n + w.mine, 0),
+      windowCount: holding.length,
+      closesWindow: holding.some((w) => w.mine === w.all),
+    };
+  };
+
+  const removalLabel = (name, tabCount, windowCount = 1, closesWindow = false) => {
+    let label = `Delete \u201c${name}\u201d`;
+    if (!tabCount) return label;
+    label += ` and close its ${tabCount} ${tabCount === 1 ? "tab" : "tabs"}`;
+    if (windowCount > 1) label += ` in ${windowCount} windows`;
+    if (closesWindow) label += ". A window holding only these tabs closes too";
+    return label;
+  };
 
   // The window a chrome.tabs event (its name and arguments) belongs to, or undefined when the event does not say.
   const eventWindow = (ev, [first, second, third] = []) => ({
@@ -343,5 +367,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, restampOnAttach, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, restampOnAttach, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalScope, removalLabel, eventWindow, CREATE_HINT };
 })();

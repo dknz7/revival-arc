@@ -233,9 +233,36 @@ class DeleteSpace(unittest.TestCase):
         self.assertIsNone(js("workspaces.findRemover({ push: () => { throw new Error('boom'); } })"))
 
     def test_the_delete_button_names_the_space_and_counts_its_tabs(self):
-        self.assertEqual(js("workspaces.removalLabel('Work', 5)"), "Delete \u201cWork\u201d and close its 5 tabs")
-        self.assertEqual(js("workspaces.removalLabel('Work', 1)"), "Delete \u201cWork\u201d and close its 1 tab")
-        self.assertEqual(js("workspaces.removalLabel('Work', 0)"), "Delete \u201cWork\u201d")
+        self.assertEqual(js("workspaces.removalLabel('Work', 5, 1, false)"), "Delete \u201cWork\u201d and close its 5 tabs")
+        self.assertEqual(js("workspaces.removalLabel('Work', 1, 1, false)"), "Delete \u201cWork\u201d and close its 1 tab")
+        self.assertEqual(js("workspaces.removalLabel('Work', 0, 0, false)"), "Delete \u201cWork\u201d")
+
+    def test_the_delete_button_says_when_the_tabs_span_windows(self):
+        self.assertEqual(js("workspaces.removalLabel('Work', 5, 2, false)"), "Delete \u201cWork\u201d and close its 5 tabs in 2 windows")
+
+    def test_the_delete_button_says_when_a_window_closes_too(self):
+        self.assertEqual(js("workspaces.removalLabel('Work', 3, 1, true)"), "Delete \u201cWork\u201d and close its 3 tabs. A window holding only these tabs closes too")
+
+    def test_the_delete_button_says_both_in_order(self):
+        self.assertEqual(js("workspaces.removalLabel('Work', 4, 3, true)"), "Delete \u201cWork\u201d and close its 4 tabs in 3 windows. A window holding only these tabs closes too")
+
+    def test_the_delete_button_stays_plain_without_tabs(self):
+        self.assertEqual(js("workspaces.removalLabel('Work', 0, 0, true)"), "Delete \u201cWork\u201d")
+
+    def test_removal_scope_counts_tabs_and_windows(self):
+        tabs = [dict(tab(1, WORK["id"]), windowId=1), dict(tab(2, WORK["id"]), windowId=1),
+                dict(tab(3, WORK["id"]), windowId=2), dict(tab(4, SIDE["id"]), windowId=2)]
+        self.assertEqual(js("workspaces.removalScope(tabs, id)", tabs=tabs, id=WORK["id"]),
+                         {"tabCount": 3, "windowCount": 2, "closesWindow": True})
+
+    def test_a_window_with_other_spaces_tabs_does_not_close(self):
+        tabs = [dict(tab(1, WORK["id"]), windowId=1), dict(tab(2, SIDE["id"]), windowId=1)]
+        self.assertEqual(js("workspaces.removalScope(tabs, id)", tabs=tabs, id=WORK["id"]),
+                         {"tabCount": 1, "windowCount": 1, "closesWindow": False})
+
+    def test_no_tabs_means_no_scope(self):
+        self.assertEqual(js("workspaces.removalScope([], 5)"), {"tabCount": 0, "windowCount": 0, "closesWindow": False})
+        self.assertEqual(js("workspaces.removalScope(null, 5)"), {"tabCount": 0, "windowCount": 0, "closesWindow": False})
 
 
 class CreateSpaceDialog(unittest.TestCase):

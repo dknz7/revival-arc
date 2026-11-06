@@ -923,9 +923,18 @@
     return pill;
   };
 
-  const confirmDeleteSpace = (item, event) => {
-    const label = spacesOf.removalLabel(item.name, spacesOf.tabsIn(state.allTabs, item.id).length);
-    showMenu(event, [[label, () => deleteSpace(item), true], ["Cancel", () => {}]]);
+  const confirmDeleteSpace = async (item, event) => {
+    // The default action and propagation must be stopped now; the menu itself opens once the count is in.
+    event.preventDefault();
+    event.stopPropagation();
+    const at = { clientX: event.clientX, clientY: event.clientY, preventDefault() {}, stopPropagation() {} };
+    let tabs = state.allTabs;
+    try { tabs = await chrome.tabs.query({ windowType: "normal" }); } catch (_) {}
+    try {
+      const { tabCount, windowCount, closesWindow } = spacesOf.removalScope(tabs, item.id);
+      const label = spacesOf.removalLabel(item.name, tabCount, windowCount, closesWindow);
+      showMenu(at, [[label, () => deleteSpace(item), true], ["Cancel", () => {}]]);
+    } catch (_) {}
   };
 
   const deleteSpace = async (item) => {
