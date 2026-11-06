@@ -30,6 +30,8 @@
 
   window.__vm.native = {
     record,
+    // True when Vivaldi's switch is found; callers check before any side effect.
+    hasSwitch: () => switcher() !== null,
     // The space 0 (default) is passed to Vivaldi as undefined, which findSwitcher does.
     switchTo: async (windowId, spaceId) => {
       const activate = switcher();

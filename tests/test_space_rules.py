@@ -77,6 +77,26 @@ class Record(unittest.TestCase):
         self.assertIsNone(js("(() => {" + fake + "return workspaces.findRecord(chunks); })()"))
 
 
+    def test_a_store_that_throws_after_the_lookup_gives_a_fallback_not_an_error(self):
+        fake = """
+          const store = { getActiveWorkspaceId() { throw new Error("boom"); }, getActiveWorkspaces() { throw new Error("boom"); } };
+          const require = () => ({ Z: store });
+          require.m = { 1: function () { return "getActiveWorkspaceId(e){}"; } };
+          const chunks = { push: ([ids, extra, run]) => run(require) };
+        """
+        out = js("(() => {" + fake + "const r = workspaces.findRecord(chunks); return [r.activeIn(7), [...r.all()]]; })()")
+        self.assertEqual(out, [None, []])
+
+    def test_a_store_answering_something_odd_gives_no_space(self):
+        fake = """
+          const store = { getActiveWorkspaceId: () => ({ odd: 1 }), getActiveWorkspaces: () => new Map() };
+          const require = () => ({ Z: store });
+          require.m = { 1: function () { return "getActiveWorkspaceId(e){}"; } };
+          const chunks = { push: ([ids, extra, run]) => run(require) };
+        """
+        self.assertIsNone(js("(() => {" + fake + "return workspaces.findRecord(chunks).activeIn(7); })()"))
+
+
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class Native(unittest.TestCase):
     """window.__vm.native: the record and the switch, looked up lazily, kept once found, retried at most every 5 s."""
@@ -106,6 +126,9 @@ class Native(unittest.TestCase):
           return [first, second, early, third !== null, lookedAfter, looks];
         """)
         self.assertEqual(out, [None, None, 1, True, 2, 2], "one look, none inside 5 s, one after, then cached")
+
+    def test_hasswitch_tells_callers_before_any_side_effect(self):
+        self.assertEqual(native_js("const before = native.hasSwitch(); installBg(); advance(6000); return [before, native.hasSwitch()]"), [False, True])
 
     def test_switching_without_vivaldis_switch_rejects_instead_of_throwing(self):
         out = native_js("try { await native.switchTo(7, 42); return 'no error'; } catch (e) { return e.message; }")

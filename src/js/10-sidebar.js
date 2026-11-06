@@ -744,8 +744,11 @@
   };
 
   // ---- space bar: Vivaldi workspaces as Arc-style spaces ----
-  // Vivaldi's own switch (08-space-native.js); it rejects, at the call, when Vivaldi's switch cannot be found.
-  const nativeSwitcher = () => window.__vm.native.switchTo;
+  // Vivaldi's own switch (08-space-native.js). Throws up front when it cannot be found, before any side effect.
+  const nativeSwitcher = () => {
+    if (!window.__vm.native?.hasSwitch()) throw new Error("Native workspace switching is unavailable");
+    return window.__vm.native.switchTo;
+  };
   const switchFailed = (error) => {
     console.warn("[vivarc] switch space:", error);
     window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not switch space. Use Vivaldi's workspace shortcut." }));
@@ -1099,13 +1102,15 @@
     ({ active: state.active, tabs: state.tabs } = spacesOf.scope(state.allTabs, state.workspaces));
     // Vivaldi's record says which space this window shows; the active tab's space is the fallback when it can't be read.
     const ownWindow = state.allTabs[0]?.windowId;
-    const recorded = ownWindow == null ? null : window.__vm.native?.record()?.activeIn(ownWindow);
+    const record = window.__vm.native?.record() ?? null;
+    const recorded = record && ownWindow != null ? record.activeIn(ownWindow) : null;
     if (recorded != null && state.workspaces?.length) {
       state.active = recorded;
       state.tabs = spacesOf.tabsIn(state.allTabs, recorded);
-    } else if (recorded == null && !warnedNoRecord) {
+    } else if ((!record || (ownWindow != null && recorded == null)) && !warnedNoRecord) {
+      // an unknown window id says nothing about the record; a missing record or a store that fails does
       warnedNoRecord = true;
-      console.warn("[vivarc] Vivaldi's workspace record was not found; using the active tab's space instead");
+      console.warn("[vivarc] Vivaldi's workspace record could not be read; using the active tab's space instead");
     }
     if (window.__vm.activeSpace !== state.active) {
       window.__vm.activeSpace = state.active;

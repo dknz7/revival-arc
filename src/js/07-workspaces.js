@@ -186,9 +186,18 @@
         try { exported = load(id); } catch (_) { continue; }
         for (const store of Object.values(exported || {})) {
           if (typeof store?.getActiveWorkspaceId === "function" && typeof store?.getActiveWorkspaces === "function") {
+            // A store that throws, or answers with something odd, after a successful lookup gives null (activeIn)
+            // or an empty map (all), so the caller falls back instead of throwing into the UI.
             return {
-              activeIn: (windowId) => store.getActiveWorkspaceId(windowId) ?? 0,
-              all: () => new Map([...store.getActiveWorkspaces()].filter(([space]) => space != null)),
+              activeIn: (windowId) => {
+                try {
+                  const space = store.getActiveWorkspaceId(windowId) ?? 0;
+                  return typeof space === "number" ? space : null;
+                } catch (_) { return null; }
+              },
+              all: () => {
+                try { return new Map([...store.getActiveWorkspaces()].filter(([space]) => space != null)); } catch (_) { return new Map(); }
+              },
             };
           }
         }
