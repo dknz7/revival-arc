@@ -374,9 +374,13 @@ def normal(*ids):
 class Drag(unittest.TestCase):
     """A tab moved into a window joins the space that window shows, unless a closing window rehomed it or Vivarc moved it."""
 
-    def attach(self, tab, shown, source_open=True, moved=False):
-        return js("workspaces.restampOnAttach({ tab, shownSpace: shown, sourceWindowOpen: open, movedByVivarc: moved })",
-                  tab=tab, shown=shown, open=source_open, moved=moved)
+    def attach(self, tab, shown, source_open=True, moved=False, busy=False):
+        return js("workspaces.restampOnAttach({ tab, shownSpace: shown, sourceWindowOpen: open, movedByVivarc: moved, gestureBusy: busy })",
+                  tab=tab, shown=shown, open=source_open, moved=moved, busy=busy)
+
+    def test_a_tab_moved_by_a_tile_gesture_keeps_its_space(self):
+        # pull / move to a new window run in any window and move tabs before the target's record is updated
+        self.assertIsNone(self.attach(in_window(2, 6, 10), 5, busy=True))
 
     def test_a_tab_dragged_into_a_window_joins_its_space(self):
         tab = dict(in_window(2, 6, 10), vivExtData='{"workspaceId":6,"vivarcPin":"77"}')

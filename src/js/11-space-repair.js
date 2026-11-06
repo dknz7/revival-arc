@@ -169,26 +169,29 @@
     sources.set(tabId, info?.oldWindowId);
     setTimeout(() => sources.delete(tabId), 10000);
   };
-  const restampLater = async (tabId, newWindowId, oldWindowId) => {
+  // A tile gesture (pull, move to a new window) moves a space's tabs with Vivaldi's own switch, which keeps their space,
+  // into a window whose record may not be updated yet: never restamp during one. Checked at the attach and after the wait
+  // (the gesture may have ended in between), in whichever window the gesture ran (its mark is on the shared page).
+  const restampLater = async (tabId, newWindowId, oldWindowId, busyAtAttach) => {
     try {
       await sleep(ATTACH_MS);
       const windows = await chrome.windows.getAll();
       if (ownWindow == null || spacesOf.leaderOf(windows) !== ownWindow) return;
       const sourceWindowOpen = oldWindowId != null && windows.some((w) => w.id === oldWindowId);
       const shownSpace = window.__vm.native?.record()?.activeIn(newWindowId);
-      if (shownSpace == null) return; // no record: nothing to go by, as repairs
+      if (shownSpace == null) { warnOnce("drag-record", "[vivarc] drag: Vivaldi's workspace record could not be read, so dragged tabs keep their space"); return; }
       const tab = await chrome.tabs.get(tabId);
       if (tab.windowId !== newWindowId) return; // it moved on again
-      const data = spacesOf.restampOnAttach({ tab, shownSpace, sourceWindowOpen, movedByVivarc: window.__vm.movedByVivarc.has(tabId) });
+      const data = spacesOf.restampOnAttach({ tab, shownSpace, sourceWindowOpen, movedByVivarc: window.__vm.movedByVivarc.has(tabId), gestureBusy: busyAtAttach || busyFor() > 0 });
       if (data == null) return;
       await chrome.tabs.update(tabId, { vivExtData: data });
       console.log(`[vivarc] drag: tab ${tabId} joined ${shownSpace ? `space ${shownSpace}` : "the default space"} in window ${newWindowId}`);
-    } catch (_) {}
+    } catch (error) { warnOnce("drag-failed", `[vivarc] drag: a dragged tab could not join its window's space: ${error}`); }
   };
   const onAttached = (tabId, info) => {
     const from = sources.get(tabId);
     sources.delete(tabId);
-    hold(restampLater(tabId, info?.newWindowId, from));
+    hold(restampLater(tabId, info?.newWindowId, from, busyFor() > 0));
   };
 
   window.__vm.spaceRepair = { schedule, hold, gesture, markMoved };

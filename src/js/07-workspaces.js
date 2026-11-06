@@ -119,10 +119,11 @@
 
   // A tab that arrived in a window by a drag joins the space that window shows (spec Part 2, "Tabs" -> dragging). Returns
   // the new vivExtData, or null when it should be left alone: its source window is gone (a window close's rehoming keeps
-  // the space, D2), Vivarc moved it itself, or it is already in that space. The default space is written as
-  // workspaceId: 0, which Vivaldi turns into the key removed (see restamp).
-  const restampOnAttach = ({ tab, shownSpace, sourceWindowOpen, movedByVivarc }) => {
-    if (!tab || shownSpace == null || !sourceWindowOpen || movedByVivarc || of(tab) === shownSpace) return null;
+  // the space, D2), Vivarc moved it itself, a tile gesture (pull, move to a new window) was under way (Vivaldi's own
+  // switch keeps the space, and the target window's record may not be updated yet), or it is already in that space.
+  // The default space is written as workspaceId: 0, which Vivaldi turns into the key removed (see restamp).
+  const restampOnAttach = ({ tab, shownSpace, sourceWindowOpen, movedByVivarc, gestureBusy }) => {
+    if (!tab || shownSpace == null || !sourceWindowOpen || movedByVivarc || gestureBusy || of(tab) === shownSpace) return null;
     return restamp(tab, shownSpace);
   };
 
