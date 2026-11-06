@@ -568,6 +568,11 @@ def is_newer(tag, current):
         return False
 
 
+def is_git_clone():
+    """A git clone updates with `git pull` from its own origin (Revival Arc's fork); a release copy from install.sh."""
+    return os.path.isdir(os.path.join(HERE, ".git"))
+
+
 def latest_release_tag():
     try:
         with urllib.request.urlopen(RELEASES_LATEST, timeout=10) as response:
@@ -795,6 +800,10 @@ def cmd_remind(args):
             return
         value = str(time.time())
         message = "Vivaldi was updated and Vivarc is no longer active. Bring it back now? Vivaldi will close and reopen."
+    elif is_git_clone():
+        # Its updates are `git pull` from its own origin (Revival Arc's fork, ahead of upstream): upstream's release
+        # number is not an update for it, and offering one only invites declining it.
+        return
     else:
         latest = latest_release_tag()
         offered = os.path.join(HOME_DIR, "offered")

@@ -107,6 +107,10 @@ class NewRelease(ReminderCase):
     def setUp(self):
         super().setUp()
         self.inject()
+        # these are about a release-copy install (install.sh); the tests themselves run from a git clone
+        patch = mock.patch.object(vivarc, "is_git_clone", return_value=False)
+        patch.start()
+        self.addCleanup(patch.stop)
 
     def remind(self, accept, latest):
         return Remind.remind(self, accept, latest)
@@ -137,6 +141,37 @@ class NewRelease(ReminderCase):
     def test_a_vivaldi_update_gets_one_question_not_two(self):
         self.inject(html=False)
         asked, _ = self.remind(False, self.NEWER)
+        self.assertEqual(len(asked), 1)
+        self.assertIn("Vivaldi was updated", asked[0])
+
+
+class GitClone(ReminderCase):
+    """A git clone (Revival Arc's fork) updates with `git pull` from its own origin: upstream's releases are not its
+    updates, so it is never offered one. It still hears when a Vivaldi update removed Vivarc."""
+
+    def setUp(self):
+        super().setUp()
+        # resource_dir pinned to the fake app: on a Windows host it resolves Windows' layout and never sees it
+        for patch in (mock.patch.object(vivarc, "is_git_clone", return_value=True),
+                      mock.patch.object(vivarc, "resource_dir", return_value=self.resources)):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def test_a_newer_upstream_release_is_not_offered_and_not_even_looked_up(self):
+        self.inject()
+        asked = []
+        with mock.patch.object(vivarc, "prompt_update", side_effect=lambda m: asked.append(m) or True), \
+                mock.patch.object(vivarc, "latest_release_tag", return_value=NewRelease.NEWER) as latest, \
+                mock.patch.object(vivarc, "open_in_terminal") as opened, \
+                redirect_stdout(io.StringIO()):
+            vivarc.cmd_remind(mock.Mock(app=self.app))
+        self.assertEqual(asked, [])
+        opened.assert_not_called()
+        latest.assert_not_called()
+
+    def test_a_vivaldi_update_still_asks_to_bring_vivarc_back(self):
+        self.inject(html=False)
+        asked, _ = Remind.remind(self, False, NewRelease.NEWER)
         self.assertEqual(len(asked), 1)
         self.assertIn("Vivaldi was updated", asked[0])
 
