@@ -87,7 +87,7 @@ The default space can't be moved, because it belongs to each window. Clicking it
 **Dots.** A tile gets a dot when its space **lives in another window**, shown or parked there. The tooltip says what each click does.
 
 ### Tabs
-- **Move to <Space>** (a tab's right-click menu) moves the tab into that space with Vivaldi's own move, as its keyboard shortcut does. The window stays on the space it shows. If that space lives in another window, the tab goes to that window.
+- **`Move to <Space>`** (a tab's right-click menu) moves the tab into that space with Vivaldi's own move, as its keyboard shortcut does. The window stays on the space it shows (if the tab is the one on screen, another tab of the space takes the screen first, or a blank tab if there is none). If that space is shown in another window, the tab goes to that window. A space that is parked in another window cannot be reached (Vivaldi's move fails from here, and into that window it lands in the space shown there): the menu says so and nothing moves; show the space in its window first. A space with no tabs anywhere takes the tab in this window. If Vivaldi's move does not put the tab in the space, the tab is left as it was and the menu says so.
 - **New tabs** (Ctrl+T, + New Tab, palette pages, links) go into the window's recorded space (Vivaldi's own behaviour). Given invariant 2, that is always the space on screen.
 - **New-tab position:** a new tab from Ctrl+T, + New Tab or the palette goes to the top of its space's list. A link opens next to the page it came from.
 - **Favorites and pinned tabs** open in this window and **in the space on screen**. Activating a tab parked in another space breaks invariant 2 (G1–G3), so Vivarc never does it.

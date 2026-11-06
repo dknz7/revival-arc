@@ -600,7 +600,9 @@
       refresh(false);
     } catch (error) {
       if (!warnedMove) { warnedMove = true; console.warn("[vivarc] move to space:", error); }
-      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not move the tab. Use Vivaldi's Move to Workspace command." }));
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: error?.code === "parked-elsewhere"
+        ? "That space is in another window. Show it there first, then move the tab."
+        : "Could not move the tab. Use Vivaldi's Move to Workspace command." }));
     }
   };
 

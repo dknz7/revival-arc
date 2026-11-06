@@ -40,8 +40,9 @@ globalThis.chrome = {
   extension: { getBackgroundPage: () => globalThis.bg },
   tabs: {
     get: async (id) => fakeTabs.find((t) => t.id === id),
-    query: async ({ windowId }) => fakeTabs.filter((t) => t.windowId === windowId),
+    query: async ({ windowId } = {}) => fakeTabs.filter((t) => windowId == null || t.windowId === windowId),
     update: async (id, props) => { calls.push(["update", id, props]); },
+    remove: async (id) => { calls.push(["remove", id]); },
     create: async (props) => { calls.push(["create", props]); return { id: 900, windowId: props.windowId }; },
   },
 };
@@ -49,7 +50,14 @@ globalThis.window = { __vm: {} };
 const installBg = () => {
   const sw = { setActiveWorkspace: (w, s) => { calls.push(["switch", w, s === undefined ? "undef" : s]); return Promise.resolve(); } };
   const store = { getActiveWorkspaceId: (w) => (w === 7 ? 42 : undefined), getActiveWorkspaces: () => new Map([[42, 7]]) };
-  const actions = { ZP: { moveToWorkspace: (pages, space) => { calls.push(["move", pages, space]); return Promise.resolve(); } } };
+  // Vivaldi's move: it lands the tab in the window and space asked for, unless globalThis.moveFails (it then reports
+  // success and changes nothing, as the real one does for "ambiguous windowId").
+  const actions = { ZP: { moveToWorkspace: (pages, space) => {
+    calls.push(["move", pages, space]);
+    const tab = fakeTabs.find((t) => t.id === pages.id);
+    if (tab && !globalThis.moveFails) { tab.windowId = pages.windowId; tab.vivExtData = JSON.stringify(space ? { workspaceId: space } : {}); }
+    return Promise.resolve();
+  } } };
   const require = (id) => ({ 1: { A: sw }, 2: { Z: store }, 3: actions })[id];
   require.m = { 1: function () { return "setActiveWorkspace(e,t){}"; }, 2: function () { return "getActiveWorkspaceId(e){}"; },
     3: function () { return 'moveToWorkspace:Pe,debug:"PageActions.moveToWorkspace"'; } };
@@ -706,6 +714,39 @@ class MoveToSpace(unittest.TestCase):
         # Vivaldi's move fails ("ambiguous windowId") when asked to put a tab into a space shown elsewhere, from the tab's own window
         tabs = [ws_tab(1, 8, 0, active=True), ws_tab(2, 8, 0)]
         self.assertEqual(self.moved(tabs, [2], 42), [["move", {"id": 2, "windowId": 7}, 42]])
+
+    def failed(self, tabs, ids, space):
+        return native_js(f"""fakeTabs.push(...{json.dumps(tabs)}); installBg(); globalThis.moveFails = true;
+          try {{ await native.moveToSpace({json.dumps(ids)}, {space}); return ['no error', calls]; }} catch (e) {{ return [e.message, calls]; }}""")
+
+    def test_a_move_that_reports_success_but_changes_nothing_throws_and_gives_the_screen_back(self):
+        tabs = [ws_tab(1, 7, 42, active=True, accessed=50), ws_tab(3, 7, 42, accessed=40)]
+        message, calls = self.failed(tabs, [1], 50)
+        self.assertIn("did not move", message)
+        self.assertEqual(calls, [["update", 3, {"active": True}], ["move", {"id": 1, "windowId": 7}, 50], ["update", 1, {"active": True}]],
+                         "the original tab is active again")
+
+    def test_a_failed_move_closes_the_blank_tab_it_made(self):
+        message, calls = self.failed([ws_tab(1, 7, 42, active=True)], [1], 50)
+        self.assertIn("did not move", message)
+        self.assertEqual(calls, [["create", {"windowId": 7, "active": True}], ["move", {"id": 1, "windowId": 7}, 50],
+                                 ["update", 1, {"active": True}], ["remove", 900]])
+
+    def test_a_failed_move_of_an_inactive_tab_has_nothing_to_undo(self):
+        message, calls = self.failed([ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42)], [2], 50)
+        self.assertIn("did not move", message)
+        self.assertEqual(calls, [["move", {"id": 2, "windowId": 7}, 50]])
+
+    def test_a_space_parked_in_this_window_is_moved_within_it(self):
+        tabs = [ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42), ws_tab(5, 7, 50)]
+        self.assertEqual(self.moved(tabs, [2], 50), [["move", {"id": 2, "windowId": 7}, 50]])
+
+    def test_a_space_parked_in_another_window_is_refused_before_anything_moves(self):
+        # measured: asked from the tab's window the move fails; asked with the holding window it lands in that window's SHOWN space, the wrong one
+        tabs = [ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42), ws_tab(5, 8, 50), ws_tab(6, 8, 0, active=True)]
+        message, calls = self.failed(tabs, [1], 50)
+        self.assertIn("another window", message)
+        self.assertEqual(calls, [], "no keeper activated, nothing moved")
 
     def test_without_vivaldis_move_it_rejects_instead_of_throwing(self):
         out = native_js("try { await native.moveToSpace([2], 50); return 'no error'; } catch (e) { return e.message; }")
