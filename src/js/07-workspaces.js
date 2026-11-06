@@ -52,6 +52,10 @@
   // nowhere. Sending a space to a new window frees it there first.
   const activeWindowOf = (activeTabs, id) => (activeTabs || []).find((t) => id && of(t) === id)?.windowId ?? null;
 
+  // A click on a tile that sends its space to a new window: ctrl+shift on Windows, cmd+shift on a Mac.
+  const wantsNewWindow = (event, windows = window.__vm.windows) =>
+    !!event?.shiftKey && !!(windows ? event.ctrlKey : event.metaKey);
+
   // A space tile's tooltip: what this space is, and what clicking it does. Sending it to a new window is
   // ctrl+shift+click on Windows and cmd+shift+click on a Mac, where ctrl+click is a right-click.
   const tileHint = (item, inOtherWindows, windows = window.__vm.windows) => {
@@ -178,5 +182,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, elsewhere, activeWindowOf, tileHint, topIndex, label, assign, stamp, findRemover, findCreator, findSwitcher, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, elsewhere, activeWindowOf, wantsNewWindow, tileHint, topIndex, label, assign, stamp, findRemover, findCreator, findSwitcher, removalLabel, eventWindow, CREATE_HINT };
 })();

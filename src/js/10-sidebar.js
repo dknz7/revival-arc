@@ -756,6 +756,7 @@
   };
   // Vivaldi's own switch: a space active in another window focuses that window; any other moves here.
   const switchSpace = async (item) => {
+    if (pulling) return; // a pull or a move to a new window is under way: a switch now would race it
     try {
       const activate = nativeSwitcher();
       const win = await chrome.windows.getCurrent();
@@ -785,28 +786,46 @@
   // Where it is active (this window included) that window goes to its default space first, which frees the space;
   // then Vivaldi's switch, called for the new window, moves the space's tabs there. The new window starts on
   // about:blank, not a start page, so the command bar does not open on it, and that tab closes once the space is in.
-  // A brand-new window may not be known to Vivaldi's switch at once, so it is retried until the tabs arrive.
+  // A brand-new window may not be known to Vivaldi's switch at once. A retry must first put the new window back on its
+  // default space: Vivaldi marks the space active there before moving any tab, and a second call for a space marked
+  // active only focuses the window. If the space never arrives, the new window (which then holds none of its tabs)
+  // closes, which also clears that mark, and the space goes back to the window it came from.
   const spaceInWindow = async (windowId, id) =>
     (await chrome.tabs.query({ windowId })).some((t) => spacesOf.of(t) === id);
+  const arrives = async (windowId, id, ms) => {
+    for (const end = Date.now() + ms; Date.now() < end; await new Promise((resolve) => setTimeout(resolve, 150))) {
+      if (await spaceInWindow(windowId, id)) return true;
+    }
+    return spaceInWindow(windowId, id);
+  };
   const spaceToNewWindow = async (item) => {
     if (pulling || !item.id) return;
     pulling = true;
+    let activate = null, holder = null, fresh = null;
     try {
-      const activate = nativeSwitcher();
-      const holder = spacesOf.activeWindowOf(await chrome.tabs.query({ active: true, windowType: "normal" }), item.id);
+      activate = nativeSwitcher();
+      holder = spacesOf.activeWindowOf(await chrome.tabs.query({ active: true, windowType: "normal" }), item.id);
       if (holder != null) await activate(holder, 0);
-      const fresh = await chrome.windows.create({ url: "about:blank", focused: true });
+      fresh = await chrome.windows.create({ url: "about:blank", focused: true });
       const helper = fresh.tabs?.[0]?.id;
-      for (let attempt = 0; attempt < 4 && !(await spaceInWindow(fresh.id, item.id)); attempt++) {
+      let moved = false;
+      for (let attempt = 0; attempt < 3 && !moved; attempt++) {
         await new Promise((resolve) => setTimeout(resolve, attempt ? 500 : 250));
+        if (attempt) await activate(fresh.id, 0);
         await activate(fresh.id, item.id);
+        moved = await arrives(fresh.id, item.id, 1500);
       }
-      if (!(await spaceInWindow(fresh.id, item.id))) throw new Error("the space did not move to the new window");
+      if (!moved) throw new Error("the space did not move to the new window");
       if (helper != null) await chrome.tabs.remove(helper).catch(() => {});
       await chrome.windows.update(fresh.id, { focused: true });
       refresh(false);
     } catch (error) {
       console.warn("[vivarc] space to a new window:", error);
+      // undo: only a new window that holds none of the space's tabs is closed, and the space goes back where it was
+      if (fresh && !(await spaceInWindow(fresh.id, item.id).catch(() => true))) {
+        await chrome.windows.remove(fresh.id).catch(() => {});
+        if (holder != null && activate) await activate(holder, item.id).catch(() => {});
+      }
       window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not move the space to a new window." }));
     } finally { pulling = false; }
   };
@@ -843,8 +862,7 @@
     pill.addEventListener("blur", hideSpaceTooltip);
     pill.addEventListener("click", (event) => {
       hideSpaceTooltip();
-      const toNewWindow = event.shiftKey && (window.__vm.windows ? event.ctrlKey : event.metaKey);
-      if (toNewWindow) { if (item.id) spaceToNewWindow(item); return; }
+      if (spacesOf.wantsNewWindow(event)) { if (item.id) spaceToNewWindow(item); return; }
       (event.shiftKey && openElsewhere ? pullSpace : switchSpace)(item);
     });
     if (item.id) pill.addEventListener("contextmenu", (e) => { hideSpaceTooltip(); confirmDeleteSpace(item, e); });

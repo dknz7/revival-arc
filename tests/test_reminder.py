@@ -145,6 +145,24 @@ class NewRelease(ReminderCase):
         self.assertIn("Vivaldi was updated", asked[0])
 
 
+class WhatIsAGitClone(unittest.TestCase):
+    def check(self, make):
+        with tempfile.TemporaryDirectory() as here:
+            make(os.path.join(here, ".git"))
+            with mock.patch.object(vivarc, "HERE", here):
+                return vivarc.is_git_clone()
+
+    def test_a_clone_has_a_git_folder(self):
+        self.assertTrue(self.check(os.mkdir))
+
+    def test_a_worktree_or_submodule_has_a_git_file_and_is_one_too(self):
+        # its .git is a file pointing at the real repository; isdir() missed it and offered upstream's release
+        self.assertTrue(self.check(lambda p: open(p, "w").write("gitdir: ../.git/worktrees/x\n")))
+
+    def test_a_release_copy_has_neither(self):
+        self.assertFalse(self.check(lambda p: None))
+
+
 class GitClone(ReminderCase):
     """A git clone (Revival Arc's fork) updates with `git pull` from its own origin: upstream's releases are not its
     updates, so it is never offered one. It still hears when a Vivaldi update removed Vivarc."""

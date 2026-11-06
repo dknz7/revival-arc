@@ -569,8 +569,9 @@ def is_newer(tag, current):
 
 
 def is_git_clone():
-    """A git clone updates with `git pull` from its own origin (Revival Arc's fork); a release copy from install.sh."""
-    return os.path.isdir(os.path.join(HERE, ".git"))
+    """A git clone updates with `git pull` from its own origin (Revival Arc's fork); a release copy from install.sh.
+    exists, not isdir: in a worktree or a submodule .git is a file, and those are clones too."""
+    return os.path.exists(os.path.join(HERE, ".git"))
 
 
 def latest_release_tag():
@@ -767,7 +768,7 @@ def cmd_update(args):
         if vivaldi_running():
             die("Vivaldi did not close. Quit it yourself (Cmd+Q), then run this again. Nothing was changed.")
     extra = ["--no-peek"] if args.no_peek else []
-    if os.path.isdir(os.path.join(HERE, ".git")):
+    if is_git_clone():
         pulled = subprocess.run(["git", "-C", HERE, "pull", "--ff-only"], capture_output=True, text=True)
         if pulled.returncode == 0:
             argv = [sys.executable, os.path.join(HERE, "vivarc.py"), "--app", args.app, "--data-dir", args.data_dir, "install", *extra]

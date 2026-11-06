@@ -355,6 +355,30 @@ class TileHint(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class NewWindowClick(unittest.TestCase):
+    """ctrl+shift+click sends a space to a new window; cmd+shift+click on a Mac, where ctrl+click is a right-click."""
+
+    def wants(self, windows, **keys):
+        event = {"shiftKey": False, "ctrlKey": False, "metaKey": False, "altKey": False, **keys}
+        return js("workspaces.wantsNewWindow(event, windows)", event=event, windows=windows)
+
+    def test_ctrl_shift_on_windows(self):
+        self.assertTrue(self.wants(True, ctrlKey=True, shiftKey=True))
+        self.assertFalse(self.wants(True, metaKey=True, shiftKey=True))
+
+    def test_cmd_shift_on_a_mac(self):
+        self.assertTrue(self.wants(False, metaKey=True, shiftKey=True))
+        self.assertFalse(self.wants(False, ctrlKey=True, shiftKey=True))
+
+    def test_plain_shift_and_ctrl_clicks_are_left_to_the_other_actions(self):
+        for windows in (True, False):
+            self.assertFalse(self.wants(windows))
+            self.assertFalse(self.wants(windows, shiftKey=True))
+            self.assertFalse(self.wants(windows, ctrlKey=True))
+            self.assertFalse(self.wants(windows, metaKey=True))
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class WhereActive(unittest.TestCase):
     """The window a space is active in, this one included (elsewhere leaves this window out)."""
 
