@@ -109,7 +109,13 @@ The confirmation says how many tabs will close and in how many windows. After th
 4. **Dragging a tab to another window** restamps it into that window's shown space. (Not chosen: keeping its space and arriving parked.)
 
 ## Still to confirm before the tests are written
-These weren't measured in the spike. Confirming them may sharpen a rule but shouldn't change the decisions above.
-- Clicks in Vivaldi's own tab bar, window panel and space switcher: do they call the switch, or only activate the tab (G1)?
-- Real drag and drop of a tab between windows, against `chrome.tabs.move` (C).
-- What Vivarc's Favorites and pinned tabs do today when their tab is parked in another space.
+These weren't measured in the spike. They were measured on 2026-11-06 in the sandbox (`tools/sandbox.ps1`: Vivaldi 8.2.4133.96 with this branch's Vivarc, Arc layout), 3 runs per case, all 3 identical. W shows X (`X1` active, `X2`) with `Y1` parked in W, unless a case says otherwise.
+- **H1. Vivaldi's own tab bar, window panel and space switcher.** None of them leaves the record and the screen disagreeing.
+  - Tab bar (H1-strip): Vivaldi's strip lists only the tabs of the window's recorded space (`X1`, `X2`), so a parked tab can't be clicked there. A control click on `X2` activated it and left the record on X.
+  - Window panel (H1-panel): a single click on `Y1` (under Workspaces > Y) only selects the row. A double click calls Vivaldi's `setActiveWorkspace(W, Y)`: the record becomes Y and `Y1` is active (a switch, not G1).
+  - Space switcher (H1-menu, the Workspaces button popup): choosing Y calls `setActiveWorkspace(W, Y)`, with the same result.
+- **H2. Dropping a tab into another window.** A real drag is a native OS drag (`tabsPrivate.startDrag`), which CDP can't drive. The case runs the call Vivaldi's drop handler makes in the target window, `PageActions.moveDroppedTabs(O, [X2], X2, -1)`, which moves the tab with `workspaceId` set to **O's recorded space**. `X2` lands at the end of O's strip and becomes active there. It **joins the space O shows**: Z when O shows Z (H2-named), and the default space, with no `workspaceId` key, when O is on default (H2-default). Neither record changes. Vivarc made no calls. So Vivaldi's own drop already restamps; `chrome.tabs.move` keeps the space and parks the tab (C1).
+- **H3. Favorites and pinned tabs whose tab is in another space.** Vivarc never activated the parked tab (no G1 drift), and the record stayed Y in every run.
+  - A pin of X, opened while W showed X (tab bound in X), then W switched to Y (H3-pin): the sidebar shows Y's Pinned folder, so X's pin isn't on screen and can't be clicked.
+  - A favorite opened in X, then W switched to Y (H3-fav): clicking it opens a **new** tab bound to the same favorite. Vivaldi puts it in Y and it is active. The X tab stays bound in X, so the favorite now has a tab in each space.
+  - A pin of Y whose tab was moved to X (restamped while inactive, G5) (H3-pinmoved): same as H3-fav. A new tab opens in Y and the X tab stays.
