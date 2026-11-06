@@ -155,51 +155,6 @@ class Folders(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
-class NewTabs(unittest.TestCase):
-    def stamped(self, t, active, window=1):
-        out = js("workspaces.stamp(t, active, window)", t=t, active=active, window=window)
-        return json.loads(out) if out else None
-
-    def test_a_tab_opened_while_a_space_is_active_joins_that_space(self):
-        self.assertEqual(self.stamped({**tab(1), "windowId": 1}, WORK["id"]), {"workspaceId": WORK["id"]})
-
-    def test_a_tab_opened_in_another_window_is_left_to_that_window(self):
-        t = {**tab(1), "windowId": 2}
-        self.assertIsNone(self.stamped(t, WORK["id"], window=1))
-        self.assertEqual(self.stamped({**tab(1), "windowId": 1}, WORK["id"], window=1), {"workspaceId": WORK["id"]})
-
-    def test_the_tabs_other_data_is_kept(self):
-        t = {"id": 1, "windowId": 1, "vivExtData": json.dumps({"tiling": {"id": "t"}})}
-        self.assertEqual(self.stamped(t, WORK["id"]), {"tiling": {"id": "t"}, "workspaceId": WORK["id"]})
-
-    def test_nothing_is_written_in_the_default_space(self):
-        self.assertIsNone(self.stamped({**tab(1), "windowId": 1}, 0))
-
-    def test_a_tab_that_already_has_a_workspace_is_left_alone(self):
-        self.assertIsNone(self.stamped({**tab(1, SIDE["id"]), "windowId": 1}, WORK["id"]))
-        self.assertIsNone(self.stamped({"id": 1, "windowId": 1, "vivExtData": json.dumps({"workspaceId": 0})}, WORK["id"]))
-
-    # A tab a page opens (middle-click, ctrl+click) belongs with that page. The sidebar's idea of the active space
-    # comes from a debounced refresh and can lag by seconds while pages load; the opener cannot.
-    def stamped_from(self, t, active, opener, window=1):
-        out = js("workspaces.stamp(t, active, window, opener)", t=t, active=active, window=window, opener=opener)
-        return json.loads(out) if out else None
-
-    def test_a_link_from_a_default_space_page_stays_there_even_while_the_sidebar_lags_on_another_space(self):
-        opener = {**tab(9), "windowId": 1}
-        self.assertIsNone(self.stamped_from({**tab(1), "windowId": 1}, WORK["id"], opener))
-
-    def test_a_link_from_a_page_in_a_space_joins_that_space_not_the_one_the_sidebar_last_saw(self):
-        opener = {**tab(9, SIDE["id"]), "windowId": 1}
-        self.assertEqual(self.stamped_from({**tab(1), "windowId": 1}, WORK["id"], opener), {"workspaceId": SIDE["id"]})
-        self.assertEqual(self.stamped_from({**tab(1), "windowId": 1}, 0, opener), {"workspaceId": SIDE["id"]})
-
-    def test_an_opener_in_another_window_does_not_decide(self):
-        opener = {**tab(9, SIDE["id"]), "windowId": 2}
-        self.assertEqual(self.stamped_from({**tab(1), "windowId": 1}, WORK["id"], opener), {"workspaceId": WORK["id"]})
-
-
-@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class NewTabsGoFirst(unittest.TestCase):
     """A new tab (Ctrl+T, + New Tab) goes to the top of its space's list, as in Arc. The list shows the highest tab
     index first (stacks.entries), so the top is the space's highest index."""

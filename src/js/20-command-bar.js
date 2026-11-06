@@ -72,9 +72,8 @@
   const toast = (message) => window.dispatchEvent(new CustomEvent("vm-toast", { detail: message }));
   // A new tab tops its space's list, as in Arc (workspaces.topIndex). Ctrl+T's blank tab, which Vivaldi puts next to
   // the active tab, moves there once it has an address; so does one the bar creates (+ New Tab, palette pages), as
-  // Vivaldi's tabs.create ignores `index` (measured on 8.2). A tab the bar creates is given its space at creation,
-  // read from the window's active tab now: the sidebar's stamp would use its debounced view of the active space,
-  // which can lag, and would land after the move. Never moved: a tab in a folder (moving it would split the stack),
+  // Vivaldi's tabs.create ignores `index` (measured on 8.2). Vivaldi files a tab the bar creates in the window's
+  // space itself, so Vivarc writes no space onto it. Never moved: a tab in a folder (moving it would split the stack),
   // a split view's new pane (it belongs beside its partner), and the page whose address Cmd+L edits.
   const keepInPlace = new Set();
   const toTop = async (tabId) => {
@@ -84,9 +83,7 @@
     if (index != null) await chrome.tabs.move(tabId, { index });
   };
   const openNew = async (url) => {
-    const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
-    const space = active ? window.__vm.workspaces.of(active) : 0;
-    const created = await chrome.tabs.create(space ? { url, vivExtData: JSON.stringify({ workspaceId: space }) } : { url });
+    const created = await chrome.tabs.create({ url });
     await toTop(created.id).catch((error) => console.warn("[vivarc] new tab to the top:", error));
     return created;
   };

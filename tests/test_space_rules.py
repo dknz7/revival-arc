@@ -135,5 +135,12 @@ class Native(unittest.TestCase):
         self.assertIn("unavailable", out)
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class NoStamping(unittest.TestCase):
+    def test_vivarc_never_stamps_a_space_onto_a_new_tab(self):
+        # Vivaldi files every new tab in the window's recorded space itself (B1, B2b, B7c); Vivarc's own stamp undid switches (A8b)
+        self.assertNotIn("stamp", js("Object.keys(workspaces)"))
+
+
 if __name__ == "__main__":
     unittest.main()

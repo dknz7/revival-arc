@@ -82,21 +82,6 @@
     return { default: folders.find((f) => !used.has(f.id)) ?? folders[0] ?? null, byId };
   };
 
-  // A tab opened while a space is active joins it. Vivaldi does not do this for tabs a mod or a command bar opens,
-  // so they would land in the default space. Returns the new vivExtData, or null when nothing needs writing.
-  // Every window runs its own copy of the mod and sees the tabs of all windows, so only this window's tabs are stamped.
-  // A tab a page opens (opener in the same window) joins its opener's space instead: activeSpace comes from the
-  // sidebar's debounced refresh, which can lag by seconds while pages load, and filed such tabs in the wrong space.
-  const stamp = (tab, activeSpace, windowId, opener) => {
-    if (tab?.windowId !== windowId) return null;
-    const space = opener && opener.windowId === tab.windowId ? of(opener) : activeSpace;
-    if (!space) return null;
-    let data;
-    try { data = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) { data = {}; }
-    if ("workspaceId" in data) return null;
-    return JSON.stringify({ ...data, workspaceId: space });
-  };
-
   // Where a new tab (Ctrl+T, + New Tab) goes so it tops its space's list, as in Arc. The list shows the highest tab
   // index first (stacks.entries), so that is the index of the space's last unpinned tab in this window: chrome.tabs.move
   // to it puts the new tab just after that one. null when it is already there (or alone), so nothing moves.
@@ -215,5 +200,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, elsewhere, activeWindowOf, wantsNewWindow, tileHint, topIndex, label, assign, stamp, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, elsewhere, activeWindowOf, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
 })();

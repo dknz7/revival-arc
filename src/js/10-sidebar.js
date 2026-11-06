@@ -1233,21 +1233,6 @@
     for (const ev of ["onCreated", "onRemoved", "onChanged", "onMoved", "onImportEnded"]) {
       chrome.bookmarks[ev]?.addListener(() => refresh(true));
     }
-    chrome.tabs.onCreated.addListener((tab) => {
-      const active = state.active;
-      chrome.windows.getCurrent().then(async (win) => {
-        if (tab.windowId !== win.id) return;
-        // Read the tab again: Vivaldi may have given it a space meanwhile (stamp leaves a tab that has one alone), and
-        // the created event's tab can lack openerTabId (measured on 8.2 for tabs made with an opener by tabs.create).
-        const fresh = await chrome.tabs.get(tab.id);
-        const openerId = fresh.openerTabId ?? tab.openerTabId;
-        // a link opened from a page goes with that page (stamp), so read the opener now, not the sidebar's last view
-        const opener = openerId != null ? await chrome.tabs.get(openerId).catch(() => null) : null;
-        const data = spacesOf.stamp(fresh, active, win.id, opener);
-        // the tab may be gone already (a folder's spare tab is)
-        if (data) return chrome.tabs.update(tab.id, { vivExtData: data });
-      }).catch(() => {});
-    });
     for (const ev of ["pointerup", "pointercancel", "dragstart", "blur"]) window.addEventListener(ev, () => setTimeout(released), true);
     // Every window runs its own sidebar and sees the tab events of all windows: only this window's events (or ones
     // that do not say, or any until this window's id is known) re-render it, so another window's page loads do not
