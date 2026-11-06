@@ -201,5 +201,68 @@ class LivesIn(unittest.TestCase):
         self.assertEqual(self.dots([], [], 1), [])
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class TileGestures(unittest.TestCase):
+    """One test per row of the spec's gesture table: what a click, shift+click and the new-window gesture do. Window 1 is 'here'."""
+
+    def act(self, tabs, record, space, **gesture):
+        flags = {"shift": False, "newWindow": False, **gesture}
+        return js("workspaces.tileAction({ id, here: 1, tabs, record: new Map(record), shift: s, newWindow: n })",
+                  id=space, tabs=tabs, record=record, s=flags["shift"], n=flags["newWindow"])
+
+    def check(self, tabs, record, space, click, shift, new_window=None):
+        def norm(kind, window=None):
+            return {"kind": kind, "window": window}
+
+        def got(**g):
+            r = self.act(tabs, record, space, **g)
+            return {"kind": r["kind"], "window": r.get("window")}
+        self.assertEqual(got(), norm(*click), "click")
+        self.assertEqual(got(shift=True), norm(*shift), "shift+click")
+        if new_window:
+            self.assertEqual(got(shift=True, newWindow=True), norm(*new_window), "new window")
+
+    def test_shown_here(self):
+        tabs = [in_window(1, 5, 10)]
+        self.check(tabs, [[5, 1]], 5, ("none",), ("none",), ("new-window",))
+
+    def test_shown_in_another_window(self):
+        tabs = [in_window(2, 5, 10), in_window(1, 0, 11)]
+        self.check(tabs, [[5, 2]], 5, ("focus", 2), ("pull",), ("new-window",))
+
+    def test_parked_here(self):
+        tabs = [in_window(1, 5, 10), in_window(1, 6, 11)]
+        self.check(tabs, [[6, 1]], 5, ("show",), ("show",), ("new-window",))
+
+    def test_parked_in_another_window(self):
+        tabs = [in_window(2, 5, 10), in_window(1, 0, 11)]
+        self.check(tabs, [[7, 2]], 5, ("show-there", 2), ("pull",), ("new-window",))
+
+    def test_split_and_shown_in_another_window(self):
+        tabs = [in_window(2, 5, 10), in_window(1, 5, 11), in_window(1, 5, 12)]
+        self.check(tabs, [[5, 2]], 5, ("focus", 2), ("pull",))
+
+    def test_split_and_shown_nowhere_goes_to_the_window_with_most_tabs(self):
+        tabs = [in_window(2, 5, 10), in_window(2, 5, 11), in_window(1, 5, 12)]
+        self.check(tabs, [[6, 1]], 5, ("show-there", 2), ("pull",))
+
+    def test_empty(self):
+        tabs = [in_window(1, 6, 10)]
+        self.check(tabs, [[6, 1]], 5, ("show",), ("show",), ("new-window",))
+
+    def test_default_space(self):
+        tabs = [in_window(1, 5, 10), in_window(1, 0, 11)]
+        self.check(tabs, [[5, 1]], 0, ("show",), ("show",), ("none",))
+        self.check(tabs, [[5, 2]], 0, ("none",), ("none",), ("none",))
+
+    def test_record_missing_and_the_tabs_say_it_is_active_here(self):
+        active = dict(in_window(1, 5, 10), active=True)
+        self.check([active, in_window(2, 0, 11)], [], 5, ("none",), ("none",))
+
+    def test_record_missing_and_the_tabs_say_it_is_active_in_another_window(self):
+        active = dict(in_window(2, 5, 10), active=True)
+        self.check([active, in_window(2, 5, 12), in_window(1, 0, 11)], [], 5, ("focus", 2), ("pull",))
+
+
 if __name__ == "__main__":
     unittest.main()

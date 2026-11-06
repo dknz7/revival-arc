@@ -67,6 +67,28 @@
     }).sort((a, b) => a - b);
   };
 
+  // What a gesture on a space tile does (spec: "Gestures on a space tile"). A plain click never moves tabs between
+  // windows: it shows the space here, focuses the window showing it, or sends the window that holds it to it.
+  // Pure. tabs: every tab in every normal window (the active ones carry `active`); record: Map spaceId -> windowId,
+  // empty when Vivaldi's record can't be read, in which case the active tabs stand in for it (as shownIn does).
+  // -> { kind: "none"|"show"|"focus"|"show-there"|"pull"|"new-window", window?: number }
+  const tileAction = ({ id, here, tabs, record, shift, newWindow }) => {
+    const known = !!record && record.size > 0;
+    if (!id) {
+      if (newWindow) return { kind: "none" }; // the default space belongs to each window
+      const shownHere = known ? ![...record.values()].includes(here)
+        : (tabs || []).some((t) => t.active && t.windowId === here && of(t) === 0);
+      return { kind: shownHere ? "none" : "show" };
+    }
+    if (newWindow) return { kind: "new-window" };
+    const shown = shownIn(known ? [] : (tabs || []).filter((t) => t.active), known ? record : null, id);
+    if (shown === here) return { kind: "none" };
+    const home = shown ?? livesIn(tabs, known ? record : new Map(), id);
+    if (home === null || home === here) return { kind: "show" };
+    if (shift) return { kind: "pull" };
+    return shown !== null ? { kind: "focus", window: home } : { kind: "show-there", window: home };
+  };
+
   // A click on a tile that sends its space to a new window: ctrl+shift on Windows, cmd+shift on a Mac.
   const wantsNewWindow = (event, windows = window.__vm.windows) =>
     !!event?.shiftKey && !!(windows ? event.ctrlKey : event.metaKey);
@@ -215,5 +237,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
 })();
