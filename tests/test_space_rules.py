@@ -606,12 +606,16 @@ globalThis.console = { log: (...a) => log.push(a.map(String).join(" ")), warn: (
 const bg = { ...(input.bg || {}) }; // Vivaldi's background page, which every window shares
 const t0 = Date.now(), firstAt = [];
 const call = (c) => { if (!calls.length) firstAt.push(Date.now() - t0); calls.push(c); };
-const on = () => ({ addListener() {} });
+const listeners = {}; // "tabs.onAttached" -> its listeners; fire(name, ...args) calls them as Chrome would
+const on = (name) => ({ addListener(fn) { (listeners[name] ||= []).push(fn); } });
+const fire = (name, ...args) => (listeners[name] || []).forEach((fn) => fn(...args));
 globalThis.chrome = {
   extension: { getBackgroundPage: () => bg },
-  windows: { getAll: async () => s.windows, getCurrent: async () => ({ id: input.me }), onRemoved: on() },
-  tabs: { query: async () => s.tabs, update: async (id) => { call(["activate", id]); }, move: async (ids, p) => { call(["move", ids, p.windowId, [...window.__vm.movedByVivarc]]); },
-          onActivated: on(), onAttached: on(), onDetached: on(), onRemoved: on() },
+  windows: { getAll: async () => s.windows, getCurrent: async () => ({ id: input.me }), onRemoved: on("windows.onRemoved") },
+  tabs: { query: async () => s.tabs, get: async (id) => s.tabs.find((t) => t.id === id),
+          update: async (id, p) => { call(p && p.vivExtData ? ["restamp", id, JSON.parse(p.vivExtData)] : ["activate", id]); },
+          move: async (ids, p) => { call(["move", ids, p.windowId, [...window.__vm.movedByVivarc]]); },
+          onActivated: on("tabs.onActivated"), onAttached: on("tabs.onAttached"), onDetached: on("tabs.onDetached"), onRemoved: on("tabs.onRemoved") },
 };
 globalThis.vivaldi = { prefs: { get: async () => ({ value: s.spaces.map((id) => ({ id })) }) } };
 globalThis.window = { addEventListener() {}, __vm: { ready: Promise.resolve(true) } };
@@ -665,6 +669,46 @@ class RepairRuntime(unittest.TestCase):
         out = runtime(Repairs.D1, me=1, script="repair.hold(later(250));")
         self.assertEqual(out["calls"][:1], [["switch", 1, 0]])
         self.assertGreaterEqual(out["firstAt"], 250)
+
+    # Tab 30 (space 6) leaves window 2 for window 1, which shows space 5. Timers run 40x fast: the restamp's 500 ms
+    # check is at about 12 ms real, its 1.5 s check at about 37 ms. `close` runs `ms` real ms after the attach.
+    ATTACH = {"windows": normal(1, 2), "spaces": [5, 6], "record": [[5, 1]],
+              "tabs": [tab(10, 1, 5, active=True), tab(30, 1, 6)]}
+    ATTACH_SCRIPT = """
+      later(20).then(() => {
+        fire("tabs.onDetached", 30, { oldWindowId: 2 });
+        fire("tabs.onAttached", 30, { newWindowId: 1 });
+        later(%d).then(() => { %s });
+      });
+    """
+
+    def restamps(self, ms=0, close=""):
+        out = runtime(self.ATTACH, me=1, script=self.ATTACH_SCRIPT % (ms, close))
+        return [c for c in out["calls"] if c[0] == "restamp"]
+
+    def test_a_tab_moved_from_an_open_window_joins_the_space_shown_there(self):
+        self.assertEqual(self.restamps(), [["restamp", 30, {"workspaceId": 5}]])
+
+    def test_a_tab_whose_window_closes_after_500_ms_keeps_its_space(self):
+        # a heavy window can take longer than 500 ms from the first rehomed tab to its removal (D2)
+        gone = "s.windows = s.windows.filter((w) => w.id !== 2); fire('windows.onRemoved', 2);"
+        self.assertEqual(self.restamps(20, gone), [])
+
+    def test_a_removal_event_counts_even_while_getall_still_lists_the_window(self):
+        self.assertEqual(self.restamps(20, "fire('windows.onRemoved', 2);"), [])
+
+    def test_a_removal_that_arrives_while_the_last_look_is_pending_still_counts(self):
+        # While Vivaldi closes a heavy window, chrome.windows.getAll() took ~2 s and answered with the window still
+        # listed, and windows.onRemoved arrived meanwhile (measured, 100 tabs). Here every getAll takes 80 ms real and
+        # answers with the windows as they were when it was asked; the 1.5 s check looks twice (leader, then source) from
+        # about 117 ms real after the attach, so a removal 237 ms in lands during its last look.
+        slow = """
+          chrome.windows.getAll = async () => { const then = s.windows; await later(80); return then; };
+        """
+        out = runtime(self.ATTACH, me=1, script=slow + self.ATTACH_SCRIPT % (237, "fire('windows.onRemoved', 2);"))
+        self.assertEqual([c for c in out["calls"] if c[0] == "restamp"], [])
+        out = runtime(self.ATTACH, me=1, script=slow + self.ATTACH_SCRIPT % (0, ""))
+        self.assertEqual([c for c in out["calls"] if c[0] == "restamp"], [["restamp", 30, {"workspaceId": 5}]], "the probe sees a restamp")
 
 
 def ws_tab(id, window_id, space=0, active=False, accessed=0):
