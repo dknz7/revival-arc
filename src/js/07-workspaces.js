@@ -117,6 +117,74 @@
     return JSON.stringify(data);
   };
 
+  // The one window that runs repairs: every window runs its own copy of Vivarc and sees every window's tabs, so they all
+  // agree on the lowest normal window id. When it closes, the next lowest takes over. null when no normal window is left.
+  const leaderOf = (windows) => (windows || []).filter((w) => w.type === "normal")
+    .reduce((best, w) => (best === null || w.id < best ? w.id : best), null);
+
+  // What puts the invariants back when Vivaldi breaks them (spec Part 2, "Repairs"), in the spec's order. Pure.
+  // windows: chrome.windows; tabs: every tab in every normal window; record: Map spaceId -> windowId (Vivaldi's);
+  // spaces: the ids of the spaces that exist, or null when the list can't be read (then no space counts as deleted).
+  // -> [{kind:"switch", window, space} | {kind:"activate", tab} | {kind:"gather", space, window, tabs}], in the order
+  // to carry them out. Each step is planned on the record the steps before it leave, so the plan's own result needs no
+  // repair (Part 1's effects), with one exception noted at rule 2.
+  const repairPlan = ({ windows, tabs, record, spaces }) => {
+    const normal = (windows || []).filter((w) => w.type === "normal").map((w) => w.id).sort((a, b) => a - b);
+    const live = new Set(normal);
+    const all = (tabs || []).filter((t) => live.has(t.windowId));
+    const held = (w, id) => all.filter((t) => t.windowId === w && of(t) === id);
+    const known = Array.isArray(spaces) ? new Set(spaces) : null;
+    // the record as the plan so far leaves it: named spaces only, in windows that are still open
+    const shown = new Map([...(record || [])].filter(([id, w]) => id && live.has(w)));
+    const recordedIn = (w) => [...shown].find(([, x]) => x === w)?.[0] ?? 0;
+    const plan = [];
+
+    // 1. A record on a deleted space, or on a space with no tab in its window (F2, C3, D1): the window goes to default,
+    //    which activates its default tab (A8a, A8b), so rule 2 has nothing left to do there.
+    const toDefault = new Set();
+    for (const [id, w] of [...shown].sort((a, b) => a[1] - b[1])) {
+      if ((known && !known.has(id)) || !held(w, id).length) {
+        plan.push({ kind: "switch", window: w, space: 0 });
+        shown.delete(id);
+        toDefault.add(w);
+      }
+    }
+
+    // 2. The active tab is in another space than the record (G1-G3): the recorded space's most recent tab comes back.
+    //    Only a window on default can hold no tab of its space here (rule 1 took the rest); then the record follows
+    //    the active tab, unless that space is shown in another window (G6). A switch to default would then do nothing
+    //    (A8c) and a switch to it would only focus that window (A2), so nothing is switched: rule 3 gathers the tab
+    //    where its space is shown, and what the window shows next is Vivaldi's pick, for the next pass.
+    const pulled = new Set();
+    for (const w of normal) {
+      if (toDefault.has(w)) continue;
+      const active = all.find((t) => t.windowId === w && t.active);
+      if (!active) continue;
+      const own = recordedIn(w), space = of(active);
+      if (space === own) continue;
+      const back = recentTab(held(w, own), own);
+      if (back) plan.push({ kind: "activate", tab: back.id });
+      else if (!shown.has(space)) {
+        // Vivaldi's switch moves every tab of the space here (A4, A6), so rule 3 has nothing to gather for it
+        plan.push({ kind: "switch", window: w, space });
+        shown.set(space, w);
+        pulled.add(space);
+      }
+    }
+
+    // 3. A named space with tabs in more than one window (D8): its strays move to where it lives, the window showing
+    //    it, else the one with most of its tabs (livesIn). They keep their space (C1).
+    const named = [...new Set(all.map(of))].filter((id) => id && !pulled.has(id)).sort((a, b) => a - b);
+    for (const id of named) {
+      const own = all.filter((t) => of(t) === id);
+      if (new Set(own.map((t) => t.windowId)).size < 2) continue;
+      const home = livesIn(own, shown, id);
+      const strays = own.filter((t) => t.windowId !== home).sort((a, b) => a.windowId - b.windowId || a.index - b.index);
+      plan.push({ kind: "gather", space: id, window: home, tabs: strays.map((t) => t.id) });
+    }
+    return plan;
+  };
+
   // A click on a tile that sends its space to a new window: ctrl+shift on Windows, cmd+shift on a Mac.
   const wantsNewWindow = (event, windows = window.__vm.windows) =>
     !!event?.shiftKey && !!(windows ? event.ctrlKey : event.metaKey);
@@ -265,5 +333,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
 })();

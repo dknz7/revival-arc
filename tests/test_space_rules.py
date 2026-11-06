@@ -303,5 +303,292 @@ class Pins(unittest.TestCase):
         self.assertIsNone(js("workspaces.pickBound(t, 1, 5)", t=[]))
 
 
+# Vivaldi's measured effects (spec Part 1) applied to a snapshot, so a plan can be checked against the state it leaves.
+#   switch to 0: nothing when the window is already on default (A8c); else its record entry goes and its most recent
+#     default tab is activated, or a default start page is made when it has none (A8a, A8b).
+#   switch to X: nothing when X is active in any window (A1, A2); else every X tab moves into the window (at the
+#     start), the record becomes X and X's most recent tab is activated, or a start page tagged X is made (A3-A7).
+#   activate: the tab becomes active; the record does not change (G1).
+#   gather (chrome.tabs.move): the tab keeps its space and lands at the end, inactive; the target's record does not
+#     change (C1). A window losing its active tab activates the tab to its right, else to its left (C4); a window
+#     left with no tab closes, and its record entry with it.
+APPLY = """
+const applyPlan = (snap, plan) => {
+  const of = workspaces.of;
+  const tabs = snap.tabs.map((t) => ({ ...t }));
+  let windows = snap.windows.map((w) => ({ ...w }));
+  const record = new Map(snap.record);
+  let clock = Math.max(0, ...tabs.map((t) => t.lastAccessed || 0));
+  let nextId = Math.max(0, ...tabs.map((t) => t.id)) + 1000;
+  const inWin = (w) => tabs.filter((t) => t.windowId === w).sort((a, b) => a.index - b.index);
+  const reindex = (w) => inWin(w).forEach((t, i) => { t.index = i; });
+  const activate = (t) => { for (const o of tabs) if (o.windowId === t.windowId) o.active = false; t.active = true; t.lastAccessed = ++clock; };
+  const recent = (w, s) => inWin(w).filter((t) => of(t) === s).sort((a, b) => (b.lastAccessed || 0) - (a.lastAccessed || 0))[0];
+  const make = (w, s) => { const t = { id: nextId++, windowId: w, index: inWin(w).length, vivExtData: s ? JSON.stringify({ workspaceId: s }) : "{}" }; tabs.push(t); activate(t); };
+  const recordedIn = (w) => { for (const [s, x] of record) if (x === w) return s; return 0; };
+  const leave = (t, to, index) => {
+    const from = t.windowId, rest = inWin(from).filter((o) => o !== t);
+    if (t.active && rest.length) activate(rest.find((o) => o.index > t.index) || rest[rest.length - 1]);
+    t.active = false; t.windowId = to; t.index = index;
+    reindex(from); reindex(to);
+    if (!rest.length) {
+      windows = windows.filter((w) => w.id !== from);
+      for (const [s, x] of [...record]) if (x === from) record.delete(s);
+    }
+  };
+  for (const a of plan) {
+    if (a.kind === "switch" && !a.space) {
+      const cur = recordedIn(a.window);
+      if (!cur) continue;
+      record.delete(cur);
+      const d = recent(a.window, 0);
+      d ? activate(d) : make(a.window, 0);
+    } else if (a.kind === "switch") {
+      if (record.has(a.space)) continue;
+      record.delete(recordedIn(a.window));
+      for (const t of tabs.filter((t) => of(t) === a.space && t.windowId !== a.window)) leave(t, a.window, -1);
+      record.set(a.space, a.window);
+      const r = recent(a.window, a.space);
+      r ? activate(r) : make(a.window, a.space);
+    } else if (a.kind === "activate") {
+      activate(tabs.find((t) => t.id === a.tab));
+    } else if (a.kind === "gather") {
+      for (const id of a.tabs) leave(tabs.find((t) => t.id === id), a.window, 1e6);
+    }
+  }
+  return { windows, tabs, record, spaces: snap.spaces };
+};
+"""
+
+
+def tab(id, window, space, active=False, last=0, index=None):
+    return {"id": id, "windowId": window, "index": id if index is None else index, "active": active, "lastAccessed": last,
+            "vivExtData": json.dumps({"workspaceId": space} if space else {})}
+
+
+def normal(*ids):
+    return [{"id": i, "type": "normal"} for i in ids]
+
+
+X, Y, Z = 5, 6, 7
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class Repairs(unittest.TestCase):
+    """Spec Part 2, "Repairs": Vivaldi can leave a window's record and screen disagreeing, or a space split across
+    windows; the plan says how Vivarc puts it right. Space ids: X=5, Y=6, Z=7."""
+
+    def plan(self, snap):
+        return js("workspaces.repairPlan({ ...s, record: new Map(s.record) })", s=snap)
+
+    def after(self, snap, passes=1):
+        """The plan carried out on the snapshot `passes` times (Part 1's effects), then planned once more."""
+        return js("(() => {" + APPLY + """
+          let state = { ...s, record: new Map(s.record) };
+          for (let i = 0; i < n; i++) state = applyPlan(state, workspaces.repairPlan(state));
+          return workspaces.repairPlan(state);
+        })()""", s=snap, n=passes)
+
+    # ---- the snapshots, one per Vivaldi case ----
+    F2 = {  # X active in window 2 (the other window) when it was deleted: its tabs closed, 2 still recorded on X
+        "windows": normal(1, 2), "spaces": [Y],
+        "record": [[X, 2]],
+        "tabs": [tab(10, 1, 0, active=True), tab(20, 2, 0, active=True)],
+    }
+    C3 = {  # X's only tab moved from 1 to 2: 1 still recorded on X, showing its default tab; the tab parked in 2
+        "windows": normal(1, 2), "spaces": [X],
+        "record": [[X, 1]],
+        "tabs": [tab(10, 1, 0, active=True), tab(20, 2, 0, active=True), tab(21, 2, X)],
+    }
+    D1 = {  # X's only tab closed with tabs.remove: 1 still recorded on X, showing its default tab
+        "windows": normal(1), "spaces": [X],
+        "record": [[X, 1]],
+        "tabs": [tab(10, 1, 0, active=True, last=5)],
+    }
+    G1 = {  # window 1 on default, a parked X tab activated with tabs.update: the record stayed on default
+        "windows": normal(1), "spaces": [X],
+        "record": [],
+        "tabs": [tab(10, 1, 0, last=100), tab(11, 1, 0, last=200), tab(12, 1, X, active=True, last=300)],
+    }
+    G1_NAMED = {  # window 1 on Y, a parked X tab activated: Y's most recent tab comes back
+        "windows": normal(1), "spaces": [X, Y],
+        "record": [[Y, 1]],
+        "tabs": [tab(10, 1, Y, last=300), tab(11, 1, Y, last=100), tab(12, 1, X, active=True, last=400), tab(13, 1, 0, last=350)],
+    }
+    FOLLOW = {  # window 1 on default with no default tab (its last one closed), showing a parked X tab
+        "windows": normal(1), "spaces": [X, Y],
+        "record": [],
+        "tabs": [tab(10, 1, X, active=True, last=100), tab(11, 1, Y, last=50)],
+    }
+    G6 = {  # window 1 on X, its active (and only X) tab restamped to Y while Y is active in window 2
+        "windows": normal(1, 2), "spaces": [X, Y],
+        "record": [[X, 1], [Y, 2]],
+        "tabs": [tab(10, 1, 0, last=10), tab(11, 1, Y, active=True, last=90), tab(20, 2, Y, active=True, last=80)],
+    }
+    G6_DEFAULT = {  # window 1 on default with no default tab, showing a Y tab while Y is active in window 2
+        "windows": normal(1, 2), "spaces": [Y, Z],
+        "record": [[Y, 2]],
+        "tabs": [tab(10, 1, Y, active=True, last=90), tab(11, 1, Z, last=10), tab(20, 2, Y, active=True, last=80)],
+    }
+    D8 = {  # X shown in 1; window 3 closed and its parked X tab rehomed into 2 (the last focused), at the start
+        "windows": normal(1, 2), "spaces": [X],
+        "record": [[X, 1]],
+        "tabs": [tab(10, 1, X, active=True), tab(30, 2, X, index=0), tab(20, 2, 0, active=True, index=1)],
+    }
+    SPLIT_PARKED = {  # X shown nowhere: one tab in 1, two in 2
+        "windows": normal(1, 2), "spaces": [X],
+        "record": [],
+        "tabs": [tab(10, 1, 0, active=True), tab(11, 1, X), tab(20, 2, 0, active=True), tab(21, 2, X), tab(22, 2, X)],
+    }
+    CONSISTENT = {  # 1 shows X with Y and default tabs parked; 2 shows default with a parked Z; 3 is a popup
+        "windows": normal(1, 2) + [{"id": 3, "type": "popup"}], "spaces": [X, Y, Z],
+        "record": [[X, 1]],
+        "tabs": [tab(10, 1, X, active=True), tab(11, 1, X), tab(12, 1, Y), tab(13, 1, 0),
+                 tab(20, 2, 0, active=True), tab(21, 2, Z), tab(30, 3, 0, active=True)],
+    }
+    TANGLE = {  # all at once: 1 on a deleted space, 2 drifted (G1), X split across 2 and 3, Z split across 1 and 3
+        "windows": normal(1, 2, 3), "spaces": [X, Y, Z],
+        "record": [[9, 1], [Y, 3]],
+        "tabs": [tab(10, 1, 0, active=True), tab(11, 1, Z),
+                 tab(20, 2, 0, last=10), tab(21, 2, X, active=True, last=50),
+                 tab(30, 3, Y, active=True), tab(31, 3, X), tab(32, 3, Z)],
+    }
+
+    def test_a_window_on_a_deleted_space_goes_to_default(self):
+        self.assertEqual(self.plan(self.F2), [{"kind": "switch", "window": 2, "space": 0}])
+
+    def test_a_window_with_no_tab_of_its_space_goes_to_default(self):
+        self.assertEqual(self.plan(self.C3), [{"kind": "switch", "window": 1, "space": 0}], "C3: the moved tab stays parked in 2")
+        self.assertEqual(self.plan(self.D1), [{"kind": "switch", "window": 1, "space": 0}])
+
+    def test_an_active_tab_of_another_space_hands_back_to_the_recorded_space(self):
+        self.assertEqual(self.plan(self.G1), [{"kind": "activate", "tab": 11}], "the most recent default tab")
+        self.assertEqual(self.plan(self.G1_NAMED), [{"kind": "activate", "tab": 10}], "the most recent Y tab")
+
+    def test_with_no_tab_of_the_recorded_space_the_record_follows_the_active_tab(self):
+        self.assertEqual(self.plan(self.FOLLOW), [{"kind": "switch", "window": 1, "space": X}])
+
+    def test_but_not_onto_a_space_shown_in_another_window(self):
+        # G6: window 1 goes to default (it holds no X tab any more), and the Y tab joins Y where it is shown
+        self.assertEqual(self.plan(self.G6), [{"kind": "switch", "window": 1, "space": 0},
+                                              {"kind": "gather", "space": Y, "window": 2, "tabs": [11]}])
+        # Already on default, a switch to default would do nothing (A8c) and one to Y would only focus 2 (A2): the
+        # Y tab is gathered into 2, and the next pass shows what window 1 is left showing.
+        self.assertEqual(self.plan(self.G6_DEFAULT), [{"kind": "gather", "space": Y, "window": 2, "tabs": [10]}])
+
+    def test_a_split_space_is_gathered_where_it_is_shown(self):
+        self.assertEqual(self.plan(self.D8), [{"kind": "gather", "space": X, "window": 1, "tabs": [30]}])
+
+    def test_a_split_space_shown_nowhere_gathers_where_most_tabs_are(self):
+        self.assertEqual(self.plan(self.SPLIT_PARKED), [{"kind": "gather", "space": X, "window": 2, "tabs": [11]}])
+
+    def test_a_consistent_state_needs_no_repair(self):
+        self.assertEqual(self.plan(self.CONSISTENT), [])
+        self.assertEqual(self.plan({"windows": [], "tabs": [], "record": [], "spaces": []}), [])
+
+    def test_the_state_a_plan_leaves_needs_no_further_repair(self):
+        self.assertEqual(self.plan(self.TANGLE), [
+            {"kind": "switch", "window": 1, "space": 0},
+            {"kind": "activate", "tab": 20},
+            {"kind": "gather", "space": X, "window": 2, "tabs": [31]},
+            {"kind": "gather", "space": Z, "window": 1, "tabs": [32]},
+        ])
+        for name in ["F2", "C3", "D1", "G1", "G1_NAMED", "FOLLOW", "G6", "D8", "SPLIT_PARKED", "CONSISTENT", "TANGLE"]:
+            with self.subTest(name):
+                self.assertEqual(self.after(getattr(self, name)), [], "one pass leaves nothing to repair")
+        # the one case a pass can't finish: what window 1 shows once its active tab leaves is Vivaldi's pick
+        self.assertNotEqual(self.after(self.G6_DEFAULT), [])
+        self.assertEqual(self.after(self.G6_DEFAULT, passes=2), [], "two passes, inside the cap of 3")
+
+    def test_one_leader_the_lowest_normal_window(self):
+        leader = lambda wins: js("workspaces.leaderOf(w)", w=wins)
+        self.assertEqual(leader(normal(4)), 4)
+        self.assertEqual(leader(normal(9, 4)), 4)
+        self.assertEqual(leader(normal(12, 9, 30)), 9)
+        self.assertEqual(leader([{"id": 2, "type": "popup"}, {"id": 3, "type": "devtools"}] + normal(8)), 8, "only a normal window leads")
+        self.assertIsNone(leader([{"id": 2, "type": "popup"}]))
+        self.assertIsNone(leader([]))
+
+    def test_a_closed_leader_is_replaced(self):
+        wins = normal(3, 7, 5)
+        self.assertEqual(js("workspaces.leaderOf(w)", w=wins), 3)
+        self.assertEqual(js("workspaces.leaderOf(w.filter((x) => x.id !== 3))", w=wins), 5)
+        self.assertEqual(js("workspaces.leaderOf(w.filter((x) => x.id === 7))", w=wins), 7)
+
+
+# Loads 07 and 11 in one window (`me`) over a browser that never changes: whatever a repair does, the next snapshot is
+# the same, the worst case for a loop. Timers run 40x fast; the 3 s poll is off.
+RUNTIME_HARNESS = """
+const fs = require("fs"), vm = require("vm"), path = require("path");
+const input = JSON.parse(process.argv[2]);
+const s = input.state, calls = [], log = [];
+const realTimeout = setTimeout;
+globalThis.setTimeout = (fn, ms) => realTimeout(fn, (ms || 0) / 40);
+globalThis.setInterval = () => 0;
+globalThis.console = { log: (...a) => log.push(a.map(String).join(" ")), warn: (...a) => log.push("WARN " + a.map(String).join(" ")), error() {} };
+const bg = { ...(input.bg || {}) }; // Vivaldi's background page, which every window shares
+const t0 = Date.now(), firstAt = [];
+const call = (c) => { if (!calls.length) firstAt.push(Date.now() - t0); calls.push(c); };
+const on = () => ({ addListener() {} });
+globalThis.chrome = {
+  extension: { getBackgroundPage: () => bg },
+  windows: { getAll: async () => s.windows, getCurrent: async () => ({ id: input.me }), onRemoved: on() },
+  tabs: { query: async () => s.tabs, update: async (id) => { call(["activate", id]); }, move: async (ids, p) => { call(["move", ids, p.windowId, [...window.__vm.movedByVivarc]]); },
+          onActivated: on(), onAttached: on(), onDetached: on(), onRemoved: on() },
+};
+globalThis.vivaldi = { prefs: { get: async () => ({ value: s.spaces.map((id) => ({ id })) }) } };
+globalThis.window = { addEventListener() {}, __vm: { ready: Promise.resolve(true) } };
+for (const f of ["07-workspaces.js", "11-space-repair.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], f), "utf8"));
+const rec = new Map(s.record);
+window.__vm.native = { hasSwitch: () => true, switchTo: async (w, sp) => { call(["switch", w, sp]); },
+  record: () => ({ all: () => rec, activeIn: (w) => [...rec].find(([, x]) => x === w)?.[0] ?? 0 }) };
+const repair = window.__vm.spaceRepair, later = (ms) => new Promise((r) => realTimeout(r, ms));
+eval(input.script || "");
+realTimeout(() => { process.stdout.write(JSON.stringify({ calls, log, firstAt: firstAt[0] ?? null, bg, moved: [...window.__vm.movedByVivarc] })); process.exit(0); }, 700);
+"""
+
+
+def runtime(state, me, bg=None, script=""):
+    result = subprocess.run(["node", "-e", RUNTIME_HARNESS, JS_DIR, json.dumps({"state": state, "me": me, "bg": bg or {}, "script": script})],
+                            capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class RepairRuntime(unittest.TestCase):
+    """11-space-repair.js: only the leader acts, a run stops after 3 passes, and a move under way makes it wait."""
+
+    def test_only_the_leader_repairs(self):
+        self.assertEqual(runtime(Repairs.D8, me=2)["calls"], [], "window 2 is not the leader")
+        out = runtime(Repairs.D8, me=1)
+        self.assertEqual(out["calls"][0], ["move", [30], 1, [30]], "marked as moved by Vivarc before the move")
+        self.assertIn("[vivarc] repair: gather space 5 into window 1 (tabs 30)", out["log"])
+        self.assertEqual(out["moved"], [], "and unmarked 5 s later")
+
+    def test_a_repair_that_does_not_take_stops_after_three_passes(self):
+        out = runtime(Repairs.D1, me=1)
+        self.assertEqual(out["calls"], [["switch", 1, 0]] * 3)
+        self.assertEqual(len([line for line in out["log"] if line.startswith("[vivarc] repair: window 1")]), 3)
+        self.assertTrue(any("still drifting" in line for line in out["log"]))
+
+    def test_a_move_under_way_in_any_window_holds_repairs_off(self):
+        import time
+        # another window's gesture: its mark on the shared background page
+        busy = {"__vivarcSpaceGesture": int(time.time() * 1000) + 9000}
+        self.assertEqual(runtime(Repairs.D1, me=1, bg=busy)["calls"], [])
+        stale = {"__vivarcSpaceGesture": int(time.time() * 1000) + 60000}
+        self.assertEqual(runtime(Repairs.D1, me=1, bg=stale)["calls"][:1], [["switch", 1, 0]], "a mark beyond 10 s is ignored")
+        # this window's gesture: marked until it ends, then repairs run
+        out = runtime(Repairs.D1, me=1, script="const end = repair.gesture(); later(250).then(end);")
+        self.assertEqual(out["calls"][:1], [["switch", 1, 0]])
+        self.assertGreaterEqual(out["firstAt"], 250)
+        self.assertEqual(out["bg"], {}, "the mark is gone once the gesture ends")
+
+    def test_a_held_restamp_runs_before_repairs_plan(self):
+        out = runtime(Repairs.D1, me=1, script="repair.hold(later(250));")
+        self.assertEqual(out["calls"][:1], [["switch", 1, 0]])
+        self.assertGreaterEqual(out["firstAt"], 250)
+
+
 if __name__ == "__main__":
     unittest.main()

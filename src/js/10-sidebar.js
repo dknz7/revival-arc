@@ -806,6 +806,8 @@
     pullingUntil = claim;
     // only release a claim that is still ours: an earlier move outliving its expiry must not clear a later one
     const release = () => { if (pullingUntil === claim) pullingUntil = 0; };
+    // Repairs run in the leader window, which may be another one: a move under way tells them to wait (11-space-repair.js).
+    let endBusy = null;
     try {
       const wantsNew = spacesOf.wantsNewWindow(event);
       const win = await chrome.windows.getCurrent();
@@ -813,6 +815,7 @@
       const record = window.__vm.native?.record()?.all() ?? new Map();
       const action = spacesOf.tileAction({ id: item.id, here: win.id, tabs, record, shift: !!event?.shiftKey, newWindow: wantsNew });
       if (action.kind !== "pull" && action.kind !== "new-window") release();
+      else endBusy = window.__vm.spaceRepair?.gesture() ?? null;
       if (action.kind === "none") return;
       if (action.kind === "focus") { await window.__vm.native.focus(action.window); refresh(false); return; } // needs no switch
       const activate = nativeSwitcher(); // throws here, before any side effect, when Vivaldi's switch is missing
@@ -833,7 +836,7 @@
         await chrome.windows.update(win.id, { focused: true });
       }
       refresh(false);
-    } catch (error) { switchFailed(error); } finally { release(); }
+    } catch (error) { switchFailed(error); } finally { release(); endBusy?.(); }
   };
   // Ctrl+shift+click (cmd+shift+click on a Mac) sends a space to a new window of its own: the reverse of the pull.
   // Where it is active (this window included) that window goes to its default space first, which frees the space;
