@@ -124,7 +124,8 @@
   const focusOrOpen = async (node) => {
     try {
       const here = state.allTabs[0]?.windowId;
-      const shown = state.active;
+      // Vivaldi's record, read now: state.active is the last debounced refresh's, which can trail a switch
+      const shown = (here != null ? window.__vm.native?.record()?.activeIn(here) : null) ?? state.active;
       const tab = spacesOf.pickBound(await boundAnywhere(node), here, shown);
       const action = spacesOf.pinAction(tab, here, shown);
       if (action.kind === "open") return await openPin(node);
