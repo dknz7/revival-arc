@@ -335,18 +335,39 @@ class Elsewhere(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class TileHint(unittest.TestCase):
-    def hint(self, item, elsewhere=None):
-        return js("workspaces.tileHint(item, elsewhere)", item=item, elsewhere=elsewhere or {})
+    def hint(self, item, elsewhere=None, windows=True):
+        return js("workspaces.tileHint(item, elsewhere, windows)", item=item, elsewhere=elsewhere or {}, windows=windows)
 
-    def test_a_plain_space_shows_its_name(self):
-        self.assertEqual(self.hint({"id": WORK["id"], "name": "Work"}), "Work")
+    def test_a_space_says_how_to_move_it_to_a_new_window(self):
+        self.assertEqual(self.hint({"id": WORK["id"], "name": "Work"}), "Work · ctrl+shift+click to move it to a new window")
+
+    def test_on_a_mac_it_is_cmd_because_ctrl_click_is_a_right_click_there(self):
+        self.assertEqual(self.hint({"id": WORK["id"], "name": "Work"}, windows=False),
+                         "Work · cmd+shift+click to move it to a new window")
 
     def test_the_default_space_says_it_is_this_windows_own(self):
         self.assertEqual(self.hint({"id": 0, "name": "DKNZLIFE"}), "DKNZLIFE · this window's own tabs")
 
-    def test_a_space_open_in_another_window_says_what_a_click_and_a_shift_click_do(self):
+    def test_a_space_open_in_another_window_says_what_each_click_does(self):
         hint = self.hint({"id": SIDE["id"], "name": "Side"}, {str(SIDE["id"]): 2})
-        self.assertEqual(hint, "Side · open in another window. Click to go there, shift+click to bring it here")
+        self.assertEqual(hint, "Side · open in another window. Click to go there, shift+click to bring it here, "
+                               "ctrl+shift+click to move it to a new window")
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class WhereActive(unittest.TestCase):
+    """The window a space is active in, this one included (elsewhere leaves this window out)."""
+
+    def where(self, active_tabs, space):
+        return js("workspaces.activeWindowOf(tabs, id)", tabs=active_tabs, id=space)
+
+    def test_the_window_whose_active_tab_is_in_the_space(self):
+        self.assertEqual(self.where([active_in(1, WORK["id"]), active_in(2, SIDE["id"])], SIDE["id"]), 2)
+        self.assertEqual(self.where([active_in(1, WORK["id"]), active_in(2, SIDE["id"])], WORK["id"]), 1)
+
+    def test_a_space_active_nowhere_has_no_window(self):
+        self.assertIsNone(self.where([active_in(1, WORK["id"])], SIDE["id"]))
+        self.assertIsNone(self.where([], SIDE["id"]))
 
 
 if __name__ == "__main__":

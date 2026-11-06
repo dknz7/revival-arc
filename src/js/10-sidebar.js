@@ -781,6 +781,35 @@
       refresh(false);
     } catch (error) { switchFailed(error); } finally { pulling = false; }
   };
+  // Ctrl+shift+click (cmd+shift+click on a Mac) sends a space to a new window of its own: the reverse of the pull.
+  // Where it is active (this window included) that window goes to its default space first, which frees the space;
+  // then Vivaldi's switch, called for the new window, moves the space's tabs there. The new window starts on
+  // about:blank, not a start page, so the command bar does not open on it, and that tab closes once the space is in.
+  // A brand-new window may not be known to Vivaldi's switch at once, so it is retried until the tabs arrive.
+  const spaceInWindow = async (windowId, id) =>
+    (await chrome.tabs.query({ windowId })).some((t) => spacesOf.of(t) === id);
+  const spaceToNewWindow = async (item) => {
+    if (pulling || !item.id) return;
+    pulling = true;
+    try {
+      const activate = nativeSwitcher();
+      const holder = spacesOf.activeWindowOf(await chrome.tabs.query({ active: true, windowType: "normal" }), item.id);
+      if (holder != null) await activate(holder, 0);
+      const fresh = await chrome.windows.create({ url: "about:blank", focused: true });
+      const helper = fresh.tabs?.[0]?.id;
+      for (let attempt = 0; attempt < 4 && !(await spaceInWindow(fresh.id, item.id)); attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, attempt ? 500 : 250));
+        await activate(fresh.id, item.id);
+      }
+      if (!(await spaceInWindow(fresh.id, item.id))) throw new Error("the space did not move to the new window");
+      if (helper != null) await chrome.tabs.remove(helper).catch(() => {});
+      await chrome.windows.update(fresh.id, { focused: true });
+      refresh(false);
+    } catch (error) {
+      console.warn("[vivarc] space to a new window:", error);
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not move the space to a new window." }));
+    } finally { pulling = false; }
+  };
 
   let spaceTooltip = null;
   const hideSpaceTooltip = () => { spaceTooltip?.remove(); spaceTooltip = null; };
@@ -812,7 +841,12 @@
     pill.addEventListener("focus", showName);
     pill.addEventListener("mouseleave", hideSpaceTooltip);
     pill.addEventListener("blur", hideSpaceTooltip);
-    pill.addEventListener("click", (event) => { hideSpaceTooltip(); (event.shiftKey && openElsewhere ? pullSpace : switchSpace)(item); });
+    pill.addEventListener("click", (event) => {
+      hideSpaceTooltip();
+      const toNewWindow = event.shiftKey && (window.__vm.windows ? event.ctrlKey : event.metaKey);
+      if (toNewWindow) { if (item.id) spaceToNewWindow(item); return; }
+      (event.shiftKey && openElsewhere ? pullSpace : switchSpace)(item);
+    });
     if (item.id) pill.addEventListener("contextmenu", (e) => { hideSpaceTooltip(); confirmDeleteSpace(item, e); });
     return pill;
   };
