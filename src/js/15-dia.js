@@ -136,7 +136,7 @@
 
   // Vivaldi's action executor, which runs a command by name as its own buttons and shortcuts do
   // (executeActions("button", { vivaldiWindowId }, "COMMAND_…")); found in webpack's modules as findRemover
-  // (07-workspaces.js) finds the workspace manager. Returns (windowId) => runs the command, or null.
+  // (07-workspaces.js) finds the workspace manager. Returns (vivaldiWindowId) => runs the command, or null.
   const findToggler = (chunks) => {
     try {
       let load;
@@ -147,7 +147,7 @@
         try { exported = load(id); } catch (_) { continue; }
         for (const executor of Object.values(exported || {})) {
           if (typeof executor?.executeActions === "function") {
-            return (windowId) => executor.executeActions("button", { vivaldiWindowId: windowId }, TOGGLE);
+            return (vivaldiWindowId) => executor.executeActions("button", { vivaldiWindowId }, TOGGLE);
           }
         }
       }
@@ -321,7 +321,7 @@
           findToggler(chrome.extension?.getBackgroundPage?.()?.webpackChunkgapp_browser_react);
         if (!sideRun) sideWarn("Vivaldi's command runner not found, the sidebar button flips the tab bar's pref instead");
       }
-      if (sideRun) sideRun((await chrome.windows.getCurrent()).id);
+      if (sideRun) sideRun(window.vivaldiWindowId); // Vivaldi's own window id, not chrome.windows' (HOW-IT-WORKS)
       else await prefs.set(TABS, !sideShown);
     } catch (error) {
       console.warn("[vivarc] Dia layout: could not hide or show the sidebar:", error);

@@ -116,6 +116,21 @@ class Record(unittest.TestCase):
         """
         self.assertIsNone(js("(() => {" + fake + "return workspaces.findRecord(chunks).activeIn(7); })()"))
 
+    def test_the_marker_does_not_depend_on_the_minifiers_parameter_name(self):
+        # A rebuilt Vivaldi can rename the minified parameter: `getActiveWorkspaceId(t){` is the same store.
+        renamed = FAKE_RECORD.replace("getActiveWorkspaceId(e){return this.map.get(e)}", "getActiveWorkspaceId(t){return this.map.get(t)}")
+        self.assertNotEqual(renamed, FAKE_RECORD)
+        out = js("(() => {" + renamed + "const r = workspaces.findRecord(chunks); return r && [r.activeIn(7), r.activeIn(8)]; })()")
+        self.assertEqual(out, [42, 0])
+
+    def test_a_module_that_only_calls_getactiveworkspaceid_is_not_the_store(self):
+        fake = """
+          const require = (id) => { throw new Error("must not be loaded: " + id); };
+          require.m = { 1: function () { return "x.getActiveWorkspaceId(e)&&y()"; } };
+          const chunks = { push: ([ids, extra, run]) => run(require) };
+        """
+        self.assertIsNone(js("(() => {" + fake + "return workspaces.findRecord(chunks); })()"))
+
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class Native(unittest.TestCase):

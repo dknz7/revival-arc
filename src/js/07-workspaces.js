@@ -351,7 +351,7 @@
       let load;
       chunks.push([[Symbol("vivarc-record")], {}, (require) => { load = require; }]);
       for (const [id, factory] of Object.entries(load?.m || {})) {
-        if (!String(factory).includes("getActiveWorkspaceId(e){")) continue;
+        if (!/getActiveWorkspaceId\([\w$]+\)\{/.test(String(factory))) continue; // its definition, whatever the minifier named its parameter
         let exported;
         try { exported = load(id); } catch (_) { continue; }
         for (const store of Object.values(exported || {})) {
