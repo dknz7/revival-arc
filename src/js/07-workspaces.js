@@ -100,6 +100,20 @@
     return { kind: tab.windowId === here && of(tab) === shown ? "activate" : "bring", tab: tab.id };
   };
 
+  // A tab picked in the command bar, which lists every tab of its window, parked ones included. Activating a parked tab
+  // leaves the record where it was (G1) and repair 2 would snap the window back, so the tab's space is shown first.
+  // tab: the picked tab; shown: the space its window's record names, or null when the record can't be read; shownIn:
+  // the window the record shows the tab's space in, or null. -> { kind: "activate" } (its space is on screen, or no
+  // record: activate as before), { kind: "switch", window, space } (parked in its window: Vivaldi's switch shows the
+  // space, A3, then the tab is activated) or { kind: "focus", window } (its space is shown in another window, so the tab
+  // is a split space's stray: go there as a tile click does, and repair 3 gathers it).
+  const tabPick = (tab, shown, shownIn) => {
+    const space = of(tab);
+    if (shown == null || space === shown) return { kind: "activate" };
+    if (space && shownIn != null && shownIn !== tab.windowId) return { kind: "focus", window: shownIn };
+    return { kind: "switch", window: tab.windowId, space };
+  };
+
   // Of the tabs bound to one pin, the one to use: already here and in the shown space, else the most recently used.
   const pickBound = (tabs, here, shown) => {
     const rank = (t) => (t.windowId === here && of(t) === shown ? 1 : 0);
@@ -395,5 +409,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, restampOnAttach, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, restampOnAttach, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
 })();

@@ -278,11 +278,29 @@
     }
   };
 
+  // The bar lists every tab of the window, parked ones included. A parked tab activated as it is leaves Vivaldi's record
+  // on the space shown (G1), and repair 2 would snap the window back: its space is shown first (workspaces.tabPick).
+  // Without the record or the switch, the tab is activated as it always was. The bar's own blank tab is closed after,
+  // so it never hands the screen to some other tab in between.
+  const pickTab = async (listed) => {
+    const tab = (await chrome.tabs.get(listed.id).catch(() => null)) || listed; // the list may be older than a move
+    const native = window.__vm.native;
+    const spaces = window.__vm.workspaces;
+    const record = native?.hasSwitch() ? native.record() : null;
+    const pick = record && spaces ? spaces.tabPick(tab, record.activeIn(tab.windowId), record.all().get(spaces.of(tab)) ?? null)
+      : { kind: "activate" };
+    if (pick.kind === "focus") return native.focus(pick.window);
+    if (pick.kind === "switch") await native.switchTo(pick.window, pick.space);
+    await chrome.tabs.update(tab.id, { active: true });
+  };
+
   const run = (row) => {
     if (!row || (row.type === "search" && !row.query)) return;
     if (row.type === "tab") {
-      chrome.tabs.update(row.tab.id, { active: true });
-      close(true);
+      const blank = keepTarget ? null : targetTab;
+      close(false);
+      pickTab(row.tab).catch((e) => console.warn("[vivarc] switch to tab:", e))
+        .finally(() => { if (blank != null) chrome.tabs.remove(blank).catch(() => {}); });
     } else if (row.type === "search") {
       runSearch(row.engine, row.query);
     } else if (row.type === "engine") {

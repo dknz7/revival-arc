@@ -167,6 +167,30 @@ def in_window(window_id, workspace, id):
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class BarPick(unittest.TestCase):
+    """A tab picked in the command bar is shown with its space, never activated as a stray (G1): window 1 shows space 5."""
+
+    def pick(self, tab, shown=5, shown_in=None):
+        return js("workspaces.tabPick(tab, shown, shownIn)", tab=tab, shown=shown, shownIn=shown_in)
+
+    def test_a_tab_of_the_space_on_screen_is_just_activated(self):
+        self.assertEqual(self.pick(in_window(1, 5, 10)), {"kind": "activate"})
+
+    def test_a_tab_parked_in_its_window_switches_the_window_to_its_space_first(self):
+        self.assertEqual(self.pick(in_window(1, 6, 10)), {"kind": "switch", "window": 1, "space": 6})
+
+    def test_a_default_tab_parked_in_its_window_switches_it_to_default(self):
+        self.assertEqual(self.pick(in_window(1, 0, 10)), {"kind": "switch", "window": 1, "space": 0})
+
+    def test_a_tab_whose_space_is_shown_in_another_window_goes_to_that_window(self):
+        # a stray of a split space: go where the space is shown, as a tile click does; repair 3 gathers the stray
+        self.assertEqual(self.pick(in_window(1, 6, 10), shown_in=2), {"kind": "focus", "window": 2})
+
+    def test_without_the_record_the_tab_is_activated_as_before(self):
+        self.assertEqual(self.pick(in_window(1, 6, 10), shown=None), {"kind": "activate"})
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class LivesIn(unittest.TestCase):
     """A space lives where Vivaldi's record shows it; parked, where most of its tabs are. A dot marks a space living elsewhere."""
 

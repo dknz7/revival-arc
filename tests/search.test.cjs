@@ -293,6 +293,41 @@ test('switching tab in this window closes an edit bar, keeping its page; a switc
   assert.deepEqual(calls.removed, []);
 });
 
+// The bar edits tab 10 (window 1, recorded on `shown`) and Enter picks its first row, tab 20. Vivaldi's record and switch
+// are faked; every switch, focus and activation lands in one log, in order.
+async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true } = {}) {
+  const space = await editUrl(tabs);
+  const log = [];
+  space.context.window.__vm.native = {
+    record: () => (record ? { activeIn: (w) => (w === 1 ? shown : 0), all: () => new Map(all) } : null),
+    hasSwitch: () => hasSwitch,
+    switchTo: async (w, s) => { log.push(['switch', w, s]); },
+    focus: async (w) => { log.push(['focus', w]); },
+  };
+  const update = space.context.chrome.tabs.update;
+  space.context.chrome.tabs.update = async (id, opts) => { log.push(['update', id, { ...opts }]); return update(id, opts); };
+  space.inputs[0].value = '';
+  await space.inputs[0].events.input();
+  await press(space.inputs[0], 'Enter');
+  return { ...space, log };
+}
+test('a tab picked from the bar in a space parked in this window is shown by a switch first, then activated', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) });
+  assert.deepEqual(log, [['switch', 1, 2], ['update', 20, { active: true }]]);
+});
+test('a tab picked from the bar in the space on screen is just activated', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 1) });
+  assert.deepEqual(log, [['update', 20, { active: true }]]);
+});
+test("a tab picked from the bar whose space is shown in another window goes to that window, as a tile click does", async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { all: [[1, 1], [2, 2]] });
+  assert.deepEqual(log, [['focus', 2]]);
+});
+test("without Vivaldi's record or switch a tab picked from the bar is activated as before", async () => {
+  assert.deepEqual((await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { record: false })).log, [['update', 20, { active: true }]]);
+  assert.deepEqual((await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { hasSwitch: false })).log, [['update', 20, { active: true }]]);
+});
+
 // Ctrl+T (or `opener`) with open tabs listed, while bookmark and history lookups wait until answered for their text.
 async function lookingUp(opener = 'vm-open-command-bar') {
   const space = await spaces({ 10: page(10, 1), 11: page(11, 1) });

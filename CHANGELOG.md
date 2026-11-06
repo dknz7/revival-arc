@@ -14,6 +14,7 @@
   - A window that shows a tab of one space while Vivaldi records it on another is put back in step.
   - A space split across windows, for example after a window closes, is gathered into one window.
 - A tab moved into another window joins the space that window shows, also when something other than Vivaldi's own drag moved it (the drag already did this). Tabs rehomed from a closing window keep their space, and so do tabs Vivarc moves itself.
+- Picking a tab of another space in the command bar shows that space, with the tab on screen. Before, the window could jump straight back to the space it was on.
 - Deleting a space: the confirmation counts the space's tabs in every window, and says when a window holding only those tabs will close too.
 - Right-click a tab in the sidebar and pick **Move to <Space>** to move it to another space, with Vivaldi's own move. The window stays on the space it shows. If the space is shown in another window, the tab goes to that window. A space parked in another window is refused with a message: show it in its window first.
 - Dia layout: a button in the top row, between Vivaldi's menu button and Back, hides and shows the sidebar.
