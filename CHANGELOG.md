@@ -4,9 +4,19 @@
 - Dia layout: a **Translate** button left of Copy link, on pages that are not in English. It translates the page into English in place with Vivaldi's own translation, which the Dia layout otherwise hides with the address bar. Once the page is translated, the button says **Show original**.
 - Ctrl+shift+click a space tile (cmd+shift+click on a Mac) to move the space to a new window of its own, the reverse of shift+click's "bring it here".
 - A git clone of Revival Arc is no longer offered upstream's releases by the update reminder: it updates with `git pull` from its own fork. The "Vivaldi was updated" reminder stays.
-- A space open in another window shows a dot on its tile. Click it to go to that window (Vivaldi keeps a space in one window at a time), or shift+click to bring the space into this one. The default space's tooltip says it holds this window's own tabs.
+- A space that lives in another window has a dot on its tile, whether it is shown there or parked there. Before, only a space shown in another window had one. The default space's tooltip says it holds this window's own tabs.
+- Clicking a space tile goes to where the space lives. A space shown in another window brings that window to the front. A space parked in another window is shown there, and that window comes to the front. Before, its tabs were pulled into this window. A plain click no longer moves tabs between windows, except to gather a space split across windows into the window it lives in. Shift+click still brings a space here.
+- New tabs, links included, open in the space on screen, which is how Vivaldi files them. Vivarc no longer stamps new tabs itself. Its stamping could undo a switch to the default space and file the next tab in the old one.
 - New tabs from Ctrl+T, + New Tab and the command bar open at the top of the space's list, as in Arc. Links opened from a page still open next to it.
-- Links opened from a page (middle-click, ctrl+click) stay in that page's space. Before, they could land in another space when the sidebar was slow to catch up after a switch.
+- Fix: clicking a favorite or a pinned tab whose tab is in another space or window brings that tab here, into the space on screen. Before, a second tab opened.
+- Vivarc puts things right when Vivaldi lets them drift:
+  - A window left on a deleted space, or on a space it has no tab of, goes to its default space.
+  - A window that shows a tab of one space while Vivaldi records it on another is put back in step.
+  - A space split across windows, for example after a window closes, is gathered into one window.
+- A tab moved into another window joins the space that window shows, however it got there. Vivaldi's own drag already did this.
+- Deleting a space: the confirmation counts the space's tabs in every window, and says when a window holding only those tabs will close too.
+- Right-click a tab in the sidebar and pick **Move to <Space>** to move it to another space, with Vivaldi's own move. The window stays on the space it shows. If the space is shown in another window, the tab goes to that window. A space parked in another window is refused with a message: show it in its window first.
+- Dia layout: a button in the top row, between Vivaldi's menu button and Back, hides and shows the sidebar.
 - Peek opens on shift+click on a link (or a middle-button hold) and never on a plain click. Before, alt+click opened it, and so did a plain click in pinned tabs and on Google pages. Shift+click on a link opens Peek instead of a new window. `"peek": false` in `~/.vivarc/config.json` keeps Peek out, including after "Update Vivarc", and the Windows re-apply task now puts Peek back unless it is turned off.
 - Pinned folders slide open and shut instead of appearing at once. With Reduce Motion on, they still open instantly.
 
