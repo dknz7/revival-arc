@@ -91,6 +91,32 @@
     return shown !== null ? { kind: "focus", window: home } : { kind: "show-there", window: home };
   };
 
+  // Favorites and pinned tabs open in the space on screen (spec: "Favorites and pinned tabs"). tab: the tab bound to the
+  // pin or favorite wherever it is (any window, any space), or null; here: this window's id; shown: the space this window
+  // shows. -> { kind: "activate"|"bring"|"open", tab?: number }. A bound tab elsewhere is brought here, never activated
+  // where it is: activating a tab of another space is what makes Vivaldi's record follow it (G1).
+  const pinAction = (tab, here, shown) => {
+    if (!tab) return { kind: "open" };
+    return { kind: tab.windowId === here && of(tab) === shown ? "activate" : "bring", tab: tab.id };
+  };
+
+  // Of the tabs bound to one pin, the one to use: already here and in the shown space, else the most recently used.
+  const pickBound = (tabs, here, shown) => {
+    const rank = (t) => (t.windowId === here && of(t) === shown ? 1 : 0);
+    return (tabs || []).reduce((best, t) => (!best || rank(t) > rank(best) ||
+      (rank(t) === rank(best) && (t.lastAccessed ?? 0) > (best.lastAccessed ?? 0)) ? t : best), null);
+  };
+
+  // The tab's vivExtData with its space set to `shown`, every other key kept. For the default space (0) the value is 0,
+  // not an absent key: measured in the sandbox, chrome.tabs.update MERGES vivExtData, so a write without workspaceId
+  // leaves the old space in place, while workspaceId: 0 makes Vivaldi drop the key (the tab then reads as default).
+  const restamp = (tab, shown) => {
+    let data = {};
+    try { data = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) {}
+    data.workspaceId = shown || 0;
+    return JSON.stringify(data);
+  };
+
   // A click on a tile that sends its space to a new window: ctrl+shift on Windows, cmd+shift on a Mac.
   const wantsNewWindow = (event, windows = window.__vm.windows) =>
     !!event?.shiftKey && !!(windows ? event.ctrlKey : event.metaKey);
@@ -239,5 +265,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
 })();

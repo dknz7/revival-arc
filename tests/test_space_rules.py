@@ -264,5 +264,44 @@ class TileGestures(unittest.TestCase):
         self.check([active, in_window(2, 5, 12), in_window(1, 0, 11)], [], 5, ("focus", 2), ("pull",))
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class Pins(unittest.TestCase):
+    """Favorites and pinned tabs open in the space on screen: window 1 is 'here', space 5 is shown there."""
+
+    def act(self, tab, shown=5):
+        return js("workspaces.pinAction(tab, 1, shown)", tab=tab, shown=shown)
+
+    def test_a_pin_open_in_this_space_is_just_activated(self):
+        self.assertEqual(self.act(in_window(1, 5, 10)), {"kind": "activate", "tab": 10})
+
+    def test_a_pin_parked_in_another_space_is_brought_into_the_space_on_screen(self):
+        self.assertEqual(self.act(in_window(1, 6, 10)), {"kind": "bring", "tab": 10})
+        tab = dict(in_window(1, 6, 10), vivExtData='{"workspaceId":6,"vivarcPin":"77"}')
+        self.assertEqual(js("JSON.parse(workspaces.restamp(tab, 5))", tab=tab), {"workspaceId": 5, "vivarcPin": "77"})
+
+    def test_a_pin_in_another_window_is_brought_here(self):
+        self.assertEqual(self.act(in_window(2, 5, 10)), {"kind": "bring", "tab": 10})
+
+    def test_an_unopened_pin_opens_a_tab(self):
+        self.assertEqual(self.act(None), {"kind": "open"})
+
+    def test_bringing_into_the_default_space_removes_the_key(self):
+        # Vivaldi merges vivExtData writes (measured): omitting workspaceId leaves the old space, writing 0 removes the key.
+        self.assertEqual(self.act(in_window(1, 6, 10), shown=0), {"kind": "bring", "tab": 10})
+        tab = dict(in_window(1, 6, 10), vivExtData='{"workspaceId":6,"vivarcPin":"77"}')
+        self.assertEqual(js("JSON.parse(workspaces.restamp(tab, 0))", tab=tab), {"workspaceId": 0, "vivarcPin": "77"})
+        self.assertEqual(js("workspaces.of({ vivExtData: workspaces.restamp(tab, 0) })", tab=tab), 0)
+        self.assertEqual(self.act(in_window(1, 0, 10), shown=0), {"kind": "activate", "tab": 10})
+
+    def test_with_several_bound_tabs_the_one_here_in_the_shown_space_wins_then_the_most_recent(self):
+        a = dict(in_window(2, 5, 1), lastAccessed=900)
+        b = dict(in_window(1, 5, 2), lastAccessed=100)
+        c = dict(in_window(1, 6, 3), lastAccessed=500)
+        d = dict(in_window(2, 6, 4), lastAccessed=800)
+        self.assertEqual(js("workspaces.pickBound(t, 1, 5).id", t=[a, b, c, d]), 2)
+        self.assertEqual(js("workspaces.pickBound(t, 1, 5).id", t=[a, c, d]), 1)
+        self.assertIsNone(js("workspaces.pickBound(t, 1, 5)", t=[]))
+
+
 if __name__ == "__main__":
     unittest.main()

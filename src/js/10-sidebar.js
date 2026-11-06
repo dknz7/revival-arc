@@ -106,10 +106,38 @@
     recordHome(tab.id, node.id);
   };
 
-  const focusOrOpen = (node) => {
-    const tab = boundTab(node);
-    if (tab) chrome.tabs.update(tab.id, { active: true });
-    else openPin(node);
+  // A pin or favorite opens in the space on screen. Its bound tab may sit in another space or another window (a Favorite
+  // is shared by every space), so it is looked for in every normal window: the tab bindTabs bound here, plus any tab
+  // carrying this bookmark's vivarcPin. One already here in the shown space wins, else the most recently used. A tab
+  // elsewhere is moved here and restamped into the shown space BEFORE it is activated, so Vivaldi's record never sees a
+  // tab of another space become active.
+  const boundAnywhere = async (node) => {
+    const own = boundTab(node);
+    let found = own ? [own] : [];
+    try {
+      const every = await chrome.tabs.query({ windowType: "normal" });
+      found = [...every.filter((t) => pinLinks.pinOf(t) === node.id), ...found.filter((t) => !every.some((e) => e.id === t.id))];
+    } catch (_) {}
+    return found;
+  };
+
+  const focusOrOpen = async (node) => {
+    try {
+      const here = state.allTabs[0]?.windowId;
+      const shown = state.active;
+      const tab = spacesOf.pickBound(await boundAnywhere(node), here, shown);
+      const action = spacesOf.pinAction(tab, here, shown);
+      if (action.kind === "open") return await openPin(node);
+      if (action.kind === "bring") {
+        await chrome.tabs.move(tab.id, { windowId: here, index: -1 });
+        const fresh = await chrome.tabs.get(tab.id);
+        await chrome.tabs.update(tab.id, { vivExtData: spacesOf.restamp(fresh, shown) });
+      }
+      await chrome.tabs.update(tab.id, { active: true });
+    } catch (err) {
+      console.warn("[vivarc] could not open the pin in this space", err);
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not open that tab here" }));
+    }
   };
 
   const backToPin = (tab, node) => chrome.tabs.update(tab.id, { url: node.url });
