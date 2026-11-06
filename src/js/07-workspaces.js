@@ -301,6 +301,34 @@
     return null;
   };
 
+  // Vivaldi's own "move these tabs to a space" (PageActions.moveToWorkspace, what its keyboard shortcut runs). It reads
+  // only the page's id and windowId, and a single page is wrapped into its list by Vivaldi itself, so `{ id, windowId }`
+  // stands in for a page. The windowId given is the window Vivaldi moves the tab into: for a space shown in another
+  // window it must be that window (asked from the tab's own window, the move fails: "ambiguous windowId"). The default
+  // space is 0, as Vivaldi passes it (workspaceId: t || 0).
+  const findMover = (chunks) => {
+    try {
+      let load;
+      chunks.push([[Symbol("vivarc-move-space")], {}, (require) => { load = require; }]);
+      for (const [id, factory] of Object.entries(load?.m || {})) {
+        if (!String(factory).includes('debug:"PageActions.moveToWorkspace"')) continue;
+        let exported;
+        try { exported = load(id); } catch (_) { continue; }
+        for (const actions of Object.values(exported || {})) {
+          if (typeof actions?.moveToWorkspace === "function") {
+            return (pages, workspaceId) => actions.moveToWorkspace(pages, workspaceId || 0);
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  };
+
+  // The spaces a tab can move to: every space but the one on screen, the default included, in the sidebar's tile order.
+  // items: what `items` returns.
+  const moveTargets = (list, shownId) =>
+    (list || []).filter((s) => s.id !== shownId).map((s) => ({ id: s.id, name: s.name }));
+
   // Vivaldi's record of which space each window shows (its workspace store): activeIn(windowId) is that space's id, 0
   // for the default space (a window with no entry); all() maps each recorded space's id to the window showing it.
   // Null when the store is not found, and the caller decides what to fall back to.
@@ -367,5 +395,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, restampOnAttach, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalScope, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, restampOnAttach, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
 })();

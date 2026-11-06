@@ -585,6 +585,25 @@
     refresh(false);
   };
 
+  // The spaces as the space bar lists them (default first, under its sidebar name).
+  const spaceItems = () => spacesOf.items(state.workspaces, state.defaultSpace ? spacesOf.label(state.defaultSpace) : "Home");
+  // "Move to <Space>": the spaces a tab can go to; none while the space list is unknown.
+  const moveTargets = () => (state.workspaces?.length ? spacesOf.moveTargets(spaceItems(), state.active) : []);
+  // Vivaldi's own move (08-space-native.js); this window stays on the space it shows. A tab bound for a space shown in
+  // another window goes there with the move; the repair run is asked as well, as a safety net, though a non-leader
+  // window's request does nothing (the leader runs repairs).
+  let warnedMove = false;
+  const moveTabToSpace = async (tab, target) => {
+    try {
+      await window.__vm.native.moveToSpace([tab.id], target.id);
+      window.__vm.spaceRepair?.schedule();
+      refresh(false);
+    } catch (error) {
+      if (!warnedMove) { warnedMove = true; console.warn("[vivarc] move to space:", error); }
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not move the tab. Use Vivaldi's Move to Workspace command." }));
+    }
+  };
+
   const tabRow = (tab, depth = 0) => {
     const row = el("div", "vm-row vm-tab");
     row.style.paddingLeft = `${8 + depth * 20}px`;
@@ -619,6 +638,7 @@
           parentId: (await ensureFolder("Favorites")).id, title: tab.title, url: tab.url })],
         [],
       ] : []),
+      ...moveTargets().flatMap((target, i, all) => [[`Move to ${target.name}`, () => moveTabToSpace(tab, target)], ...(i === all.length - 1 ? [[]] : [])]),
       ["Duplicate Tab", () => chrome.tabs.duplicate(tab.id)],
       ["Copy Link", () => copy(tab.url)],
       [],
@@ -963,7 +983,7 @@
   };
 
   const spaceBar = () => {
-    const items = spacesOf.items(state.workspaces, state.defaultSpace ? spacesOf.label(state.defaultSpace) : "Home");
+    const items = spaceItems();
     const bar = el("div", "vm-space-bar");
     const plus = el("div", "vm-space-pill vm-space-plus", "+");
     plus.title = "Create a new space";

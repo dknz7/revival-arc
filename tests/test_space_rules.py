@@ -34,13 +34,25 @@ Date.now = () => now;
 const advance = (ms) => { now += ms; };
 const calls = [];
 globalThis.bg = {};
-globalThis.chrome = { windows: { update: async (id, opts) => { calls.push(["focus", id, opts]); } }, extension: { getBackgroundPage: () => globalThis.bg } };
+globalThis.fakeTabs = [];
+globalThis.chrome = {
+  windows: { update: async (id, opts) => { calls.push(["focus", id, opts]); } },
+  extension: { getBackgroundPage: () => globalThis.bg },
+  tabs: {
+    get: async (id) => fakeTabs.find((t) => t.id === id),
+    query: async ({ windowId }) => fakeTabs.filter((t) => t.windowId === windowId),
+    update: async (id, props) => { calls.push(["update", id, props]); },
+    create: async (props) => { calls.push(["create", props]); return { id: 900, windowId: props.windowId }; },
+  },
+};
 globalThis.window = { __vm: {} };
 const installBg = () => {
   const sw = { setActiveWorkspace: (w, s) => { calls.push(["switch", w, s === undefined ? "undef" : s]); return Promise.resolve(); } };
   const store = { getActiveWorkspaceId: (w) => (w === 7 ? 42 : undefined), getActiveWorkspaces: () => new Map([[42, 7]]) };
-  const require = (id) => ({ 1: { A: sw }, 2: { Z: store } })[id];
-  require.m = { 1: function () { return "setActiveWorkspace(e,t){}"; }, 2: function () { return "getActiveWorkspaceId(e){}"; } };
+  const actions = { ZP: { moveToWorkspace: (pages, space) => { calls.push(["move", pages, space]); return Promise.resolve(); } } };
+  const require = (id) => ({ 1: { A: sw }, 2: { Z: store }, 3: actions })[id];
+  require.m = { 1: function () { return "setActiveWorkspace(e,t){}"; }, 2: function () { return "getActiveWorkspaceId(e){}"; },
+    3: function () { return 'moveToWorkspace:Pe,debug:"PageActions.moveToWorkspace"'; } };
   globalThis.bg.webpackChunkgapp_browser_react = { push: ([a, b, run]) => run(require) };
 };
 for (const f of ["07-workspaces.js", "08-space-native.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], f), "utf8"));
@@ -621,6 +633,83 @@ class RepairRuntime(unittest.TestCase):
         out = runtime(Repairs.D1, me=1, script="repair.hold(later(250));")
         self.assertEqual(out["calls"][:1], [["switch", 1, 0]])
         self.assertGreaterEqual(out["firstAt"], 250)
+
+
+def ws_tab(id, window_id, space=0, active=False, accessed=0):
+    return {"id": id, "windowId": window_id, "active": active, "lastAccessed": accessed,
+            "vivExtData": json.dumps({"workspaceId": space} if space else {})}
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class MoveToSpace(unittest.TestCase):
+    """Move to <Space> in a tab's menu: Vivaldi's own move, found by source marker; the window stays on the space it shows."""
+
+    FAKE_MOVER = """
+      const calls = [];
+      const modules = {
+        1: function () { return "nothing"; },
+        2: function () { return 'async function Pe(e,t,n=!1){}moveToWorkspace:Pe,debug:"PageActions.moveToWorkspace"'; },
+      };
+      const exportsOf = { 2: { ZP: { moveToIndex() {}, moveToWorkspace: (pages, space) => { calls.push([pages, space]); } } } };
+      const require = (id) => { if (!(id in exportsOf)) throw new Error("not loaded: " + id); return exportsOf[id]; };
+      require.m = modules;
+      const chunks = { push: ([ids, extra, run]) => run(require) };
+    """
+
+    def test_find_mover_finds_vivaldis_move(self):
+        out = js("(() => {" + self.FAKE_MOVER + "workspaces.findMover(chunks)({ id: 5, windowId: 7 }, 42); return calls; })()")
+        self.assertEqual(out, [[{"id": 5, "windowId": 7}, 42]])
+
+    def test_find_mover_returns_null_without_the_marker(self):
+        self.assertIsNone(js("workspaces.findMover(undefined)"))
+        fake = """
+          const require = () => ({ ZP: { moveToWorkspace() {} } });
+          require.m = { 1: function () { return "moveToWorkspace:Pe"; } };
+          const chunks = { push: ([ids, extra, run]) => run(require) };
+        """
+        self.assertIsNone(js("(() => {" + fake + "return workspaces.findMover(chunks); })()"))
+
+    ITEMS = [{"id": 0, "name": "Home", "emoji": ""}, {"id": 5, "name": "Work", "emoji": ""}, {"id": 9, "name": "Play", "emoji": ""}]
+
+    def test_move_targets_list_every_other_space_default_included_in_tile_order(self):
+        out = js("workspaces.moveTargets(items, 5)", items=self.ITEMS)
+        self.assertEqual(out, [{"id": 0, "name": "Home"}, {"id": 9, "name": "Play"}])
+
+    def test_the_space_on_screen_is_not_a_target(self):
+        for shown in (0, 5, 9):
+            ids = [t["id"] for t in js("workspaces.moveTargets(items, shown)", items=self.ITEMS, shown=shown)]
+            self.assertNotIn(shown, ids)
+            self.assertEqual(len(ids), 2)
+
+    def test_moving_to_default_passes_what_vivaldi_uses_for_default(self):
+        out = js("(() => {" + self.FAKE_MOVER + "const move = workspaces.findMover(chunks); move({ id: 5, windowId: 7 }, 0); move({ id: 5, windowId: 7 }, undefined); return calls.map((c) => c[1]); })()")
+        self.assertEqual(out, [0, 0], "Vivaldi's own move passes workspaceId: t || 0")
+
+    # native.moveToSpace (08-space-native.js). The fake record: window 7 shows space 42; any other window shows default.
+    def moved(self, tabs, ids, space):
+        return native_js(f"fakeTabs.push(...{json.dumps(tabs)}); installBg(); await native.moveToSpace({json.dumps(ids)}, {space}); return calls")
+
+    def test_an_inactive_tab_moves_and_nothing_else_is_touched(self):
+        tabs = [ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42)]
+        self.assertEqual(self.moved(tabs, [2], 50), [["move", {"id": 2, "windowId": 7}, 50]])
+
+    def test_the_active_tab_hands_the_screen_to_the_spaces_most_recent_other_tab_first(self):
+        tabs = [ws_tab(1, 7, 42, active=True, accessed=50), ws_tab(2, 7, 42, accessed=10), ws_tab(3, 7, 42, accessed=40), ws_tab(4, 7, 50, accessed=99)]
+        self.assertEqual(self.moved(tabs, [1], 50), [["update", 3, {"active": True}], ["move", {"id": 1, "windowId": 7}, 50]],
+                         "tab 4 is more recent but belongs to another space: activating it would switch the window")
+
+    def test_a_lone_active_tab_gets_a_blank_tab_in_its_place_first(self):
+        tabs = [ws_tab(1, 7, 42, active=True), ws_tab(4, 7, 50)]
+        self.assertEqual(self.moved(tabs, [1], 50), [["create", {"windowId": 7, "active": True}], ["move", {"id": 1, "windowId": 7}, 50]])
+
+    def test_a_space_shown_in_another_window_is_moved_into_that_window(self):
+        # Vivaldi's move fails ("ambiguous windowId") when asked to put a tab into a space shown elsewhere, from the tab's own window
+        tabs = [ws_tab(1, 8, 0, active=True), ws_tab(2, 8, 0)]
+        self.assertEqual(self.moved(tabs, [2], 42), [["move", {"id": 2, "windowId": 7}, 42]])
+
+    def test_without_vivaldis_move_it_rejects_instead_of_throwing(self):
+        out = native_js("try { await native.moveToSpace([2], 50); return 'no error'; } catch (e) { return e.message; }")
+        self.assertIn("unavailable", out)
 
 
 if __name__ == "__main__":
