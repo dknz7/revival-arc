@@ -370,6 +370,35 @@ def normal(*ids):
     return [{"id": i, "type": "normal"} for i in ids]
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class Drag(unittest.TestCase):
+    """A tab moved into a window joins the space that window shows, unless a closing window rehomed it or Vivarc moved it."""
+
+    def attach(self, tab, shown, source_open=True, moved=False):
+        return js("workspaces.restampOnAttach({ tab, shownSpace: shown, sourceWindowOpen: open, movedByVivarc: moved })",
+                  tab=tab, shown=shown, open=source_open, moved=moved)
+
+    def test_a_tab_dragged_into_a_window_joins_its_space(self):
+        tab = dict(in_window(2, 6, 10), vivExtData='{"workspaceId":6,"vivarcPin":"77"}')
+        self.assertEqual(json.loads(self.attach(tab, 5)), {"workspaceId": 5, "vivarcPin": "77"})
+
+    def test_into_the_default_space_the_key_is_removed(self):
+        # "Removed" is carried out as workspaceId: 0: Vivaldi merges vivExtData writes (measured), so omitting the key
+        # would leave the old space, while 0 makes Vivaldi drop it. Other keys are kept.
+        tab = dict(in_window(2, 6, 10), vivExtData='{"workspaceId":6,"vivarcPin":"77"}')
+        self.assertEqual(json.loads(self.attach(tab, 0)), {"workspaceId": 0, "vivarcPin": "77"})
+
+    def test_a_tab_rehomed_by_a_window_close_keeps_its_space(self):
+        self.assertIsNone(self.attach(in_window(2, 6, 10), 5, source_open=False))
+
+    def test_a_tab_vivarc_moved_keeps_its_space(self):
+        self.assertIsNone(self.attach(in_window(2, 6, 10), 5, moved=True))
+
+    def test_a_tab_already_in_that_space_is_left_alone(self):
+        self.assertIsNone(self.attach(in_window(2, 5, 10), 5))
+        self.assertIsNone(self.attach(in_window(2, 0, 10), 0))
+
+
 X, Y, Z = 5, 6, 7
 
 

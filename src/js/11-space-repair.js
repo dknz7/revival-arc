@@ -158,12 +158,47 @@
     } else if (dirty) schedule();
   };
 
+  // A dragged tab joins the space of the window it lands in (spec Part 2, "Tabs" -> dragging; Vivaldi's own drop already
+  // does this, so this is the safety net for moves done another way, which park the tab, C1). The leader handles it.
+  // 500 ms after the attach, so a closing window has gone: Vivaldi rehomes its tabs BEFORE the window closes (D2), and
+  // that must not read as a drag. Whether the source window is still open is read at the END of the wait, not at attach.
+  // The wait is held against repairs, so they never act on the tab before it joins its new space.
+  const ATTACH_MS = 500;
+  const sources = new Map(); // tab id -> the window it was last detached from
+  const onDetached = (tabId, info) => {
+    sources.set(tabId, info?.oldWindowId);
+    setTimeout(() => sources.delete(tabId), 10000);
+  };
+  const restampLater = async (tabId, newWindowId, oldWindowId) => {
+    try {
+      await sleep(ATTACH_MS);
+      const windows = await chrome.windows.getAll();
+      if (ownWindow == null || spacesOf.leaderOf(windows) !== ownWindow) return;
+      const sourceWindowOpen = oldWindowId != null && windows.some((w) => w.id === oldWindowId);
+      const shownSpace = window.__vm.native?.record()?.activeIn(newWindowId);
+      if (shownSpace == null) return; // no record: nothing to go by, as repairs
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.windowId !== newWindowId) return; // it moved on again
+      const data = spacesOf.restampOnAttach({ tab, shownSpace, sourceWindowOpen, movedByVivarc: window.__vm.movedByVivarc.has(tabId) });
+      if (data == null) return;
+      await chrome.tabs.update(tabId, { vivExtData: data });
+      console.log(`[vivarc] drag: tab ${tabId} joined ${shownSpace ? `space ${shownSpace}` : "the default space"} in window ${newWindowId}`);
+    } catch (_) {}
+  };
+  const onAttached = (tabId, info) => {
+    const from = sources.get(tabId);
+    sources.delete(tabId);
+    hold(restampLater(tabId, info?.newWindowId, from));
+  };
+
   window.__vm.spaceRepair = { schedule, hold, gesture, markMoved };
 
   const start = async () => {
     if (!(await window.__vm.ready)) return;
     try { ownWindow = (await chrome.windows.getCurrent()).id; } catch (_) { return; }
     for (const ev of ["onActivated", "onAttached", "onDetached", "onRemoved"]) chrome.tabs[ev]?.addListener(() => schedule());
+    chrome.tabs.onDetached?.addListener(onDetached);
+    chrome.tabs.onAttached?.addListener(onAttached);
     chrome.windows.onRemoved?.addListener(() => schedule());
     // a space created or deleted: the same comparison as the sidebar's 3 s poll of the workspace list
     let spaces = JSON.stringify(await readSpaces());

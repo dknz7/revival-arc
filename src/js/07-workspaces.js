@@ -117,6 +117,15 @@
     return JSON.stringify(data);
   };
 
+  // A tab that arrived in a window by a drag joins the space that window shows (spec Part 2, "Tabs" -> dragging). Returns
+  // the new vivExtData, or null when it should be left alone: its source window is gone (a window close's rehoming keeps
+  // the space, D2), Vivarc moved it itself, or it is already in that space. The default space is written as
+  // workspaceId: 0, which Vivaldi turns into the key removed (see restamp).
+  const restampOnAttach = ({ tab, shownSpace, sourceWindowOpen, movedByVivarc }) => {
+    if (!tab || shownSpace == null || !sourceWindowOpen || movedByVivarc || of(tab) === shownSpace) return null;
+    return restamp(tab, shownSpace);
+  };
+
   // The one window that runs repairs: every window runs its own copy of Vivarc and sees every window's tabs, so they all
   // agree on the lowest normal window id. When it closes, the next lowest takes over. null when no normal window is left.
   const leaderOf = (windows) => (windows || []).filter((w) => w.type === "normal")
@@ -333,5 +342,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, pickBound, restamp, restampOnAttach, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
 })();
