@@ -173,6 +173,30 @@
     return null;
   };
 
+  // Vivaldi's record of which space each window shows (its workspace store): activeIn(windowId) is that space's id, 0
+  // for the default space (a window with no entry); all() maps each recorded space's id to the window showing it.
+  // Null when the store is not found, and the caller decides what to fall back to.
+  const findRecord = (chunks) => {
+    try {
+      let load;
+      chunks.push([[Symbol("vivarc-record")], {}, (require) => { load = require; }]);
+      for (const [id, factory] of Object.entries(load?.m || {})) {
+        if (!String(factory).includes("getActiveWorkspaceId(e){")) continue;
+        let exported;
+        try { exported = load(id); } catch (_) { continue; }
+        for (const store of Object.values(exported || {})) {
+          if (typeof store?.getActiveWorkspaceId === "function" && typeof store?.getActiveWorkspaces === "function") {
+            return {
+              activeIn: (windowId) => store.getActiveWorkspaceId(windowId) ?? 0,
+              all: () => new Map([...store.getActiveWorkspaces()].filter(([space]) => space != null)),
+            };
+          }
+        }
+      }
+    } catch (_) {}
+    return null;
+  };
+
   const removalLabel = (name, tabCount) =>
     `Delete \u201c${name}\u201d${tabCount ? ` and close its ${tabCount} ${tabCount === 1 ? "tab" : "tabs"}` : ""}`;
 
@@ -182,5 +206,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, elsewhere, activeWindowOf, wantsNewWindow, tileHint, topIndex, label, assign, stamp, findRemover, findCreator, findSwitcher, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, elsewhere, activeWindowOf, wantsNewWindow, tileHint, topIndex, label, assign, stamp, findRemover, findCreator, findSwitcher, findRecord, removalLabel, eventWindow, CREATE_HINT };
 })();
