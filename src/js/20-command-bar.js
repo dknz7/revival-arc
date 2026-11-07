@@ -137,11 +137,7 @@
     if (others.length === 1) await setExtData(others[0], { tiling: undefined });
     else await Promise.all(others.map((t, index) => setExtData(t, { tiling: { ...window.__vm.tilingOf(t), index } })));
   };
-  const closeSplitView = async (tab) => {
-    const id = window.__vm.tilingOf(tab)?.id;
-    const peers = (await chrome.tabs.query({ currentWindow: true })).filter((t) => window.__vm.tilingOf(t)?.id === id);
-    await Promise.all(peers.map((t) => setExtData(t, { tiling: undefined })));
-  };
+  const closeSplitView = (tab) => window.__vm.unsplit(tab); // shared with the sidebar's tear-off
 
   // Quick actions, matched against what is typed. `tab` actions apply to the page behind the bar.
   const ACTIONS = [

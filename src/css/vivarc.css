@@ -396,6 +396,17 @@
   pointer-events: none;
 }
 #vm-copied.in { opacity: 1; transform: none; }
+#vm-copied .vm-toast-action {
+  pointer-events: auto;
+  cursor: pointer;
+  font: inherit;
+  padding: 4px 10px;
+  border-radius: 8px;
+  border: 0;
+  color: var(--vm-text);
+  background: color-mix(in srgb, var(--vm-text) 14%, transparent);
+}
+#vm-copied .vm-toast-action:hover { background: color-mix(in srgb, var(--vm-text) 24%, transparent); }
 #vm-copied .vm-copied-icon {
   display: flex;
   align-items: center;

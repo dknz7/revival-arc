@@ -253,32 +253,38 @@
       node.classList.remove("dragging");
       document.querySelector("#browser")?.classList.remove("vm-dragging");
       clearDrop();
-      if (payload.type === "tab") tearOffTab(payload.tab, e);
+      // read now: the event's data transfer is not for use after an await
+      tearOffTab(payload, { x: e.screenX, y: e.screenY, dropEffect: e.dataTransfer?.dropEffect });
     });
   };
 
   // A tab row dragged out past the window's edge and taken by nothing opens in a new window, as a plain tab of that
   // window's default space (Byron, 2026-11-08; spec Part 2, Tabs). It leaves its space on purpose: a space lives in one
   // window, so a tab that kept a space still shown here would be gathered straight back by repair 3.
-  // Order: the window is made first (the tab moves into it), and only then is the tab restamped, because while it is
-  // still the active tab here, changing its space is a switch in this window (G4). Repairs wait on the gesture mark the
-  // whole time, so none gathers the tab home between the move and the restamp.
-  const tearOffTab = async (dragged, e) => {
+  // Order: the window is made first (the tab moves into it), and only then is the tab rewritten (workspaceId 0, out of
+  // its split view and folder: workspaces.tornData), because while it is still the active tab here, changing its space
+  // is a switch in this window (G4). Repairs wait on the gesture mark the whole time, so none gathers the tab home
+  // between the move and the write. The tab's split-view peers here lose their tiling too, as Close Split View does.
+  // A drag cancelled with Escape after it left the window ends the same way as a drop there (dropEffect "none", and
+  // Chromium's drag loop swallows the key), so the tear-off is offered back: "Opened in a new window" with Undo (5 s).
+  // Undo puts the tab back at its index in the window it came from, in its original space, active again if it was; the
+  // emptied new window closes by itself. It does NOT restore a split view or a folder.
+  const UNDO_MS = 5000;
+  const tearOffTab = async (payload, end) => {
     let endBusy = null;
     try {
       const bounds = { left: window.screenX, top: window.screenY, width: window.outerWidth, height: window.outerHeight };
-      const point = { x: e.screenX, y: e.screenY };
-      const there = { point, bounds, kind: "tab", dropEffect: e.dataTransfer?.dropEffect };
-      if (!spacesOf.tearOff({ ...there, tabCount: 2 })) return; // the cheap checks first: nothing is read or marked for a drop that stays
-      endBusy = window.__vm.spaceRepair?.gesture() ?? null;
+      const there = { point: { x: end.x, y: end.y }, bounds, kind: payload.type, dropEffect: end.dropEffect };
       const inWindow = await chrome.tabs.query({ currentWindow: true });
       // The display is only known for points on this window's own display; elsewhere the browser keeps the window visible.
       const s = window.screen;
-      const onDisplay = point.x >= s.availLeft && point.x < s.availLeft + s.availWidth && point.y >= s.availTop && point.y < s.availTop + s.availHeight;
+      const onDisplay = end.x >= s.availLeft && end.x < s.availLeft + s.availWidth && end.y >= s.availTop && end.y < s.availTop + s.availHeight;
       const place = spacesOf.tearOff({ ...there, tabCount: inWindow.length,
         screen: onDisplay ? { left: s.availLeft, top: s.availTop, width: s.availWidth, height: s.availHeight } : null });
       if (!place) return;
-      const tab = await chrome.tabs.get(dragged.id); // the row's copy may be stale
+      endBusy = window.__vm.spaceRepair?.gesture() ?? null; // before the first change; set at once, nothing awaited since
+      const tab = await chrome.tabs.get(payload.tab.id); // the row's copy may be stale
+      const origin = { windowId: tab.windowId, index: tab.index, space: spacesOf.of(tab), active: tab.active };
       let fresh = null;
       try {
         fresh = await chrome.windows.create({ tabId: tab.id, left: place.left, top: place.top, focused: true });
@@ -294,13 +300,50 @@
           now = await chrome.tabs.get(tab.id);
         }
         if (now.windowId !== fresh.id) throw new Error("the tab did not arrive in the new window");
-        if (spacesOf.of(now) !== 0) await chrome.tabs.update(tab.id, { vivExtData: spacesOf.restamp(now, 0) });
+        await chrome.tabs.update(tab.id, { vivExtData: spacesOf.tornData(now) });
+        await window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] split view left behind by a tear-off:", error));
       } catch (error) {
-        // The tab is in the new window, still in its old space: repair 3 gathers it home. Nothing to undo here.
+        // The tab is in the new window, still in its old space: repair 3 gathers it home. No Undo is offered.
         console.warn("[vivarc] tab to a new window, left in its old space (repairs gather it home):", error);
+        return;
       }
+      offerUndo(tab.id, fresh.id, origin);
     } catch (error) {
       console.warn("[vivarc] tab to a new window:", error);
+    } finally { endBusy?.(); }
+  };
+  // The toast goes to the new window, which has the user's eyes (it is focused); this window's if that one is not up.
+  const offerUndo = async (tabId, newWindowId, origin) => {
+    const detail = { message: "Opened in a new window", ms: UNDO_MS, action: { label: "Undo", run: () => undoTearOff(tabId, newWindowId, origin) } };
+    for (let i = 0; i < 12; i++) {
+      try {
+        const view = chrome.extension.getViews({ windowId: newWindowId }).find((v) => v.__vm && v.__vm.cssLoaded);
+        if (view) { view.dispatchEvent(new view.CustomEvent("vm-toast", { detail })); return; }
+      } catch (_) {}
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    window.dispatchEvent(new CustomEvent("vm-toast", { detail }));
+  };
+  const undoTearOff = async (tabId, newWindowId, origin) => {
+    const endBusy = window.__vm.spaceRepair?.gesture() ?? null;
+    try {
+      const now = await chrome.tabs.get(tabId);
+      if (now.windowId !== newWindowId) return; // it has moved on since: nothing to undo
+      await chrome.windows.get(origin.windowId); // throws when the window it came from is gone
+      await chrome.tabs.move(tabId, { windowId: origin.windowId, index: origin.index });
+      const back = await chrome.tabs.get(tabId);
+      // The space first, then the activation: activating it while it is still default would be a switch here (G4).
+      if (spacesOf.of(back) !== origin.space) await chrome.tabs.update(tabId, { vivExtData: spacesOf.restamp(back, origin.space) });
+      if (origin.active) await chrome.tabs.update(tabId, { active: true });
+      await chrome.windows.update(origin.windowId, { focused: true });
+      // The emptied window closes by itself (measured); if it is still there with no tab, close it.
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const left = await chrome.tabs.query({ windowId: newWindowId }).catch(() => null);
+      if (left && !left.length) await chrome.windows.remove(newWindowId).catch(() => {});
+      refresh(false);
+    } catch (error) {
+      console.warn("[vivarc] undo of a tab torn off:", error);
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not undo that." }));
     } finally { endBusy?.(); }
   };
 

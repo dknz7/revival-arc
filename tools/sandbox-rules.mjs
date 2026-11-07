@@ -592,16 +592,66 @@ async function dragRow(win, finder, to) {
 }
 const tabRowOf = (label) => `[...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes(${J(label)}))`;
 const OUT = { x: 2400, y: 300 }, IN = { x: 300, y: 420 };
-const tearCase = (id, { setup, label, to = OUT, find, expect }) => def(id, {
+const tearCase = (id, { setup, label, to = OUT, find, expect, after }) => def(id, {
   gesture: true, setup, ready: () => waitFor(() => h.ev(`!!(${find ?? tabRowOf(label)})`, ctx.W), 8000),
-  act: () => dragRow(ctx.W, find ?? tabRowOf(label), to), expect,
+  act: async () => { const r = await dragRow(ctx.W, find ?? tabRowOf(label), to); return r === "dropped" && after ? after() : r; }, expect,
 });
-const noNewWindow = (s) => newWindow(s) == null ? null : "a new window opened";
+const strangers = (s) => normal(s).filter((w) => !["H", "W", "O", "V"].some((r) => ctx.roles[r] === w.id)).map((w) => w.id);
+const noNewWindow = (s) => strangers(s).length ? "a new window is open" : null;
+// After a tear-off: the new window's toast (it must reach that window, which is the focused one) and, if asked, its Undo.
+const tornWindow = async () => {
+  const n = await waitFor(async () => { await h.refresh(); return newWindow(await h.snap(ctx.H)); }, 8000);
+  if (n) await h.waitForWin(n);
+  return n;
+};
+const toastIn = (n) => waitFor(() => h.ev(`document.querySelector("#vm-copied")?.textContent || null`, n), 6000, 100);
+const seesToast = async () => { const n = await tornWindow(); ctx.toast = n ? await toastIn(n) : null; return "dropped"; };
+const clicksUndo = async () => {
+  const n = await tornWindow();
+  if (!n) return "no new window";
+  const ok = await waitFor(() => h.ev(`(() => { const b = document.querySelector("#vm-copied .vm-toast-action"); if (!b) return false; b.click(); return true; })()`, n), 6000, 100);
+  return ok ? "clicked" : "no Undo button on the toast";
+};
+const extOf = (id) => h.ev(`chrome.tabs.get(${id}).then((t) => JSON.parse(t.vivExtData || "{}"))`, ctx.H).catch(() => null);
 tearCase("D.tear-off", {
-  setup: SET["shown-here"], label: "X2",
-  expect: (s, b) => { const n = newWindow(s); return [n == null ? "no new window" : null, n != null ? tabIs(s, "X2", { win: n, space: 0 }) : null,
+  setup: SET["shown-here"], label: "X2", after: seesToast,
+  expect: (s, b) => { const n = strangers(s)[0] ?? null; return [n == null ? "no new window" : null, n != null ? tabIs(s, "X2", { win: n, space: 0 }) : null,
     n != null ? recIs(s, n, 0) : null, tabIs(s, "X1", { win: ctx.W, space: sp("X") }), recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X")),
-    n != null && normal(s).find((w) => w.id === n).tabs.length === 1 ? null : "the new window should hold just the torn-off tab"]; },
+    n != null && normal(s).find((w) => w.id === n).tabs.length === 1 ? null : "the new window should hold just the torn-off tab",
+    /Opened in a new window/.test(ctx.toast || "") ? null : `toast in the new window ${J(ctx.toast)}, want "Opened in a new window" + Undo`]; },
+});
+// Undo: the tab goes back to its place in the source window, in its space; the emptied new window closes.
+tearCase("D.tear-off-undo", {
+  setup: SET["shown-here"], label: "X2", after: clicksUndo,
+  expect: (s, b) => [noNewWindow(s), tabIs(s, "X2", { win: ctx.W, space: sp("X") }), tabIs(s, "X1", { win: ctx.W, space: sp("X"), active: true }),
+    find(s, ctx.tabs.X2)?.index === find(b, ctx.tabs.X2)?.index ? null : `X2 index ${find(s, ctx.tabs.X2)?.index}, was ${find(b, ctx.tabs.X2)?.index}`,
+    recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X"))],
+});
+tearCase("D.tear-off-undo-active", {
+  setup: SET["shown-here"], label: "X1", after: clicksUndo,
+  expect: (s, b) => [noNewWindow(s), tabIs(s, "X1", { win: ctx.W, space: sp("X"), active: true }), tabIs(s, "X2", { win: ctx.W, space: sp("X") }),
+    find(s, ctx.tabs.X1)?.index === find(b, ctx.tabs.X1)?.index ? null : `X1 index ${find(s, ctx.tabs.X1)?.index}, was ${find(b, ctx.tabs.X1)?.index}`,
+    recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X"))],
+});
+tearCase("D.tear-off-undo-default", {
+  setup: async () => { await mkWin("W"); await tab(ctx.W, "D2", 0); await focus(ctx.W); }, label: "D2", after: clicksUndo,
+  expect: (s, b) => [noNewWindow(s), tabIs(s, "D2", { win: ctx.W, space: 0 }), recIs(s, ctx.W, 0)],
+});
+// A tab in a split view leaves it, and its peers here leave it too (Close Split View's way).
+tearCase("D.tear-off-split", {
+  setup: async () => {
+    await SET["shown-here"]();
+    const t = { id: "sbx-split", layout: "row", type: "selection" };
+    for (const [i, label] of ["X1", "X2"].entries()) {
+      const cur = await extOf(ctx.tabs[label]);
+      await h.ev(`chrome.tabs.update(${ctx.tabs[label]}, { vivExtData: ${J(J({ ...cur, tiling: { ...t, index: i } }))} }).then(() => 1)`, ctx.H);
+    }
+    await sleep(600);
+    if (!(await extOf(ctx.tabs.X2))?.tiling || !(await extOf(ctx.tabs.X1))?.tiling) throw new Error("the split view was not recorded on X1 and X2");
+  }, label: "X2",
+  expect: async (s) => { const n = newWindow(s), x1 = await extOf(ctx.tabs.X1), x2 = await extOf(ctx.tabs.X2); return [n == null ? "no new window" : null,
+    n != null ? tabIs(s, "X2", { win: n, space: 0 }) : null, x2?.tiling ? `X2 keeps tiling ${J(x2.tiling)}` : null, x1?.tiling ? `X1 (peer) keeps tiling ${J(x1.tiling)}` : null,
+    tabIs(s, "X1", { win: ctx.W, space: sp("X") }), recIs(s, ctx.W, sp("X"))]; },
 });
 tearCase("D.tear-off-active", {
   setup: SET["shown-here"], label: "X1",

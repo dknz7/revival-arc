@@ -808,6 +808,24 @@ class TearOff(unittest.TestCase):
     def test_a_drag_that_reports_no_position_stays(self):
         self.assertIsNone(self.decide(point={"x": 0, "y": 0}))
 
+    def torn(self, ext):
+        tab = {"id": 1, "vivExtData": json.dumps(ext) if ext is not None else None}
+        return json.loads(js("workspaces.tornData(tab)", tab=tab))
+
+    def test_a_torn_tab_is_written_into_the_default_space(self):
+        self.assertEqual(self.torn({"workspaceId": 5}), {"workspaceId": 0})
+        self.assertEqual(self.torn(None), {"workspaceId": 0})
+
+    def test_a_torn_tab_leaves_its_split_view_and_folder(self):
+        # chrome.tabs.update merges vivExtData: a key leaves only when written as null (measured)
+        out = self.torn({"workspaceId": 5, "tiling": {"id": "t", "index": 1}, "group": "g", "fixedGroupTitle": "F", "vivarcPin": "77"})
+        self.assertEqual(out, {"workspaceId": 0, "tiling": None, "group": None, "fixedGroupTitle": None, "vivarcPin": "77"})
+
+    def test_keys_the_tab_never_had_are_not_written(self):
+        self.assertNotIn("tiling", self.torn({"workspaceId": 5, "keep": 1}))
+        self.assertNotIn("group", self.torn({"keep": 1}))
+        self.assertEqual(self.torn({"keep": 1})["keep"], 1)
+
     def test_unknown_numbers_never_tear_off(self):
         self.assertIsNone(self.decide(point={"x": None, "y": 300}))
         self.assertIsNone(self.decide(bounds=None))

@@ -131,6 +131,17 @@
     return JSON.stringify(data);
   };
 
+  // A torn-off tab's vivExtData: in the default space (workspaceId 0), out of its split view (tiling) and its folder
+  // (group, fixedGroupTitle), every other key kept. chrome.tabs.update merges vivExtData and only drops a key written as
+  // null (measured), so the keys the tab has are nulled; a key it never had is not written.
+  const tornData = (tab) => {
+    let data = {};
+    try { data = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) {}
+    data.workspaceId = 0;
+    for (const key of ["tiling", "group", "fixedGroupTitle"]) if (key in data) data[key] = null;
+    return JSON.stringify(data);
+  };
+
   // Dragging a tab row out of the sidebar past the window's edge opens it in a new window (Byron, 2026-11-08).
   // point: where the drag ended and bounds: the window, both in screen pixels; screen: the display's size. -> the new
   // window's {left, top} (about the drop point, kept on screen), or null when the drag stays: it ended on the window
@@ -419,5 +430,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
 })();

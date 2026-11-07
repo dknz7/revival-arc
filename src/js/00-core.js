@@ -64,7 +64,23 @@
     try { return JSON.parse(tab?.vivExtData || "{}").tiling; } catch (_) { return undefined; }
   };
 
-  window.__vm = { config, store, shortcut, windows, normalise, tilingOf, onShortcut: (fn) => subscribers.add(fn) };
+  // Merge `patch` into a tab's vivExtData. chrome.tabs.update MERGES vivExtData, so a key only leaves when it is written
+  // as null (measured on 8.2: left out, undefined and "" all keep it).
+  const setExtData = async (tab, patch) => {
+    const fresh = await chrome.tabs.get(tab.id);
+    let ext = {};
+    try { ext = JSON.parse(fresh.vivExtData || "{}"); } catch (_) {}
+    await chrome.tabs.update(tab.id, { vivExtData: JSON.stringify({ ...ext, ...patch }) });
+  };
+  // Break a split view: every tab of the tab's window in the same tile group loses its tiling.
+  const unsplit = async (tab) => {
+    const id = tilingOf(tab)?.id;
+    if (!id) return;
+    const peers = (await chrome.tabs.query({ windowId: tab.windowId })).filter((t) => tilingOf(t)?.id === id);
+    await Promise.all(peers.map((t) => setExtData(t, { tiling: null })));
+  };
+
+  window.__vm = { config, store, shortcut, windows, normalise, tilingOf, setExtData, unsplit, onShortcut: (fn) => subscribers.add(fn) };
 
   // Vivaldi re-renders #browser's class list, so the marker classes are re-applied whenever they go missing.
   const markListeners = new Set();
