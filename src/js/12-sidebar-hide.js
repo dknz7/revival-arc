@@ -53,7 +53,7 @@
   window.__vm.sidebarHide = { toggle, hidden, onChange, pressedHere };
   if (!window.__vm.onShortcut) return;
 
-  window.__vm.onMark(apply);
+  window.__vm.onMark?.(apply);
   const readPref = () => vivaldi.prefs.get(TABS).then((pref) => {
     const now = (pref?.value ?? pref) === false;
     if (now !== prefHidden) { prefHidden = now; notify(); }
@@ -67,11 +67,9 @@
   window.__vm.onShortcut((key, _combo, pressedIn) => {
     if (key !== KEY || !window.__vm.cssLoaded) return;
     const own = window.vivaldiWindowId;
-    if (typeof pressedIn === "number" && typeof own === "number") {
-      if (pressedIn === own) toggle();
-      return;
-    }
-    chrome.windows.getCurrent().then((win) => { if (pressedHere(pressedIn, own, win.focused)) toggle(); }, warn);
+    const act = (focused) => { if (pressedHere(pressedIn, own, focused)) toggle(); };
+    if (typeof pressedIn === "number" && typeof own === "number") act(false);
+    else chrome.windows.getCurrent().then((win) => act(win.focused), warn);
   });
   console.log("[vivarc] sidebar hide started");
 })();

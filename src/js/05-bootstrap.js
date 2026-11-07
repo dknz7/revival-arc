@@ -143,16 +143,34 @@
   // Ctrl+S (Cmd+S on a Mac) hides this window's sidebar, so Vivaldi's own commands lose it: whichever holds it in this
   // profile (the tab bar's hide, its auto-hide, Save Page). Once per profile, apart from VERSION (a bump would run every
   // setup step again), so a key the user puts back on a Vivaldi command later stays. Not marked done while the actions
-  // table cannot be read, so the next start tries again.
+  // table cannot be read or still holds the key afterwards, so the next start tries again.
+  // vivaldi.actions is one array that every writer reads whole and writes whole, so two windows doing it at once lose each
+  // other's edits: only the leader window (workspaces.leaderOf, the lowest normal window id, as for the repairs) runs this,
+  // and it reads the table again right before it writes. A window that is not the leader leaves the flag to the leader.
   const freeSidebarKey = async () => {
-    const actions = await get("vivaldi.actions");
-    if (!Array.isArray(actions) || !actions[0]) return;
-    const { table, freed } = freeKey(actions[0], TOGGLE);
-    if (freed.length) {
+    const leaderOf = window.__vm.workspaces?.leaderOf;
+    if (leaderOf) {
+      const own = (await chrome.windows.getCurrent()).id;
+      if (leaderOf(await chrome.windows.getAll()) !== own) return;
+    } else {
+      console.warn("[vivarc] profile setup: the window leader is unknown, freeing the sidebar key from this window");
+    }
+    const first = await get("vivaldi.actions");
+    if (!Array.isArray(first) || !first[0]) return;
+    if (freeKey(first[0], TOGGLE).freed.length) {
+      const actions = await get("vivaldi.actions"); // fresh: nothing between this read and the write
+      if (!Array.isArray(actions) || !actions[0]) return;
+      const { table, freed } = freeKey(actions[0], TOGGLE);
       actions[0] = table;
       await set("vivaldi.actions", actions);
       const name = window.__vm.windows ? "Ctrl+S" : "Cmd+S";
       for (const command of freed) console.log(`[vivarc] ${name} freed from ${command}`);
+      const after = await get("vivaldi.actions");
+      const left = Array.isArray(after) && after[0] ? freeKey(after[0], TOGGLE).freed : [];
+      if (left.length) {
+        console.warn(`[vivarc] profile setup: Ctrl+S is still on ${left.join(", ")} after freeing it, will try again at the next start`);
+        return;
+      }
     }
     await window.__vm.store.set("sidebarKeyFreed", true);
   };

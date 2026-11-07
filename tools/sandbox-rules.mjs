@@ -546,6 +546,25 @@ for (const layout of ["dia", "arc"]) {
       !r.backO.hidden && r.backO.barW === r.start.barW ? null : "second Ctrl+S in O did not show it"],
   });
 }
+// The window buttons (minimise, maximise, close) are not in the tab bar (measured: in Dia on the top row, in Arc with Vivaldi's own
+// frame in the auto-hiding #titlebar), so hiding the sidebar must not move or hide them.
+for (const layout of ["dia", "arc"]) {
+  def(`D.sidebar-hide-keeps-window-buttons-${layout}`, {
+    layout,
+    setup: twoWindows,
+    act: async () => {
+      const read = () => h.ev(`[...document.querySelectorAll(".window-buttongroup")].map((g) => { const r = g.getBoundingClientRect(); return [g.className.includes("on-mainbar"), Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height), getComputedStyle(g).display]; })`, ctx.W);
+      const before = await read();
+      await ctrlS(ctx.W);
+      const hidden = (await sideState(ctx.W)).hidden;
+      const during = await read();
+      await ctrlS(ctx.W);
+      return { before, during, hidden };
+    },
+    expect: (s, b, r) => [r.hidden ? null : "the sidebar did not hide", JSON.stringify(r.before) === JSON.stringify(r.during) ? null : `window buttons moved: ${J(r.before)} -> ${J(r.during)}`,
+      r.during.every((g) => g[5] !== "none") ? null : "window buttons hidden"],
+  });
+}
 def("D.no-button-in-arc", {
   layout: "arc",
   setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(1500); },
