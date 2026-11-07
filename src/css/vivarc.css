@@ -6,6 +6,10 @@
   --vm-sel: color-mix(in srgb, var(--colorHighlightBg, #6b63a0) 40%, var(--vm-surface));
 }
 
+/* This window's sidebar hidden (12-sidebar-hide.js, Ctrl+S or the Dia button): the tab bar column goes and the page takes its
+   width, as it does for Vivaldi's own hide, but for this window only (Vivaldi's is one pref for every window). */
+#browser.vm-on.vm-sidebar-hidden #tabs-tabbar-container { display: none !important; }
+
 #browser.vm-hide-workspaces #tabs-tabbar-container .button-toolbar.workspace-popup { display: none; }
 #browser.vm-no-space-bar #vm-panel .vm-space-bar { display: none; }
 #browser.vm-on #tabs-container > .vm-strip-hidden { display: none !important; }

@@ -48,7 +48,10 @@
     const now = Date.now();
     if (key === last.key && now - last.at < 250) return;
     last = { key, at: now };
-    subscribers.forEach((fn) => fn(key, combo));
+    // Every window's listener hears every key; the number in the event is the Vivaldi window the key was pressed in
+    // (measured on 8.2: it equals window.vivaldiWindowId there), handed on for the modules that act on one window only.
+    const pressedIn = args.find((a) => typeof a === "number");
+    subscribers.forEach((fn) => fn(key, combo, pressedIn));
   };
   try {
     vivaldi.tabsPrivate.onKeyboardShortcut.addListener(handler);

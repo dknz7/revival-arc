@@ -224,64 +224,24 @@ class TranslationState(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the Dia layout's JavaScript")
 class SidebarButton(unittest.TestCase):
-    """The button after Vivaldi's menu button hides and shows the sidebar (Vivaldi's tab bar) with Vivaldi's own
-    COMMAND_MAIN_TOGGLE_TAB_BAR, found in its webpack modules by the marker of its action executor."""
+    """The button after Vivaldi's menu button hides and shows this window's sidebar (12-sidebar-hide.js); its tooltip
+    always names Vivarc's own key, Ctrl+S (Cmd+S on a Mac)."""
 
-    def label(self, shown, shortcuts, windows=True):
-        return js("window.__vm.dia.sidebarLabel(shown, shortcuts, windows)", shown=shown, shortcuts=shortcuts, windows=windows)
+    def label(self, shown, windows=True):
+        return js("window.__vm.dia.sidebarLabel(shown, windows)", shown=shown, windows=windows)
 
-    def test_the_tooltip_follows_the_state(self):
-        self.assertEqual(self.label(True, []), "Hide sidebar")
-        self.assertEqual(self.label(False, []), "Show sidebar")
+    def test_the_tooltip_follows_the_state_and_names_vivarcs_key(self):
+        self.assertEqual(self.label(True), "Hide sidebar (Ctrl+S)")
+        self.assertEqual(self.label(False), "Show sidebar (Ctrl+S)")
 
-    def test_a_bound_key_follows_the_name_in_brackets(self):
-        self.assertEqual(self.label(True, ["ctrl+s"]), "Hide sidebar (Ctrl+S)")
-        self.assertEqual(self.label(False, ["ctrl+shift+f10"]), "Show sidebar (Ctrl+Shift+F10)")
-        self.assertEqual(self.label(True, ["alt+left"]), "Hide sidebar (Alt+Left)")
+    def test_on_a_mac_the_key_is_named_as_the_spaces_hint_names_it(self):
+        self.assertEqual(self.label(True, windows=False), "Hide sidebar (Cmd+S)")
+        self.assertEqual(self.label(False, windows=False), "Show sidebar (Cmd+S)")
 
-    def test_the_first_key_is_shown_and_none_means_no_brackets(self):
-        self.assertEqual(self.label(True, ["ctrl+s", "f4"]), "Hide sidebar (Ctrl+S)")
-        for none in ([], None, [""]):
-            self.assertEqual(self.label(True, none), "Hide sidebar", none)
-
-    def test_on_a_mac_keys_are_named_as_the_spaces_hint_names_them(self):
-        self.assertEqual(self.label(True, ["meta+s"], windows=False), "Hide sidebar (Cmd+S)")
-        self.assertEqual(self.label(True, ["alt+meta+s"], windows=False), "Hide sidebar (Option+Cmd+S)")
-        self.assertEqual(self.label(True, ["alt+s"], windows=True), "Hide sidebar (Alt+S)")
-
-    def test_only_a_pref_set_to_false_means_hidden(self):
-        for value, shown in ((True, True), (False, False), (None, True), (0, True)):
-            self.assertEqual(js("window.__vm.dia.sidebarShown(value)", value=value), shown, value)
-
-    FAKE = """
-      const calls = [];
-      const executor = { executeActions: (...args) => { calls.push(args); } };
-      const require = (id) => { if (id !== "2") throw new Error("not loaded: " + id); return { Z: executor }; };
-      require.m = { 1: function () { return "nothing to see"; }, 2: function () { return 'console.warn("[execute actions]: Lookup failed for command",n)'; } };
-      const chunks = { push: ([ids, extra, run]) => run(require) };
-    """
-
-    def test_the_command_runs_through_vivaldis_own_executor(self):
-        out = js("(() => {" + self.FAKE + "window.__vm.dia.findToggler(chunks)(7); return calls; })()")
-        self.assertEqual(out, [["button", {"vivaldiWindowId": 7}, "COMMAND_MAIN_TOGGLE_TAB_BAR"]])
-
-    def test_without_the_marker_there_is_no_runner_rather_than_an_error(self):
-        self.assertIsNone(js("window.__vm.dia.findToggler(undefined)"))
-        self.assertIsNone(js("window.__vm.dia.findToggler({ push: ([ids, extra, run]) => run(Object.assign(() => ({}), { m: {} })) })"))
-        fake = """
-          const require = () => ({ Z: { executeActions() {} } });
-          require.m = { 1: function () { return "executeActions only"; } };
-          const chunks = { push: ([ids, extra, run]) => run(require) };
-        """
-        self.assertIsNone(js("(() => {" + fake + "return window.__vm.dia.findToggler(chunks); })()"))
-
-    def test_a_module_that_has_the_marker_but_no_executor_is_passed_over(self):
-        fake = """
-          const require = () => ({ Z: { dispatch() {} } });
-          require.m = { 1: function () { return "Lookup failed for command"; } };
-          const chunks = { push: ([ids, extra, run]) => run(require) };
-        """
-        self.assertIsNone(js("(() => {" + fake + "return window.__vm.dia.findToggler(chunks); })()"))
+    def test_the_button_no_longer_runs_vivaldis_toggle_command(self):
+        source = open(os.path.join(os.path.dirname(__file__), "..", "src", "js", "15-dia.js"), encoding="utf-8").read()
+        for gone in ("COMMAND_MAIN_TOGGLE_TAB_BAR", "findToggler", "executeActions", "vivaldi.tabs.visible"):
+            self.assertNotIn(gone, source)
 
 
 # One window of the module, running for real against fake Vivaldi prefs and profile store. The scenario (argv[2]):

@@ -489,25 +489,63 @@ const cdpClick = async (win, sel) => {
   for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.cdp(win).send("Input.dispatchMouseEvent", { type, x: p[0], y: p[1], button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
   return true;
 };
-const tabBarShown = (win) => h.ev(`vivaldi.prefs.get("vivaldi.tabs.visible").then((r) => r?.value ?? r)`, win);
+// The sidebar hides per window (Task 8e): a class on this window's #browser, never Vivaldi's profile-wide pref, so the other
+// window keeps its sidebar. Hidden = the class and a tab bar column of width 0; the pref must stay true throughout.
+const sideState = (win) => h.ev(`(() => { const b = document.querySelector("#browser"); const bar = document.querySelector("#tabs-tabbar-container");
+  return { hidden: b.classList.contains("vm-sidebar-hidden"), barW: Math.round(bar.getBoundingClientRect().width), tip: document.querySelector("#vm-dia-sidebar")?.title ?? null,
+    pref: undefined }; })()`, win).then(async (st) => ({ ...st, pref: await h.ev(`vivaldi.prefs.get("vivaldi.tabs.visible").then((r) => r?.value ?? r)`, win) }));
+// Ctrl+S as the keyboard sends it (Control down, S down and up, Control up) to the window's UI, which is where Vivaldi's
+// onKeyboardShortcut hears it; every window hears it, and only the one it was pressed in may act.
+const ctrlS = async (win) => {
+  await focus(win);
+  const c = h.cdp(win), ctrl = { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 }, s = { key: "s", code: "KeyS", windowsVirtualKeyCode: 83, nativeVirtualKeyCode: 83 };
+  await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...ctrl, modifiers: 2 });
+  await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...s, modifiers: 2 });
+  await sleep(60);
+  await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...s, modifiers: 2 });
+  await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...ctrl, modifiers: 0 });
+  await sleep(900);
+};
+const twoWindows = async () => { await mkWin("W", { width: 1100 }); await mkWin("O", { width: 1100 }); await focus(ctx.W); await sleep(1000); };
+const onlyW = (w, o, what) => [w.hidden && w.barW === 0 ? null : `${what}: W not hidden (${J(w)})`, !o.hidden && o.barW > 100 ? null : `${what}: O's sidebar changed (${J(o)})`,
+  w.pref === true && o.pref === true ? null : `${what}: Vivaldi's own pref changed (${J([w.pref, o.pref])})`];
 def("D.sidebar-toggles", {
   layout: "dia",
-  setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); },
+  setup: twoWindows,
   ready: () => waitFor(() => h.ev(`!!document.querySelector("#vm-dia-sidebar")`, ctx.W), 6000),
   act: async () => {
-    const before = await tabBarShown(ctx.W);
-    const c1 = await cdpClick(ctx.W, "#vm-dia-sidebar");
-    await waitFor(async () => (await tabBarShown(ctx.W)) !== before ? "flipped" : null, 3000);
-    const hidden = await tabBarShown(ctx.W);
-    const still = await h.ev(`!!document.querySelector("#vm-dia-sidebar")`, ctx.W);
-    const c2 = await cdpClick(ctx.W, "#vm-dia-sidebar");
-    await waitFor(async () => (await tabBarShown(ctx.W)) === before ? "back" : null, 3000);
-    return { before, c1, afterFirst: hidden, buttonWhileHidden: still, c2, afterSecond: await tabBarShown(ctx.W) };
+    const r = { start: await sideState(ctx.W) };
+    r.c1 = await cdpClick(ctx.W, "#vm-dia-sidebar"); await sleep(900);
+    r.hiddenW = await sideState(ctx.W); r.hiddenO = await sideState(ctx.O);
+    r.buttonWhileHidden = await h.ev(`!!document.querySelector("#vm-dia-sidebar")`, ctx.W);
+    r.c2 = await cdpClick(ctx.W, "#vm-dia-sidebar"); await sleep(900);
+    r.backW = await sideState(ctx.W); r.backO = await sideState(ctx.O);
+    return r;
   },
-  expect: (s, b, r) => [r.c1 && r.c2 ? null : "button not found to click", r.before === true ? null : `tab bar shown before: ${J(r.before)}`,
-    r.afterFirst === false ? null : "the first click did not hide the sidebar", r.buttonWhileHidden ? null : "the button left the row with the sidebar hidden",
-    r.afterSecond === true ? null : "the second click did not show the sidebar"],
+  expect: (s, b, r) => [r.c1 && r.c2 ? null : "button not found to click", ...onlyW(r.hiddenW, r.hiddenO, "first click"),
+    r.hiddenW.tip === "Show sidebar (Ctrl+S)" ? null : `tooltip while hidden: ${J(r.hiddenW.tip)}`, r.hiddenO.tip === "Hide sidebar (Ctrl+S)" ? null : `O's tooltip: ${J(r.hiddenO.tip)}`,
+    r.buttonWhileHidden ? null : "the button left the row with the sidebar hidden",
+    !r.backW.hidden && r.backW.barW === r.start.barW && !r.backO.hidden ? null : `second click did not show it again (${J(r.backW)})`, r.backW.tip === "Hide sidebar (Ctrl+S)" ? null : `tooltip after: ${J(r.backW.tip)}`],
 });
+// Ctrl+S in both layouts: hides the window it is pressed in, shows it on a second press, and leaves the other window alone.
+for (const layout of ["dia", "arc"]) {
+  def(`D.sidebar-key-${layout}`, {
+    layout,
+    setup: twoWindows,
+    act: async () => {
+      const r = { start: await sideState(ctx.W) };
+      await ctrlS(ctx.W); r.hiddenW = await sideState(ctx.W); r.hiddenO = await sideState(ctx.O);
+      await ctrlS(ctx.O); r.bothW = await sideState(ctx.W); r.bothO = await sideState(ctx.O);
+      await ctrlS(ctx.W); r.onlyO = await sideState(ctx.O); r.backW = await sideState(ctx.W);
+      await ctrlS(ctx.O); r.backO = await sideState(ctx.O);
+      return r;
+    },
+    expect: (s, b, r) => [...onlyW(r.hiddenW, r.hiddenO, "Ctrl+S in W"),
+      r.bothW.hidden && r.bothO.hidden && r.bothO.barW === 0 ? null : `Ctrl+S in O while W is hidden: ${J([r.bothW.hidden, r.bothO.hidden])}`,
+      !r.backW.hidden && r.backW.barW === r.start.barW && r.onlyO.hidden ? null : `second Ctrl+S in W: ${J([r.backW, r.onlyO.hidden])}`,
+      !r.backO.hidden && r.backO.barW === r.start.barW ? null : "second Ctrl+S in O did not show it"],
+  });
+}
 def("D.no-button-in-arc", {
   layout: "arc",
   setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(1500); },

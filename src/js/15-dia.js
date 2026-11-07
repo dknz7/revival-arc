@@ -116,46 +116,12 @@
     return null;
   };
 
-  // The sidebar is Vivaldi's tab bar, and the button after Vivaldi's menu button hides and shows it: Vivaldi's own
-  // COMMAND_MAIN_TOGGLE_TAB_BAR (not auto-hide), which flips the pref below (measured on 8.2). Shown unless the pref is false.
-  const TABS = "vivaldi.tabs.visible";
-  const TOGGLE = "COMMAND_MAIN_TOGGLE_TAB_BAR";
-  const ACTIONS = "vivaldi.actions";
-  const sidebarShown = (value) => value !== false;
-  // The tooltip: what a click does, then the key this profile binds to the command (the first one) in brackets, named
-  // as the spaces hint names keys (Ctrl, Cmd, Option on a Mac, Alt otherwise).
-  const sidebarLabel = (shown, shortcuts, windows) => {
-    const names = { ctrl: "Ctrl", meta: "Cmd", alt: windows ? "Alt" : "Option", shift: "Shift" };
-    const key = (Array.isArray(shortcuts) ? shortcuts : []).find((s) => typeof s === "string" && s);
-    const named = key && key.split("+").map((k) => {
-      const part = k.trim().toLowerCase();
-      return names[part] || (part.length === 1 || /^f\d+$/.test(part) ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1));
-    }).join("+");
-    return `${shown ? "Hide" : "Show"} sidebar${named ? ` (${named})` : ""}`;
-  };
+  // The sidebar is Vivaldi's tab bar, and the button after Vivaldi's menu button hides and shows it in this window only
+  // (12-sidebar-hide.js). The tooltip says what a click does, then Vivarc's own key, which does the same (named as the
+  // spaces hint names keys: Cmd on a Mac).
+  const sidebarLabel = (shown, windows) => `${shown ? "Hide" : "Show"} sidebar (${windows ? "Ctrl" : "Cmd"}+S)`;
 
-  // Vivaldi's action executor, which runs a command by name as its own buttons and shortcuts do
-  // (executeActions("button", { vivaldiWindowId }, "COMMAND_…")); found in webpack's modules as findRemover
-  // (07-workspaces.js) finds the workspace manager. Returns (vivaldiWindowId) => runs the command, or null.
-  const findToggler = (chunks) => {
-    try {
-      let load;
-      chunks.push([[Symbol("vivarc-toggle-sidebar")], {}, (require) => { load = require; }]);
-      for (const [id, factory] of Object.entries(load?.m || {})) {
-        if (!String(factory).includes("Lookup failed for command")) continue;
-        let exported;
-        try { exported = load(id); } catch (_) { continue; }
-        for (const executor of Object.values(exported || {})) {
-          if (typeof executor?.executeActions === "function") {
-            return (vivaldiWindowId) => executor.executeActions("button", { vivaldiWindowId }, TOGGLE);
-          }
-        }
-      }
-    } catch (_) {}
-    return null;
-  };
-
-  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, sidebarShown, sidebarLabel, findToggler, ROW_ITEMS };
+  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, sidebarLabel, ROW_ITEMS };
   if (!window.__vm.store) return;
 
   const { store, settings } = window.__vm;
@@ -289,12 +255,9 @@
     activeTab().then(fill);
   };
 
-  // The hide-sidebar button: its tooltip follows the pref the command flips (so a keyboard toggle too) and the key bound
-  // to it. The command runs through Vivaldi's executor; without it the same pref is flipped.
+  // The hide-sidebar button: hides and shows this window's sidebar (12-sidebar-hide.js), and its tooltip follows that
+  // state, so the key (Ctrl+S) changes it too.
   let sideNode = null;
-  let sideShown = true;
-  let sideKeys = [];
-  let sideRun; // undefined: not looked up yet; null: no executor found (the pref is flipped instead)
   let sideWarned = false;
   const sideWarn = (message) => {
     if (sideWarned) return;
@@ -303,26 +266,14 @@
   };
   const sideLabel = () => {
     if (!sideNode) return;
-    const label = sidebarLabel(sideShown, sideKeys, windows);
+    const label = sidebarLabel(!window.__vm.sidebarHide?.hidden(), windows);
     sideNode.title = label;
     sideNode.setAttribute("aria-label", label);
   };
-  const sideRead = async () => {
-    try {
-      sideShown = sidebarShown(await prefs.get(TABS));
-      sideKeys = (await prefs.get(ACTIONS))?.[0]?.[TOGGLE]?.shortcuts || [];
-    } catch (_) {}
-    sideLabel();
-  };
   const sideToggle = async () => {
     try {
-      if (sideRun === undefined) {
-        sideRun = findToggler(window.webpackChunkgapp_browser_react) ||
-          findToggler(chrome.extension?.getBackgroundPage?.()?.webpackChunkgapp_browser_react);
-        if (!sideRun) sideWarn("Vivaldi's command runner not found, the sidebar button flips the tab bar's pref instead");
-      }
-      if (sideRun) sideRun(window.vivaldiWindowId); // Vivaldi's own window id, not chrome.windows' (HOW-IT-WORKS)
-      else await prefs.set(TABS, !sideShown);
+      if (!window.__vm.sidebarHide) return sideWarn("the sidebar hide module is missing, the sidebar button does nothing");
+      await window.__vm.sidebarHide.toggle();
     } catch (error) {
       console.warn("[vivarc] Dia layout: could not hide or show the sidebar:", error);
     }
@@ -412,9 +363,8 @@
       asked = null;
       if (error && error !== "no_error") toast("Could not translate the page");
     });
-    // The tab bar's pref and the key bound to its command, for the sidebar button's tooltip (changes in any window).
-    sideRead();
-    vivaldi.prefs.onChanged?.addListener((path) => { if (path === TABS || path === ACTIONS) sideRead(); });
+    // The sidebar button's tooltip follows this window's hide, whichever of the button and Ctrl+S changed it.
+    window.__vm.sidebarHide?.onChange(sideLabel);
     let last = null;
     const follow = (values, writer) => {
       if (values.diaLayout === last) return;

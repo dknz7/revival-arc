@@ -115,7 +115,7 @@ python vivarc.py install
 
 #### Shortcuts and limitations
 
-Ctrl+T opens the command bar, Ctrl+S toggles the sidebar, Ctrl+Shift+C copies the
+Ctrl+T opens the command bar, Ctrl+S hides or shows the sidebar in the window you press it in, Ctrl+Shift+C copies the
 URL, Ctrl+Left/Right switches spaces, and Ctrl+Alt+N creates a space. Alt+Left/Right
 stay Back/Forward; Vivaldi's second Back/Forward pair, Ctrl+Left/Right, goes to spaces.
 Ctrl+Shift+Left/Right or Ctrl+Shift+1..9 switches profiles. F2 opens Vivaldi's
@@ -183,7 +183,7 @@ python3 ~/.vivarc/app/vivarc.py status      # what is installed
 | Keys        | Does                                                                                                                           |
 | ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
 | Cmd+T       | Command bar                                                                                                                    |
-| Cmd+S       | Hide the sidebar, or show it again. While it is hidden, move the pointer to the left edge of the window and it slides back in. |
+| Cmd+S       | Hide this window's sidebar, or show it again. Other windows keep theirs. Press it again to bring it back.                      |
 | Cmd+Shift+C | Copy the page URL (with a toast)                                                                                               |
 | Cmd+L       | Edit the address                                                                                                               |
 | Cmd+E       | Vivaldi's own Quick Commands                                                                                                   |

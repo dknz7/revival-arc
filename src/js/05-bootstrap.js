@@ -1,8 +1,29 @@
 // Sets up a Vivaldi profile that the installer has not configured (for example one created later): tabs on
-// the left, Cmd+T freed for the command bar, Cmd+S for the sidebar, toolbar tidy-up. All of it applies live.
+// the left, Cmd+T freed for the command bar, Cmd+S freed for Vivarc's own sidebar hide (12-sidebar-hide.js), toolbar
+// tidy-up. All of it applies live.
 (() => {
+  // Vivaldi's actions table with `key` taken off every command that holds it: { table: a new table, freed: the commands
+  // that lost it, in table order }. Nothing else changes, and running it again frees nothing. Keys match however written.
+  const norm = (combo) => String(combo).toLowerCase().split("+").map((s) => s.trim()).sort().join("+");
+  const freeKey = (table, key) => {
+    const want = norm(key);
+    const same = (s) => typeof s === "string" && norm(s) === want;
+    const out = {};
+    const freed = [];
+    for (const [name, cmd] of Object.entries(table || {})) {
+      if (Array.isArray(cmd?.shortcuts) && cmd.shortcuts.some(same)) {
+        freed.push(name);
+        out[name] = { ...cmd, shortcuts: cmd.shortcuts.filter((s) => !same(s)) };
+      } else {
+        out[name] = cmd;
+      }
+    }
+    return { table: out, freed };
+  };
+  window.__vm.bootstrap = { freeKey };
+
   const cfg = window.__vm.config;
-  if (cfg.autoConfigureProfiles === false) return;
+  if (!cfg || cfg.autoConfigureProfiles === false) return;
 
   const get = async (path) => (await vivaldi.prefs.get(path))?.value;
   const set = (path, value) => vivaldi.prefs.set({ path, value });
@@ -75,7 +96,6 @@
     const copy = command("COMMAND_PAGE_COPY_URL");
     if (!copy.shortcuts.includes(COPY_URL)) copy.shortcuts.push(COPY_URL);
     command("COMMAND_SAVE_PAGE").shortcuts = command("COMMAND_SAVE_PAGE").shortcuts.filter((s) => s !== TOGGLE);
-    command("COMMAND_TOGGLE_AUTO_HIDE_TAB_BAR").shortcuts = [TOGGLE];
     const taken = [...PROFILE_KEYS, ...Object.values(SPACE_KEYS)];
     for (const cmd of Object.values(table)) {
       if (Array.isArray(cmd?.shortcuts)) cmd.shortcuts = cmd.shortcuts.filter((s) => !taken.includes(s));
@@ -120,6 +140,23 @@
     await set("vivaldi.tabs.bar.position", "left"); // the UI compares the enum by name, so a number would not take effect live
   };
 
+  // Ctrl+S (Cmd+S on a Mac) hides this window's sidebar, so Vivaldi's own commands lose it: whichever holds it in this
+  // profile (the tab bar's hide, its auto-hide, Save Page). Once per profile, apart from VERSION (a bump would run every
+  // setup step again), so a key the user puts back on a Vivaldi command later stays. Not marked done while the actions
+  // table cannot be read, so the next start tries again.
+  const freeSidebarKey = async () => {
+    const actions = await get("vivaldi.actions");
+    if (!Array.isArray(actions) || !actions[0]) return;
+    const { table, freed } = freeKey(actions[0], TOGGLE);
+    if (freed.length) {
+      actions[0] = table;
+      await set("vivaldi.actions", actions);
+      const name = window.__vm.windows ? "Ctrl+S" : "Cmd+S";
+      for (const command of freed) console.log(`[vivarc] ${name} freed from ${command}`);
+    }
+    await window.__vm.store.set("sidebarKeyFreed", true);
+  };
+
   const configure = async () => {
     await ensureSideTabs();
     for (const delay of [4000, 12000, 30000]) setTimeout(() => ensureSideTabs().catch(() => {}), delay);
@@ -129,6 +166,7 @@
       await set("vivaldi.address_bar.extensions.render_in_dropdown", true);
       await window.__vm.store.set("extensionsDropdown", true);
     }
+    if (!(await window.__vm.store.get("sidebarKeyFreed", false))) await freeSidebarKey();
     if ((await window.__vm.store.get("bootstrap", 0)) >= VERSION) return;
     await bindShortcuts();
     await tidyToolbars();
