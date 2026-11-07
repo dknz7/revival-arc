@@ -1,6 +1,6 @@
 # Vivarc rules: spaces and windows
 
-**Status: APPROVED by Byron, 2026-11-06 (decisions in Part 3). Built 2026-11-07.** Every rule in Part 2 has unit tests (`tests/test_space_rules.py`) and a live check in a sandbox Vivaldi (`tools/sandbox-rules.mjs`, one PASS/FAIL line per rule). Byron added `Move to <Space>` (under "Tabs") on 2026-11-07. His Dia sidebar button of the same day is not a spaces rule, so it is in `docs/HOW-IT-WORKS.md`, though the same script checks it. A change to these rules is a change to this file first.
+**Status: APPROVED by Byron, 2026-11-06 (decisions in Part 3). Built 2026-11-07.** Every rule in Part 2 has unit tests (`tests/test_space_rules.py`) and a live check in a sandbox Vivaldi (`tools/sandbox-rules.mjs`, one PASS/FAIL line per rule). Byron added `Move to <Space>` (under "Tabs") on 2026-11-07. On 2026-11-08 he approved the split-space exception to invariant 4 (a plain click gathers a split space) and had Vivarc's own drag restamp removed (decision 4). His Dia sidebar button of the same day is not a spaces rule, so it is in `docs/HOW-IT-WORKS.md`, though the same script checks it. A change to these rules is a change to this file first.
 
 **Why this exists.** A run of bugs (a space click that does nothing, links filed into the wrong space, a space that "moved on its own") all came from the same place. Vivaldi's own record of which space a window shows can disagree with what the window is actually showing. Vivaldi and Vivarc then each act on a different idea of where things are. Part 1 is how Vivaldi really behaves, as measured. Part 2 is the rules Vivarc promises, including where it deliberately overrides Vivaldi.
 
@@ -65,10 +65,10 @@ Measured on 2026-11-06 in a sandbox Vivaldi 8.2.4133.96 with Vivarc loaded, each
 ## Part 2: the rules Vivarc keeps
 
 ### Invariants: true whenever no gesture is in progress
-1. **One truth.** Which space a window shows is Vivaldi's record and nothing else. Vivarc reads the record and does not infer it from the active tab. The one exception is a Vivaldi whose record can't be read at all: the sidebar (its tiles and pins included) and the command bar then fall back to the active tab's space, while the repairs and the drag restamp do nothing (each logs one warning), since without the record they would be guessing.
+1. **One truth.** Which space a window shows is Vivaldi's record and nothing else. Vivarc reads the record and does not infer it from the active tab. The one exception is a Vivaldi whose record can't be read at all: the sidebar (its tiles and pins included) and the command bar then fall back to the active tab's space, while the repairs do nothing (they log one warning), since without the record they would be guessing.
 2. **Record and screen agree.** A window's active tab always belongs to the space its record names (default when there is no entry). When something breaks that, Vivarc repairs it (see "Repairs").
 3. **A space lives in one window.** All of a space's tabs are in one window. Vivaldi can split a space (a window close, a moved tab), and Vivarc repairs it (see "Repairs").
-4. **A plain click never moves tabs between windows.** Moving tabs is always explicit: shift+click, ctrl+shift+click, or dragging. The one exception: a plain click on a space split across windows gathers it into the window it lives in, as repair 3 would (see the gesture table).
+4. **A plain click never moves tabs between windows.** Moving tabs is always explicit: shift+click, ctrl+shift+click, or dragging. The one exception: a plain click on a space split across windows gathers it into the window it lives in, as repair 3 would (see the gesture table). Approved by Byron, 2026-11-08.
 5. **Vivarc does not stamp spaces.** New tabs get the recorded space from Vivaldi (B1). Vivarc writes `workspaceId` only when it deliberately puts a tab into a space. Its old new-tab stamping is removed: it was redundant, and it undid switches (A8b). A tab put into the default space is written with `workspaceId: 0`. `chrome.tabs.update` merges `vivExtData`, so leaving the key out would keep the old space, while Vivaldi drops the key when it is 0.
 6. **Every window shows a space that exists and has a tab.** A record pointing at a deleted space, or at a space with no tab in that window, is repaired.
 
@@ -79,7 +79,7 @@ Measured on 2026-11-06 in a sandbox Vivaldi 8.2.4133.96 with Vivarc loaded, each
 | shown in another window | go to that window | bring X here | move X to a new window |
 | parked in this window | show X here | show X here | move X to a new window |
 | parked in another window | **go there: that window shows X and comes to the front** | bring X here | move X to a new window |
-| split across windows | treated as living in the window it is shown in, otherwise the one with most of its tabs; shift+click and the move both gather every tab, and so does a plain click, into the window it lives in (as repair 3 would; the one exception to invariant 4) | | |
+| split across windows | treated as living in the window it is shown in, otherwise the one with most of its tabs; shift+click and the move both gather every tab, and so does a plain click, into the window it lives in (as repair 3 would; the one exception to invariant 4, approved by Byron, 2026-11-08) | | |
 | empty | show X here (Vivaldi makes a start page) | same as click | move X to a new window (opens with a start page) |
 
 The default space can't be moved, because it belongs to each window. Clicking it shows this window's own default tabs.
@@ -92,7 +92,7 @@ The default space can't be moved, because it belongs to each window. Clicking it
 - **New tabs** (Ctrl+T, + New Tab, palette pages, links) go into the window's recorded space (Vivaldi's own behaviour). Given invariant 2, that is always the space on screen.
 - **New-tab position:** a new tab from Ctrl+T, + New Tab or the palette goes to the top of its space's list. A link opens next to the page it came from.
 - **Favorites and pinned tabs** open in this window and **in the space on screen**. Activating a tab parked in another space breaks invariant 2 (G1–G3), so Vivarc never does it. A favorite's or pin's tab that is in another space or window is brought here and put into the space on screen before it is activated, so no second tab opens.
-- **Dragging a tab into another window:** the tab joins the space that window shows. This is the explicit "move this tab" gesture. Vivaldi's own drop already does this (H2). Vivarc restamps a tab that arrives any other way (`chrome.tabs.move` keeps its space, C1), unless its window was closing (D2) or Vivarc moved it itself.
+- **Dragging a tab into another window:** the tab joins the space that window shows. This is the explicit "move this tab" gesture. Vivaldi's own drop puts the tab into the space the target window shows (H2); Vivarc adds nothing. A tab moved by other code (`chrome.tabs.move`) keeps its space and arrives parked (C1); the repairs take it from there.
 
 ### Repairs: when Vivaldi breaks an invariant
 Vivarc checks after the events that can break an invariant (tab activated, tab moved or attached, tab closed, window closed, space deleted, startup), waits for the browser to settle, then repairs in this order:
@@ -108,7 +108,7 @@ The confirmation says how many tabs will close and in how many windows. After th
 1. **A plain click on a space parked in another window: go there.** That window switches to the space and comes to the front. (Not chosen: Vivaldi's native "pull it here".)
 2. **A window closes with spaces in it:** accept Vivaldi's rehoming to the last-focused window, then gather split spaces (repair 3). (Not chosen: routing each space to the window where it is shown.)
 3. **Favorites and pinned tabs open in the space on screen, Favorites included.**
-4. **Dragging a tab to another window** restamps it into that window's shown space. (Not chosen: keeping its space and arriving parked.)
+4. **Dragging a tab to another window** puts it into that window's shown space. Vivaldi's own drop delivers this (H2). Vivarc had a restamp of its own for tabs moved any other way; Byron had it removed on 2026-11-08, because Vivaldi's drop already does the job and the restamp's one real risk was re-filing a heavy closing window's rehomed tabs (a 100-tab close took 2.5-2.9 s against its 1.5 s re-check). (Not chosen: keeping its space and arriving parked, for a real drag.)
 
 ## Confirmed in the sandbox (H1–H3)
 The spike left these unmeasured. They were measured on 2026-11-06, before the build, in the sandbox (`tools/sandbox.ps1`: Vivaldi 8.2.4133.96 with this branch's Vivarc, Arc layout), 3 runs per case, all 3 identical. W shows X (`X1` active, `X2`) with `Y1` parked in W, unless a case says otherwise.
@@ -116,7 +116,7 @@ The spike left these unmeasured. They were measured on 2026-11-06, before the bu
   - Tab bar (H1-strip): Vivaldi's strip lists only the tabs of the window's recorded space (`X1`, `X2`), so a parked tab can't be clicked there. A control click on `X2` activated it and left the record on X.
   - Window panel (H1-panel): a single click on `Y1` (under Workspaces > Y) only selects the row. A double click calls Vivaldi's `setActiveWorkspace(W, Y)`: the record becomes Y and `Y1` is active (a switch, not G1).
   - Space switcher (H1-menu, the Workspaces button popup): choosing Y calls `setActiveWorkspace(W, Y)`, with the same result.
-- **H2. Dropping a tab into another window.** A real drag is a native OS drag (`tabsPrivate.startDrag`), which CDP can't drive. The case runs the call Vivaldi's drop handler makes in the target window, `PageActions.moveDroppedTabs(O, [X2], X2, -1)`, which moves the tab with `workspaceId` set to **O's recorded space**. `X2` lands at the end of O's strip and becomes active there. It **joins the space O shows**: Z when O shows Z (H2-named), and the default space, with no `workspaceId` key, when O is on default (H2-default). Neither record changes. Vivarc made no calls. So Vivaldi's own drop already restamps; `chrome.tabs.move` keeps the space and parks the tab (C1).
+- **H2. Dropping a tab into another window.** A real drag is a native OS drag (`tabsPrivate.startDrag`), which CDP can't drive. The case runs the call Vivaldi's drop handler makes in the target window, `PageActions.moveDroppedTabs(O, [X2], X2, -1)`, which moves the tab with `workspaceId` set to **O's recorded space**. `X2` lands at the end of O's strip and becomes active there. It **joins the space O shows**: Z when O shows Z (H2-named), and the default space, with no `workspaceId` key, when O is on default (H2-default). Neither record changes. Vivarc made no calls. So Vivaldi's own drop files the tab into O's shown space; `chrome.tabs.move` keeps the space and parks the tab (C1).
 - **H3. Favorites and pinned tabs whose tab is in another space.** Vivarc never activated the parked tab (no G1 drift), and the record stayed Y in every run.
   - A pin of X, opened while W showed X (tab bound in X), then W switched to Y (H3-pin): the sidebar shows Y's Pinned folder, so X's pin isn't on screen and can't be clicked.
   - A favorite opened in X, then W switched to Y (H3-fav): clicking it opens a **new** tab bound to the same favorite. Vivaldi puts it in Y and it is active. The X tab stays bound in X, so the favorite now has a tab in each space.

@@ -100,9 +100,8 @@ Things that cost time to find out:
   Each is found in the webpack modules by a marker in its source, kept once found and retried at most every 5 s. Vivaldi's move reports success when it fails, so `moveToSpace` reads the tab again afterwards.
 - `11-space-repair.js` carries out the repairs:
   - Every window runs it, but only the leader acts (`workspaces.leaderOf`: the lowest normal window id). It acts 400 ms after the browser settles and re-plans after each pass. After 3 passes that still leave drift, it rests 10 s.
-  - Gathers use `chrome.tabs.move`. Their tab ids stay in `window.__vm.movedByVivarc` for 5 s, so the drag restamp skips them.
+  - Gathers use `chrome.tabs.move`; the tabs keep their space.
   - A pull or a move to a new window puts a busy mark on the background page (`__vivarcSpaceGesture`, at most 10 s; `window.html` has no `localStorage`), and repairs wait for it.
-  - The drag restamp (`workspaces.restampOnAttach`) runs in the leader 500 ms after an attach, after a closing window has gone.
 - Moving a space to a new window: the window opens on `about:blank`, because a start page would open the command bar. Vivaldi's switch may not know a brand-new window yet, so it is retried until the tabs arrive. Then the `about:blank` tab closes.
 - New tabs from Ctrl+T, + New Tab and the palette top their space's list, as in Arc (`workspaces.topIndex`). The list shows the highest tab index first.
   - Ctrl+T's blank tab moves there once it has an address.
