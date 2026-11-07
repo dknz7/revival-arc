@@ -70,6 +70,7 @@ Things that cost time to find out:
 - They ignore a bare `.click()`. Send `pointerdown`, `mousedown`, `pointerup`, `mouseup`, `click` in that order.
 - Changing the layout inside a `dragstart` handler makes Chromium cancel the drag. Defer it with `requestAnimationFrame`.
 - Re-rendering the sidebar while a drag is running detaches the dragged node. Renders are held back until `dragend`.
+- A tab row's `dragend` with `dropEffect === "none"` and a `screenX/screenY` outside `window.screenX/screenY/outerWidth/outerHeight` tears the tab off into a new window (`tearOffTab` in `10-sidebar.js`, decision in `workspaces.tearOff`). A drag with no known position reports `0,0`, which is treated as "stays".
 - A mod cannot call Vivaldi's own commands or reach its webpack modules; only `chrome.*`, `vivaldi.prefs`, `vivaldi.searchEngines` and `vivaldi.tabsPrivate` are available.
 - Enum prefs set through `vivaldi.prefs.set` only take effect live when set by name (`"left"`, `"right"`, `"overlay"`). A number is stored but the UI ignores it until restart. The installer writes numbers because it edits the file while Vivaldi is closed.
 - `auto_hide.enabled` is a master switch: when it is on, every bar defaults to hidden unless its own `auto_hide.*` key is explicitly `false`.

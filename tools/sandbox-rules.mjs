@@ -569,6 +569,72 @@ def("D.no-button-in-arc", {
   expect: (s, b, n) => [n === 0 ? null : `${n} sidebar buttons in the Arc layout`],
 });
 
+// Task 8f: a tab row dragged out of the sidebar past the window opens in a new window, as a plain tab of that window's
+// default space. The drag is a real HTML5 one driven through CDP (Input.setInterceptDrags + dispatchMouseEvent, then
+// dispatchDragEvent to end it at x,y): dragstart and dragend are the browser's own events, but the drop point is not an
+// OS cursor. Measured: dragend's screenX/screenY equal the x,y given (the window's origin is not added), so an
+// "outside" point is one beyond the window's screen rect, an "inside" one within it.
+async function dragRow(win, finder, to) {
+  const rect = await waitFor(() => h.ev(`(() => { const r = ${finder}; if (!r) return null; r.scrollIntoView({ block: "center" }); const b = r.getBoundingClientRect(); const top = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return r.contains(top) ? { x: b.left + b.width / 2, y: b.top + b.height / 2 } : null; })()`, win), 8000);
+  if (!rect) return "no row to drag";
+  const c = h.cdp(win);
+  await c.send("Input.setInterceptDrags", { enabled: true });
+  try {
+    await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: rect.x, y: rect.y, button: "left", buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= 8; i++) { await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: rect.x + i * 4, y: rect.y + i * 3, button: "left", buttons: 1 }); await sleep(60); }
+    await sleep(400);
+    const data = { items: [], dragOperationsMask: 1 };
+    await c.send("Input.dispatchDragEvent", { type: "dragEnter", x: to.x, y: to.y, data });
+    await c.send("Input.dispatchDragEvent", { type: "drop", x: to.x, y: to.y, data });
+    await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button: "left", buttons: 0, clickCount: 1 }).catch(() => {});
+  } finally { await c.send("Input.setInterceptDrags", { enabled: false }).catch(() => {}); }
+  return "dropped";
+}
+const tabRowOf = (label) => `[...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes(${J(label)}))`;
+const OUT = { x: 2400, y: 300 }, IN = { x: 300, y: 420 };
+const tearCase = (id, { setup, label, to = OUT, find, expect }) => def(id, {
+  gesture: true, setup, ready: () => waitFor(() => h.ev(`!!(${find ?? tabRowOf(label)})`, ctx.W), 8000),
+  act: () => dragRow(ctx.W, find ?? tabRowOf(label), to), expect,
+});
+const noNewWindow = (s) => newWindow(s) == null ? null : "a new window opened";
+tearCase("D.tear-off", {
+  setup: SET["shown-here"], label: "X2",
+  expect: (s, b) => { const n = newWindow(s); return [n == null ? "no new window" : null, n != null ? tabIs(s, "X2", { win: n, space: 0 }) : null,
+    n != null ? recIs(s, n, 0) : null, tabIs(s, "X1", { win: ctx.W, space: sp("X") }), recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X")),
+    n != null && normal(s).find((w) => w.id === n).tabs.length === 1 ? null : "the new window should hold just the torn-off tab"]; },
+});
+tearCase("D.tear-off-active", {
+  setup: SET["shown-here"], label: "X1",
+  expect: (s) => { const n = newWindow(s); return [n == null ? "no new window" : null, n != null ? tabIs(s, "X1", { win: n, space: 0 }) : null,
+    n != null ? recIs(s, n, 0) : null, tabIs(s, "X2", { win: ctx.W, space: sp("X") }), recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X"))]; },
+});
+tearCase("D.tear-off-last-of-space", {
+  setup: async () => { await mkWin("W"); await tab(ctx.W, "X1", sp("X"), { active: true }); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); }, label: "X1",
+  // X's only tab leaves: W is recorded on a space with no tab, and repair 1 switches it to its default (C3/D1)
+  expect: (s) => { const n = newWindow(s); return [n == null ? "no new window" : null, n != null ? tabIs(s, "X1", { win: n, space: 0 }) : null,
+    n != null ? recIs(s, n, 0) : null, recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0), inSpace(s, sp("X")).length ? "X still has tabs" : null]; },
+});
+tearCase("D.tear-off-default-tab", {
+  setup: async () => { await mkWin("W"); await tab(ctx.W, "D2", 0); await focus(ctx.W); }, label: "D2",
+  expect: (s) => { const n = newWindow(s); return [n == null ? "no new window" : null, n != null ? tabIs(s, "D2", { win: n, space: 0 }) : null, recIs(s, ctx.W, 0)]; },
+});
+tearCase("D.tear-off-stays-inside", {
+  setup: SET["shown-here"], label: "X2", to: IN,
+  expect: (s, b) => [noNewWindow(s), unchanged(b, s)],
+});
+tearCase("D.tear-off-only-tab", {
+  setup: async () => { await mkWin("W"); await focus(ctx.W); }, label: "W-d0",
+  expect: (s, b) => [noNewWindow(s), unchanged(b, s)],
+});
+tearCase("D.tear-off-favorite-stays", {
+  setup: async () => {
+    await mkWin("W", { width: 1000 }); await tab(ctx.W, "X1", sp("X")); await focus(ctx.W);
+    ctx.title = "TEARFAV"; await bookmark(await favoritesFolder(), ctx.title, `${origin}/tearfav-${Date.now()}`);
+  },
+  find: `[...document.querySelectorAll("#vm-panel .vm-fav")].find((t) => t.title === "TEARFAV")`,
+  expect: (s, b) => [noNewWindow(s), unchanged(b, s)],
+});
+
 // Part 3 decisions that are the same check as a row above.
 const ALIASES = { "P3.1": ["T.parked-other.click"], "P3.2": ["R.D8", "R.D2"] };
 

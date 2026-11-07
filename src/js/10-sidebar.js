@@ -247,13 +247,61 @@
         document.querySelector("#browser")?.classList.add("vm-dragging");
       });
     });
-    node.addEventListener("dragend", () => {
+    node.addEventListener("dragend", (e) => {
       drag = null;
       if (refreshAfterDrag) refresh(true);
       node.classList.remove("dragging");
       document.querySelector("#browser")?.classList.remove("vm-dragging");
       clearDrop();
+      if (payload.type === "tab") tearOffTab(payload.tab, e);
     });
+  };
+
+  // A tab row dragged out past the window's edge and taken by nothing opens in a new window, as a plain tab of that
+  // window's default space (Byron, 2026-11-08; spec Part 2, Tabs). It leaves its space on purpose: a space lives in one
+  // window, so a tab that kept a space still shown here would be gathered straight back by repair 3.
+  // Order: the window is made first (the tab moves into it), and only then is the tab restamped, because while it is
+  // still the active tab here, changing its space is a switch in this window (G4). Repairs wait on the gesture mark the
+  // whole time, so none gathers the tab home between the move and the restamp.
+  const tearOffTab = async (dragged, e) => {
+    let endBusy = null;
+    try {
+      const bounds = { left: window.screenX, top: window.screenY, width: window.outerWidth, height: window.outerHeight };
+      const point = { x: e.screenX, y: e.screenY };
+      const there = { point, bounds, kind: "tab", dropEffect: e.dataTransfer?.dropEffect };
+      if (!spacesOf.tearOff({ ...there, tabCount: 2 })) return; // the cheap checks first: nothing is read or marked for a drop that stays
+      endBusy = window.__vm.spaceRepair?.gesture() ?? null;
+      const inWindow = await chrome.tabs.query({ currentWindow: true });
+      // The display is only known for points on this window's own display; elsewhere the browser keeps the window visible.
+      const s = window.screen;
+      const onDisplay = point.x >= s.availLeft && point.x < s.availLeft + s.availWidth && point.y >= s.availTop && point.y < s.availTop + s.availHeight;
+      const place = spacesOf.tearOff({ ...there, tabCount: inWindow.length,
+        screen: onDisplay ? { left: s.availLeft, top: s.availTop, width: s.availWidth, height: s.availHeight } : null });
+      if (!place) return;
+      const tab = await chrome.tabs.get(dragged.id); // the row's copy may be stale
+      let fresh = null;
+      try {
+        fresh = await chrome.windows.create({ tabId: tab.id, left: place.left, top: place.top, focused: true });
+      } catch (error) {
+        console.warn("[vivarc] tab to a new window:", error);
+        window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not open the tab in a new window." }));
+        return;
+      }
+      try {
+        let now = await chrome.tabs.get(tab.id);
+        for (let i = 0; i < 20 && now.windowId !== fresh.id; i++) {
+          await new Promise((resolve) => setTimeout(resolve, 150));
+          now = await chrome.tabs.get(tab.id);
+        }
+        if (now.windowId !== fresh.id) throw new Error("the tab did not arrive in the new window");
+        if (spacesOf.of(now) !== 0) await chrome.tabs.update(tab.id, { vivExtData: spacesOf.restamp(now, 0) });
+      } catch (error) {
+        // The tab is in the new window, still in its old space: repair 3 gathers it home. Nothing to undo here.
+        console.warn("[vivarc] tab to a new window, left in its old space (repairs gather it home):", error);
+      }
+    } catch (error) {
+      console.warn("[vivarc] tab to a new window:", error);
+    } finally { endBusy?.(); }
   };
 
   // zone: "before" | "after" | "into" depending on pointer position inside the target

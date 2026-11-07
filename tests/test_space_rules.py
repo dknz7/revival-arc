@@ -755,5 +755,64 @@ class MoveToSpace(unittest.TestCase):
         self.assertIn("unavailable", out)
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class TearOff(unittest.TestCase):
+    """A tab row dragged out past the window's edge opens in a new window (Byron, 2026-11-08)."""
+    BOUNDS = {"left": 100, "top": 50, "width": 800, "height": 600}
+    SCREEN = {"width": 1920, "height": 1080}
+
+    def decide(self, **over):
+        args = {"point": {"x": 1000, "y": 300}, "bounds": self.BOUNDS, "screen": self.SCREEN, "tabCount": 3,
+                "kind": "tab", "dropEffect": "none"}
+        args.update(over)
+        return js("workspaces.tearOff(args)", args=args)
+
+    def test_a_drop_beyond_the_window_tears_off_near_the_drop_point(self):
+        self.assertEqual(self.decide(), {"left": 960, "top": 280})
+
+    def test_a_drop_inside_the_window_stays(self):
+        self.assertIsNone(self.decide(point={"x": 500, "y": 300}))
+
+    def test_the_window_edge_counts_as_inside(self):
+        self.assertIsNone(self.decide(point={"x": 900, "y": 300}))
+        self.assertIsNone(self.decide(point={"x": 100, "y": 50}))
+        self.assertIsNotNone(self.decide(point={"x": 901, "y": 300}))
+        self.assertIsNotNone(self.decide(point={"x": 99, "y": 300}))
+
+    def test_above_and_below_the_window_tear_off_too(self):
+        self.assertIsNotNone(self.decide(point={"x": 500, "y": 20}))
+        self.assertIsNotNone(self.decide(point={"x": 500, "y": 700}))
+
+    def test_the_only_tab_stays(self):
+        self.assertIsNone(self.decide(tabCount=1))
+
+    def test_pins_favorites_and_folders_stay(self):
+        self.assertIsNone(self.decide(kind="bm"))
+
+    def test_a_drop_a_target_accepted_stays(self):
+        self.assertIsNone(self.decide(dropEffect="move"))
+        self.assertIsNone(self.decide(dropEffect="copy"))
+
+    def test_the_position_is_kept_on_screen(self):
+        self.assertEqual(self.decide(point={"x": 1900, "y": 1070}), {"left": 1920 - 120, "top": 1080 - 80})
+        self.assertEqual(self.decide(point={"x": -300, "y": -20}), {"left": 0, "top": 0})
+
+    def test_a_display_that_does_not_start_at_zero_keeps_its_own_origin(self):
+        screen = {"left": -1920, "top": 0, "width": 1920, "height": 1080}
+        self.assertEqual(self.decide(point={"x": -1000, "y": 300}, screen=screen), {"left": -1040, "top": 280})
+        self.assertEqual(self.decide(point={"x": -5000, "y": 300}, screen=screen), {"left": -1920, "top": 280})
+
+    def test_without_a_known_display_the_point_is_used_as_is(self):
+        self.assertEqual(self.decide(screen=None, point={"x": -300, "y": 1500}), {"left": -340, "top": 1480})
+
+    def test_a_drag_that_reports_no_position_stays(self):
+        self.assertIsNone(self.decide(point={"x": 0, "y": 0}))
+
+    def test_unknown_numbers_never_tear_off(self):
+        self.assertIsNone(self.decide(point={"x": None, "y": 300}))
+        self.assertIsNone(self.decide(bounds=None))
+        self.assertIsNone(js("workspaces.tearOff(null)"))
+
+
 if __name__ == "__main__":
     unittest.main()

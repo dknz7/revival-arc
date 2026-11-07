@@ -131,6 +131,26 @@
     return JSON.stringify(data);
   };
 
+  // Dragging a tab row out of the sidebar past the window's edge opens it in a new window (Byron, 2026-11-08).
+  // point: where the drag ended and bounds: the window, both in screen pixels; screen: the display's size. -> the new
+  // window's {left, top} (about the drop point, kept on screen), or null when the drag stays: it ended on the window
+  // (edge included), a drop target took it (dropEffect other than "none"), it is not a tab row, or it is the window's
+  // only tab. Unknown numbers never tear off.
+  const tearOff = (args) => {
+    const { point, bounds, screen, tabCount, kind, dropEffect } = args || {};
+    const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+    const x = num(point?.x), y = num(point?.y);
+    const L = num(bounds?.left), T = num(bounds?.top), W = num(bounds?.width), H = num(bounds?.height);
+    if (x === null || y === null || L === null || T === null || W === null || H === null) return null;
+    if (x === 0 && y === 0) return null; // what a dragend with no known position reports, not a drop in a corner
+    if (kind !== "tab" || !(tabCount > 1) || dropEffect !== "none") return null;
+    if (x >= L && x <= L + W && y >= T && y <= T + H) return null;
+    // Kept on the display when it is known (its origin may be negative on a second monitor); else left to the browser.
+    const sl = num(screen?.left) ?? 0, st = num(screen?.top) ?? 0, sw = num(screen?.width), sh = num(screen?.height);
+    const fit = (v, lo, size, room) => (size === null ? Math.round(v) : Math.round(Math.max(lo, Math.min(v, lo + size - room))));
+    return { left: fit(x - 40, sl, sw, 120), top: fit(y - 20, st, sh, 80) };
+  };
+
   // The one window that runs repairs: every window runs its own copy of Vivarc and sees every window's tabs, so they all
   // agree on the lowest normal window id. When it closes, the next lowest takes over. null when no normal window is left.
   const leaderOf = (windows) => (windows || []).filter((w) => w.type === "normal")
@@ -399,5 +419,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
 })();
