@@ -8,25 +8,12 @@
 (() => {
   const SETTLE_MS = 400;
   const MAX_PASSES = 3;
-  const MOVED_MS = 5000;
   const BUSY_KEY = "__vivarcSpaceGesture";
   const BUSY_MAX_MS = 10000;
   const BUSY_CHECK_MS = 500;
   const COOL_MS = 10000;
   const spacesOf = window.__vm.workspaces;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  // Tabs Vivarc itself moved between windows, kept 5 s: the attach a gather causes is not a user's drag.
-  window.__vm.movedByVivarc ??= new Set();
-  const movedTimers = new Map();
-  const markMoved = (ids) => {
-    const moved = window.__vm.movedByVivarc;
-    for (const id of ids) {
-      moved.add(id);
-      clearTimeout(movedTimers.get(id));
-      movedTimers.set(id, setTimeout(() => { moved.delete(id); movedTimers.delete(id); }, MOVED_MS));
-    }
-  };
 
   // A tile gesture that moves a space (pull, move to a new window) runs in the window it was clicked in, which may not
   // be the leader, and passes through states a repair would act on (a new window recorded on the space before its tabs
@@ -47,15 +34,6 @@
       if (page[BUSY_KEY] === until) delete page[BUSY_KEY];
       schedule();
     };
-  };
-
-  // Work that must land before repairs plan (a restamp waiting on an attach): the next run waits until it settles.
-  const holds = new Set();
-  const hold = (promise) => {
-    const settled = Promise.race([Promise.resolve(promise), sleep(BUSY_MAX_MS)]).catch(() => {})
-      .finally(() => { holds.delete(settled); schedule(); });
-    holds.add(settled);
-    return settled;
   };
 
   const warned = new Set();
@@ -105,7 +83,6 @@
         await chrome.tabs.update(step.tab, { active: true });
       } else if (step.kind === "gather") {
         line = `gather space ${step.space} into window ${step.window} (tabs ${step.tabs.join(", ")})`;
-        markMoved(step.tabs);
         await chrome.tabs.move(step.tabs, { windowId: step.window, index: -1 });
       }
       console.log(`[vivarc] repair: ${line}`);
@@ -115,10 +92,10 @@
   };
 
   // One run: up to 3 passes, each planned on a fresh snapshot. -> "done" (nothing left to do, not the leader, or no
-  // record), "wait" (a gesture's mark or a hold: try again later) or "stuck" (still drifting after 3 passes).
+  // record), "wait" (a gesture's mark: try again later) or "stuck" (still drifting after 3 passes).
   const passes = async () => {
     for (let pass = 1; ; pass++) {
-      if (busyFor() || holds.size) return "wait";
+      if (busyFor()) return "wait";
       const snap = await snapshot();
       if (!snap) return "done";
       if (!snap.record || !window.__vm.native.hasSwitch()) {
@@ -153,74 +130,18 @@
       warnOnce("stuck", `[vivarc] repair: still drifting after ${MAX_PASSES} passes; resting ${COOL_MS / 1000} s`);
       restUntil = Date.now() + COOL_MS;
     } else if (result === "wait") {
-      // a hold schedules when it settles; a busy mark is looked at again shortly
-      if (!holds.size) schedule(BUSY_CHECK_MS);
+      // a busy mark is looked at again shortly
+      schedule(BUSY_CHECK_MS);
     } else if (dirty) schedule();
   };
 
-  // A dragged tab joins the space of the window it lands in (spec Part 2, "Tabs" -> dragging; Vivaldi's own drop already
-  // does this, so this is the safety net for moves done another way, which park the tab, C1). The leader handles it.
-  // Vivaldi rehomes a closing window's tabs BEFORE the window goes (D2), and that must not read as a drag. So the source
-  // window is watched for 1.5 s after the attach: any windows.onRemoved for it in that time, or its absence from
-  // windows.getAll() at 500 ms or at 1.5 s, means it was closing and the tab keeps its space. Measured (8.2, sandbox):
-  // first rehomed tab to removal ~0.3 s for 26 tabs, ~1.1 s for 60, ~2.5-2.9 s for 100 via Vivaldi's own close; in the
-  // heavy closes this window's timers and getAll ran late, so the checks still landed after the removal. The wait is
-  // held against repairs, so they never act on the tab before it joins its new space.
-  const ATTACH_MS = 500;
-  const CLOSING_MS = 1500;
-  const sources = new Map(); // tab id -> the window it was last detached from
-  const onDetached = (tabId, info) => {
-    sources.set(tabId, info?.oldWindowId);
-    setTimeout(() => sources.delete(tabId), 10000);
-  };
-  const closedWindows = new Set(); // windows removed in the last 10 s
-  const onWindowRemoved = (windowId) => {
-    closedWindows.add(windowId);
-    setTimeout(() => closedWindows.delete(windowId), 10000);
-  };
-  // The removal set is read again after the look: while Vivaldi closes a heavy window, getAll took ~2 s and still listed
-  // the window, and the removal arrived in the meantime (measured, 100 tabs).
-  const sourceGone = async (windowId) => {
-    if (windowId == null || closedWindows.has(windowId)) return true;
-    const listed = (await chrome.windows.getAll()).some((w) => w.id === windowId);
-    return !listed || closedWindows.has(windowId);
-  };
-  // A tile gesture (pull, move to a new window) moves a space's tabs with Vivaldi's own switch, which keeps their space,
-  // into a window whose record may not be updated yet: never restamp during one. Checked at the attach and after the wait
-  // (the gesture may have ended in between), in whichever window the gesture ran (its mark is on the shared page).
-  const restampLater = async (tabId, newWindowId, oldWindowId, busyAtAttach) => {
-    try {
-      await sleep(ATTACH_MS);
-      if (await sourceGone(oldWindowId)) return; // a closing window's rehoming (D2): the tab keeps its space
-      await sleep(CLOSING_MS - ATTACH_MS);
-      const windows = await chrome.windows.getAll();
-      if (ownWindow == null || spacesOf.leaderOf(windows) !== ownWindow) return;
-      const sourceWindowOpen = !(await sourceGone(oldWindowId));
-      const shownSpace = window.__vm.native?.record()?.activeIn(newWindowId);
-      if (shownSpace == null) { warnOnce("drag-record", "[vivarc] drag: Vivaldi's workspace record could not be read, so dragged tabs keep their space"); return; }
-      const tab = await chrome.tabs.get(tabId);
-      if (tab.windowId !== newWindowId) return; // it moved on again
-      const data = spacesOf.restampOnAttach({ tab, shownSpace, sourceWindowOpen, movedByVivarc: window.__vm.movedByVivarc.has(tabId), gestureBusy: busyAtAttach || busyFor() > 0 });
-      if (data == null || closedWindows.has(oldWindowId)) return; // the source may have gone during the awaits above
-      await chrome.tabs.update(tabId, { vivExtData: data });
-      console.log(`[vivarc] drag: tab ${tabId} joined ${shownSpace ? `space ${shownSpace}` : "the default space"} in window ${newWindowId}`);
-    } catch (error) { warnOnce("drag-failed", `[vivarc] drag: a dragged tab could not join its window's space: ${error}`); }
-  };
-  const onAttached = (tabId, info) => {
-    const from = sources.get(tabId);
-    sources.delete(tabId);
-    hold(restampLater(tabId, info?.newWindowId, from, busyFor() > 0));
-  };
-
-  window.__vm.spaceRepair = { schedule, hold, gesture, markMoved };
+  window.__vm.spaceRepair = { schedule, gesture };
 
   const start = async () => {
     if (!(await window.__vm.ready)) return;
     try { ownWindow = (await chrome.windows.getCurrent()).id; } catch (_) { return; }
     for (const ev of ["onActivated", "onAttached", "onDetached", "onRemoved"]) chrome.tabs[ev]?.addListener(() => schedule());
-    chrome.tabs.onDetached?.addListener(onDetached);
-    chrome.tabs.onAttached?.addListener(onAttached);
-    chrome.windows.onRemoved?.addListener((windowId) => { onWindowRemoved(windowId); schedule(); });
+    chrome.windows.onRemoved?.addListener(() => schedule());
     // a space created or deleted: the same comparison as the sidebar's 3 s poll of the workspace list
     let spaces = JSON.stringify(await readSpaces());
     setInterval(async () => {

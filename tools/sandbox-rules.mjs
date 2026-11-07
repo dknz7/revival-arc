@@ -324,9 +324,9 @@ def("R.C3", {
   timed: true,
   setup: async () => { await mkWin("W"); await mkWin("O"); await tab(ctx.W, "X1", sp("X"), { active: true }); await show(ctx.W, sp("X")); await focus(ctx.W); },
   act: () => h.ev(`chrome.tabs.move(${ctx.tabs.X1}, { windowId: ${ctx.O}, index: -1 }).then(() => "ok", e => "err:" + e)`, ctx.W),
-  // W is left recorded on X with no X tab (C3) -> repair 1. X1 arrived in O by chrome.tabs.move from a window that
-  // stays open, so the drag rule (decision 4) puts it in the space O shows: the default.
-  expect: (s) => [recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0), tabIs(s, "X1", { win: ctx.O, space: 0 }), recIs(s, ctx.O, 0)],
+  // W is left recorded on X with no X tab (C3) -> repair 1. X1 arrived in O by chrome.tabs.move, which keeps its space
+  // (C1): it stays X, parked in O (O shows the default).
+  expect: (s) => [recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0), tabIs(s, "X1", { win: ctx.O, space: sp("X") }), recIs(s, ctx.O, 0)],
 });
 def("R.G1", {
   timed: true,
@@ -422,8 +422,8 @@ favCase("P3.3-fav-other-window", "fav-window");
 favCase("P3.3-fav-default", "fav-default");
 favCase("P3.3-pin-moved", "pin-moved");
 
-// Decision 4: a tab dragged into another window joins the space it shows. Vivaldi's own drop (H2), and a move done
-// another way (chrome.tabs.move, which keeps the space: C1) that Vivarc restamps.
+// Decision 4: a tab dragged into another window joins the space it shows. That is Vivaldi's own drop (H2); Vivarc adds
+// nothing. A tab moved by other code (chrome.tabs.move) keeps its space (C1) and arrives parked, and repair 3 takes it from there.
 const dragSetup = (oShows) => async () => {
   await mkWin("W"); await mkWin("O");
   await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "X2", sp("X")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
@@ -445,14 +445,11 @@ def("P3.4-drop", {
   expect: (s, b, r) => [r === "dropped" ? null : r, tabIs(s, "X2", { win: ctx.O, space: sp("Z") }), recIs(s, ctx.O, sp("Z")), recIs(s, ctx.W, sp("X"))],
 });
 def("P3.4-move-named", {
+  timed: true,
   setup: dragSetup(true),
   act: () => h.ev(`chrome.tabs.move(${ctx.tabs.X2}, { windowId: ${ctx.O}, index: -1 }).then(() => "ok", e => "err:" + e)`, ctx.H),
-  expect: (s) => [tabIs(s, "X2", { win: ctx.O, space: sp("Z") }), recIs(s, ctx.O, sp("Z")), recIs(s, ctx.W, sp("X"))],
-});
-def("P3.4-move-default", {
-  setup: dragSetup(false),
-  act: () => h.ev(`chrome.tabs.move(${ctx.tabs.X2}, { windowId: ${ctx.O}, index: -1 }).then(() => "ok", e => "err:" + e)`, ctx.H),
-  expect: (s) => { const t = find(s, ctx.tabs.X2); return [tabIs(s, "X2", { win: ctx.O, space: 0 }), t && t.ws !== null ? `X2's vivExtData keeps workspaceId ${t.ws}, want no key` : null, recIs(s, ctx.O, 0), recIs(s, ctx.W, sp("X"))]; },
+  // X2 keeps X (C1) and arrives parked in O, which splits X across W and O: repair 3 gathers it back where X is shown.
+  expect: (s) => [tabIs(s, "X2", { win: ctx.W, space: sp("X") }), tabIs(s, "X1", { win: ctx.W, space: sp("X") }), recIs(s, ctx.O, sp("Z")), recIs(s, ctx.W, sp("X"))],
 });
 
 // "Move to <Space>" in a tab row's right-click menu (Task 8b).
