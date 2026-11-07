@@ -86,11 +86,16 @@ class PatchPreferences(unittest.TestCase):
         self.assertEqual(new["vivaldi"]["tabs"]["bar"]["position"], 1)
         self.assertNotIn("appearance", new["vivaldi"])
 
-    def test_cmd_s_toggles_the_sidebar_instead_of_saving_the_page(self):
-        new, _ = vivarc.patch_preferences(prefs(), [DEFAULTS])
-        actions = new["vivaldi"]["actions"][0]
-        self.assertEqual(actions["COMMAND_TOGGLE_AUTO_HIDE_TAB_BAR"]["shortcuts"], ["meta+s"])
-        self.assertEqual(actions["COMMAND_SAVE_PAGE"]["shortcuts"], [])
+    def test_cmd_s_is_freed_from_every_vivaldi_command_and_bound_to_none(self):
+        # Vivarc owns the key (12-sidebar-hide.js hides this window's sidebar), so no Vivaldi command may hold it
+        held = {"COMMAND_MAIN_TOGGLE_TAB_BAR": {"shortcuts": ["meta+s", "f4"]}, "COMMAND_TOGGLE_AUTO_HIDE_TAB_BAR": {"shortcuts": ["meta+s"]}}
+        p = prefs(vivaldi={"actions": [{**DEFAULTS, **held}]})
+        for given in (prefs(), p):
+            new, _ = vivarc.patch_preferences(given, [DEFAULTS])
+            actions = new["vivaldi"]["actions"][0]
+            self.assertEqual([n for n, c in actions.items() if "meta+s" in c.get("shortcuts", [])], [])
+            self.assertEqual(actions["COMMAND_SAVE_PAGE"]["shortcuts"], [])
+        self.assertEqual(new["vivaldi"]["actions"][0]["COMMAND_MAIN_TOGGLE_TAB_BAR"]["shortcuts"], ["f4"])
 
     def test_drops_the_workspace_button_and_swaps_vpn_for_downloads(self):
         p = prefs(vivaldi={"toolbars": {

@@ -245,7 +245,6 @@ def patch_preferences(prefs, default_actions):
         cmd = _command(actions, defaults, name)
         if key not in held and key not in cmd["shortcuts"]:
             cmd["shortcuts"].insert(0, key)
-    _command(actions, defaults, "COMMAND_TOGGLE_AUTO_HIDE_TAB_BAR")["shortcuts"] = [TOGGLE_SIDEBAR_KEY]
     _set(new, ("vivaldi", "actions"), actions_list)
 
     bar = _get(new, ("vivaldi", "toolbars", "tabbar_before"))
@@ -282,15 +281,16 @@ def restore_preferences(prefs, snap):
 
 
 def looks_configured(prefs):
-    """True when a profile carries Vivarc's keys (set at install, or at runtime by the JS for a newer profile)."""
+    """True when a profile carries Vivarc's keys (set at install, or at runtime by the JS for a newer profile): Cmd+Shift+C copies the URL and
+    Cmd+T is off New Tab. Ctrl+S (the sidebar key) is not a signal: Vivarc owns it, so no command holds it, and a profile set up by an
+    earlier Vivarc, which put it on auto-hide, must read as configured too."""
     actions = _get(prefs, ("vivaldi", "actions"))
     if actions is _MISSING or not actions:
         return False
     table = actions[0]
-    toggle = table.get("COMMAND_TOGGLE_AUTO_HIDE_TAB_BAR", {}).get("shortcuts", [])
     copy_url = table.get("COMMAND_PAGE_COPY_URL", {}).get("shortcuts", [])
     new_tab = table.get("COMMAND_NEW_TAB", {}).get("shortcuts", [])
-    return toggle == [TOGGLE_SIDEBAR_KEY] and COPY_URL_KEY in copy_url and FREED_KEY not in new_tab
+    return COPY_URL_KEY in copy_url and FREED_KEY not in new_tab
 
 
 def style_script(element_id, css):
