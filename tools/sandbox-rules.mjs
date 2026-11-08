@@ -876,6 +876,9 @@ async function pickFrom(win, parent, row) {
   if (!(await openDropdown(win))) return "no dropdown";
   if (!(await openFly(win, parent))) return `no ${parent} flyout`;
   if (!(await clickOn(win, flyRow(row)))) return `no row ${row} in ${parent}: ${J(await rowsOf(win, ".vm-menu-flyout > div"))}`;
+  // a tab the pick just made is read by its title: let every tab finish loading before the snapshot (a title is empty until then)
+  await sleep(600);
+  await waitFor(() => h.ev(`chrome.tabs.query({ windowType: "normal" }).then((t) => t.every((x) => x.status === "complete"))`, ctx.H), 8000, 200);
   return "ok";
 }
 async function dropdownItem(win, label) {
@@ -1558,14 +1561,14 @@ cuCase("CU.store-write-hangs", {
   act: async () => {
     await h.ev(`(() => { window.__realSet = window.__vm.store.set; window.__vm.store.set = (k, v) => (k === "cleaned" ? new Promise(() => {}) : window.__realSet(k, v)); return 1; })()`, ctx.W);
     const t0 = Date.now(); let first;
-    try { first = await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => ({ count: r.count, failed: r.failed }))`, ctx.W); }
+    try { first = await h.cdp(ctx.W).eval(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => ({ count: r.count, failed: r.failed }))`, 60000); }
     finally { await h.ev(`(window.__realSet && (window.__vm.store.set = window.__realSet), 1)`, ctx.W); }
     const took = Date.now() - t0;
     const second = await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => ({ count: r.count, failed: r.failed }))`, ctx.W);
     await sleep(800);
     return { first, took, second, list: (await cleanedList(ctx.W)).length };
   },
-  expect: (s, b, r) => [r.first?.count === 0 && r.first?.failed ? null : `hung write: ${J(r.first)}`, r.took >= 4500 && r.took < 9000 ? null : `gave up after ${r.took} ms`, r.second?.count === 2 ? null : `the run after it: ${J(r.second)} (the queue stayed jammed?)`, r.list === 2 ? null : `list ${r.list}`, ...gone(s, "X2", "X3")],
+  expect: (s, b, r) => [r.first?.count === 0 && r.first?.failed ? null : `hung write: ${J(r.first)}`, r.took >= 11500 && r.took < 22000 ? null : `gave up after ${r.took} ms`, r.second?.count === 2 ? null : `the run after it: ${J(r.second)} (the queue stayed jammed?)`, r.list === 2 ? null : `list ${r.list}`, ...gone(s, "X2", "X3")],
 });
 // A tab that became active between the write and the close stays, and its entry is taken back out.
 cuCase("CU.tab-changed-in-the-gap", {
@@ -1628,6 +1631,31 @@ cuCase("CU.split-view-partner", {
     return { kept, n };
   },
   expect: (s, b, r) => [r.kept === "t-sbx" ? null : `setup: Vivaldi dropped the tiling (${J(r.kept)}), the case proves nothing`, ...kept(s, "X1", "X2"), ...gone(s, "X3"), r.n === 1 ? null : `closed ${r.n}, want only X3`],
+});
+
+// A failed READ of the list must not look like an empty list: nothing writes over the real one, and nothing closes.
+// The read is made to fail both ways the old code was exposed to: store.read rejects, and store.get resolves its fallback
+// (what a failed get does), so the case also breaks the pre-fix code.
+cuCase("CU.read-fails-keeps-the-list", {
+  act: async () => {
+    await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => r.count)`, ctx.W); await sleep(900);
+    const before = await cleanedList(ctx.W);
+    const entries = await h.ev(`window.__vm.cleanup.list()`, ctx.W);
+    const brk = () => h.ev(`(() => { const s = window.__vm.store; window.__real = { read: s.read, get: s.get }; s.read = () => Promise.reject(new Error("read failed")); s.get = (k, fb) => Promise.resolve(fb); return 1; })()`, ctx.W);
+    const fix = () => h.ev(`(() => { const s = window.__vm.store; if (window.__real) { s.read = window.__real.read; s.get = window.__real.get; } return 1; })()`, ctx.W);
+    const out = { before: before.map((e) => e.title).sort() };
+    try {
+      await brk();
+      out.run = await h.ev(`window.__vm.cleanup.run({ win: ${ctx.O}, space: ${sp("Z")} }).then((r) => ({ count: r.count, failed: r.failed }))`, ctx.W);
+      out.reopen = await h.ev(`window.__vm.cleanup.reopenOne(${J(entries.find((e) => e.title === "X2"))})`, ctx.W);
+      await h.ev(`window.__vm.cleanup.undo([${J(entries.find((e) => e.title === "X3"))}]).then(() => 1)`, ctx.W);
+    } finally { await fix(); }
+    await sleep(1200);
+    out.after = (await cleanedList(ctx.W)).map((e) => e.title).sort();
+    return out;
+  },
+  expect: (s, b, r) => [J(r.before) === J(["X2", "X3"]) ? null : `setup: list ${J(r.before)}`, r.run?.count === 0 && r.run?.failed ? null : `run with a failed read: ${J(r.run)}`, ...kept(s, "Z2"),
+    J(r.after) === J(["X2", "X3"]) ? null : `the list after failed reads: ${J(r.after)} (earlier entries lost?)`],
 });
 
 // Part 3 decisions that are the same check as a row above.

@@ -31,6 +31,13 @@
       q.onsuccess = () => resolve(q.result ?? fallback);
       q.onerror = () => resolve(fallback);
     })).catch(() => fallback),
+    // Like get, but a failed read REJECTS instead of resolving the fallback (a missing key resolves undefined). For callers
+    // that write back what they read: a failed read must not look like an empty value.
+    read: (key) => dbReady.then((db) => new Promise((resolve, reject) => {
+      const q = db.transaction("kv").objectStore("kv").get(key);
+      q.onsuccess = () => resolve(q.result);
+      q.onerror = () => reject(q.error || new Error("read failed"));
+    })),
     set: (key, value) => dbReady.then((db) => new Promise((resolve) => {
       const t = db.transaction("kv", "readwrite");
       t.objectStore("kv").put(value, key);

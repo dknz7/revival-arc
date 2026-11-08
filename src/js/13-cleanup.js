@@ -33,8 +33,8 @@
   // another across ALL windows of the profile: a promise chain on the background page (which every window shares, like
   // the repair busy mark), each link waiting at most LOCK_MS for the one before, so a window that closed mid-change
   // cannot jam the rest. Without the background page the chain is this window's own.
-  const STORE_MS = 5000;
-  const LOCK_MS = 8000;
+  const STORE_MS = 12000; // a window rendering hundreds of tabs answers slowly: a read or write is given this long
+  const LOCK_MS = 30000;
   const QUEUE = "__vivarcCleanupQueue";
   const local = {};
   const page = () => { try { return chrome.extension.getBackgroundPage?.() || local; } catch (_) { return local; } };
@@ -50,8 +50,12 @@
     return mine;
   };
   const load = async () => {
-    const raw = await within(store.get(LIST, []), STORE_MS, "reading the list");
-    return spacesOf.keepCleaned(Array.isArray(raw) ? raw : [], [], now());
+    // store.read, not get: get resolves its fallback when the read FAILS, which would read as an empty list and the next
+    // write would replace the real one. A failed read rejects here, so nothing is written over it. Absent is empty;
+    // anything that is not a list throws.
+    const raw = await within(store.read(LIST), STORE_MS, "reading the list");
+    if (raw !== undefined && !Array.isArray(raw)) throw new Error("the stored list is not a list");
+    return spacesOf.keepCleaned(raw ?? [], [], now());
   };
   const list = () => load().catch((error) => { warn("read the list", error); return []; });
   const mutate = (change) => locked(async () => {
@@ -100,7 +104,6 @@
       const eligible = new Set(pick(await chrome.tabs.query({ windowType: "normal" })));
       const closing = ids.filter((id, i) => ok[i] && eligible.has(id));
       const spared = entries.filter((_, i) => ok[i] && !eligible.has(ids[i]));
-      if (spared.length) await forget(spared).catch((error) => warn("update the list", error));
       let failed = false;
       let closed = closing;
       if (closing.length) {
@@ -113,6 +116,8 @@
           if (still.length) await forget(still).catch((e) => warn("update the list", e));
         }
       }
+      // after the close, not before: waiting for the list lock between the re-check and the close would make the re-check stale
+      if (spared.length) await forget(spared).catch((error) => warn("update the list", error));
       return { count: closed.length, entries: entries.filter((_, i) => closed.includes(ids[i])), tried: ids.length, capped, failed };
     } finally { end?.(); }
   };
