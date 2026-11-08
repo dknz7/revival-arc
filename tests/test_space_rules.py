@@ -832,5 +832,50 @@ class TearOff(unittest.TestCase):
         self.assertIsNone(js("workspaces.tearOff(null)"))
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class CrossWindowDrop(unittest.TestCase):
+    """A tab dragged from another window's sidebar into this one moves here (Byron, 2026-11-08)."""
+
+    def take(self, raw, here=2):
+        return js("workspaces.crossDrop({ raw, here })", raw=raw, here=here)
+
+    def payload(self, **over):
+        data = {"kind": "tab", "tabId": 41, "windowId": 1}
+        data.update(over)
+        return json.dumps(data)
+
+    def test_a_tab_from_another_window_is_accepted(self):
+        self.assertEqual(self.take(self.payload()), {"tabId": 41, "windowId": 1})
+
+    def test_a_tab_from_this_window_is_left_to_the_in_window_drop(self):
+        self.assertIsNone(self.take(self.payload(windowId=2)))
+
+    def test_something_that_is_not_a_tab_is_ignored(self):
+        self.assertIsNone(self.take(self.payload(kind="bm")))
+        self.assertIsNone(self.take(json.dumps({"tabId": 41, "windowId": 1})))
+
+    def test_a_malformed_payload_is_ignored(self):
+        for raw in ["", "not json", "null", "[]", "7", self.payload(tabId="41"), self.payload(tabId=None),
+                    self.payload(windowId="1"), self.payload(tabId=1.5), self.payload(windowId=None), None]:
+            self.assertIsNone(self.take(raw), raw)
+
+    def test_a_drop_above_a_row_lands_above_it_below_lands_below(self):
+        # the sidebar lists the highest index first
+        row = {"index": 5}
+        self.assertEqual(js("workspaces.acrossIndex(row, 'before')", row=row), 6)
+        self.assertEqual(js("workspaces.acrossIndex(row, 'after')", row=row), 5)
+
+    def test_the_middle_of_a_row_counts_as_its_nearer_edge(self):
+        self.assertEqual(js("workspaces.acrossZone(0.3)"), "before")
+        self.assertEqual(js("workspaces.acrossZone(0.5)"), "after")
+        self.assertEqual(js("workspaces.acrossZone(0.9)"), "after")
+
+    def test_the_arrival_is_written_into_the_shown_space_out_of_split_and_folder(self):
+        tab = {"id": 1, "vivExtData": json.dumps({"workspaceId": 5, "tiling": {"id": "t"}, "group": "g", "keep": 1})}
+        out = json.loads(js("workspaces.tornData(tab, 9)", tab=tab))
+        self.assertEqual(out, {"workspaceId": 9, "tiling": None, "group": None, "keep": 1})
+        self.assertEqual(json.loads(js("workspaces.tornData(tab)", tab=tab))["workspaceId"], 0)
+
+
 if __name__ == "__main__":
     unittest.main()

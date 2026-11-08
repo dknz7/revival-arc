@@ -239,6 +239,11 @@
       drag = payload;
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", payload.url || "");
+      // Tab rows also say which tab and window they are, so another window's sidebar can take the drop (HTML5 drag data
+      // crosses windows). Pins, favorites, bookmarks and folders are not tabs and carry nothing.
+      if (payload.type === "tab") {
+        try { e.dataTransfer.setData(spacesOf.DRAG_TYPE, JSON.stringify({ kind: "tab", tabId: payload.tab.id, windowId: payload.tab.windowId })); } catch (_) {}
+      }
       closeMenu();
       // Changing the layout inside dragstart makes Chrome cancel the drag, so it waits a frame.
       requestAnimationFrame(() => {
@@ -284,6 +289,7 @@
       if (!place) return;
       endBusy = window.__vm.spaceRepair?.gesture() ?? null; // before the first change; set at once, nothing awaited since
       const tab = await chrome.tabs.get(payload.tab.id); // the row's copy may be stale
+      if (myWindow() != null && tab.windowId !== myWindow()) return; // another window's sidebar already took it
       const origin = { windowId: tab.windowId, index: tab.index, space: spacesOf.of(tab), active: tab.active };
       let fresh = null;
       try {
@@ -348,14 +354,66 @@
   };
 
   // zone: "before" | "after" | "into" depending on pointer position inside the target
-  const wireDrop = (node, { horizontal = false, allowInto = false, accept, onDrop }) => {
-    const zoneOf = (e) => {
+  // A tab dragged in from another window's sidebar (Byron, 2026-11-08; spec Part 2, Tabs) moves into this window at the
+  // drop position, into the space this window shows, as Vivaldi's own drop between windows does; the source window keeps
+  // its space. Same "tab leaves its window" write as a tear-off (workspaces.tornData: out of its split view and folder),
+  // so the move comes first and the rewrite only once the tab has arrived (rewriting first, while it is the source's
+  // active tab, would switch the source's space, G4), then it is activated here. Repairs wait on the gesture mark for the
+  // whole run. A failure toasts; the tab stays where it is, or arrives in its old space for repair 3 to gather home.
+  let myWindowId = null;
+  chrome.windows.getCurrent().then((win) => { myWindowId = win.id; }, () => {});
+  const myWindow = () => myWindowId ?? state.allTabs[0]?.windowId ?? null;
+  window.addEventListener("dragleave", (e) => { if (!drag && !e.relatedTarget) clearDrop(); });
+  const dropAcross = async (info, indexOf) => {
+    const here = myWindow();
+    const endBusy = window.__vm.spaceRepair?.gesture() ?? null; // before the first change; set at once, nothing awaited since
+    try {
+      if (here == null) return;
+      const tab = await chrome.tabs.get(info.tabId); // fresh: the payload's window may be stale
+      if (tab.windowId === here) return; // it is already here
+      const shown = window.__vm.native?.record()?.activeIn(here) ?? state.active; // Vivaldi's record, read now
+      const index = await indexOf();
+      await chrome.tabs.move(tab.id, { windowId: here, index });
+      let now = await chrome.tabs.get(tab.id);
+      for (let i = 0; i < 20 && now.windowId !== here; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        now = await chrome.tabs.get(tab.id);
+      }
+      if (now.windowId !== here) throw new Error("the tab did not arrive in this window");
+      await chrome.tabs.update(tab.id, { vivExtData: spacesOf.tornData(now, shown) });
+      await window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] split view left behind by a drop from another window:", error));
+      await chrome.tabs.update(tab.id, { active: true });
+    } catch (error) {
+      console.warn("[vivarc] tab from another window:", error);
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not move the tab here." }));
+    } finally {
+      endBusy?.();
+      refresh(false);
+    }
+  };
+
+  // onAcross(zone, { tabId, windowId }): a tab dragged in from ANOTHER window's sidebar (it has no `drag` here, only the
+  // type on the data transfer, which dragover can see but not read). Accepting it with dropEffect "move" is also what
+  // tells the source window's dragend the tab was taken, so its tear-off stays quiet. zone is the nearer edge: no folder
+  // is made across windows.
+  const wireDrop = (node, { horizontal = false, allowInto = false, accept, onDrop, onAcross }) => {
+    const zoneOf = (e, nearest = false) => {
       const r = node.getBoundingClientRect();
       const t = horizontal ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height;
+      if (nearest) return spacesOf.acrossZone(t);
       if (allowInto) return t < 0.28 ? "before" : t > 0.72 ? "after" : "into";
       return t < 0.5 ? "before" : "after";
     };
+    const fromElsewhere = (e) => !!onAcross && !drag && myWindow() != null && !!e.dataTransfer?.types?.includes(spacesOf.DRAG_TYPE);
     node.addEventListener("dragover", (e) => {
+      if (fromElsewhere(e)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = "move";
+        clearDrop();
+        node.classList.add(`drop-${zoneOf(e, true)}`);
+        return;
+      }
       if (!drag || (accept && !accept(drag))) return;
       e.preventDefault();
       e.stopPropagation();
@@ -364,6 +422,17 @@
       node.classList.add(`drop-${zoneOf(e)}`);
     });
     node.addEventListener("drop", async (e) => {
+      if (fromElsewhere(e)) {
+        let info = null;
+        try { info = spacesOf.crossDrop({ raw: e.dataTransfer.getData(spacesOf.DRAG_TYPE), here: myWindow() }); } catch (_) {}
+        if (!info) return; // not a tab of another window: nothing here takes it
+        e.preventDefault();
+        e.stopPropagation();
+        const zone = zoneOf(e, true);
+        clearDrop();
+        try { await onAcross(zone, info); } catch (err) { console.warn("[vivarc] drop from another window:", err); }
+        return;
+      }
       if (!drag || (accept && !accept(drag))) return;
       e.preventDefault();
       e.stopPropagation();
@@ -717,6 +786,7 @@
         if (data.type === "bm") return unpin(data);
         await dropTab(data.tab, { tab }, zone);
       },
+      onAcross: (zone, info) => dropAcross(info, async () => spacesOf.acrossIndex(await chrome.tabs.get(tab.id), zone)),
     });
     // Out of the folder, just above it.
     const removeFromFolder = folderAction(() => {
@@ -787,6 +857,11 @@
       accept: (d) => d.type === "tab",
       onDrop: (zone, data) => dropTab(data.tab, { stack: id, tabs },
         zone === "after" && !closedStacks.has(id) ? "into" : zone),
+      // Across windows no folder is joined: above the head is above the folder's top tab, below it under its bottom one.
+      onAcross: (zone, info) => dropAcross(info, async () => {
+        const edge = await chrome.tabs.get(tabs[zone === "before" ? tabs.length - 1 : 0].id);
+        return spacesOf.acrossIndex(edge, zone);
+      }),
     });
     sync();
     wrap.append(head, body);
@@ -1157,7 +1232,13 @@
     fresh.style.paddingLeft = "8px";
     fresh.append(el("span", "vm-plus", "+"), el("span", "vm-title", "New Tab"));
     fresh.addEventListener("click", () => window.dispatchEvent(new CustomEvent("vm-open-command-bar")));
-    wireDrop(fresh, { accept: isBookmark, onDrop: (_zone, data) => unpin(data) });
+    // The New Tab row is the top of the list (the highest index), so a tab from another window dropped here goes last in
+    // the window: the way in when this space has no tab rows to drop on.
+    wireDrop(fresh, {
+      accept: isBookmark,
+      onDrop: (_zone, data) => unpin(data),
+      onAcross: (_zone, info) => dropAcross(info, async () => (await chrome.tabs.query({ windowId: myWindow() })).length),
+    });
     body.append(fresh);
     listed.forEach((e) => body.append(e.type === "stack" ? stackNode(e) : tabRow(e.tab)));
 

@@ -131,16 +131,34 @@
     return JSON.stringify(data);
   };
 
-  // A torn-off tab's vivExtData: in the default space (workspaceId 0), out of its split view (tiling) and its folder
-  // (group, fixedGroupTitle), every other key kept. chrome.tabs.update merges vivExtData and only drops a key written as
-  // null (measured), so the keys the tab has are nulled; a key it never had is not written.
-  const tornData = (tab) => {
+  // The vivExtData of a tab that leaves its window: in `space` (default 0), out of its split view (tiling) and its folder
+  // (group, fixedGroupTitle), every other key kept. For a tear-off (default space) and a drop into another window (the
+  // space that window shows). chrome.tabs.update merges vivExtData and only drops a key written as null (measured), so
+  // the keys the tab has are nulled; a key it never had is not written.
+  const tornData = (tab, space = 0) => {
     let data = {};
     try { data = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) {}
-    data.workspaceId = 0;
+    data.workspaceId = space || 0;
     for (const key of ["tiling", "group", "fixedGroupTitle"]) if (key in data) data[key] = null;
     return JSON.stringify(data);
   };
+
+  // A tab row dragged from one window's sidebar into another's (Byron, 2026-11-08). dragstart writes DRAG_TYPE =
+  // {kind:"tab", tabId, windowId}; HTML5 drag data crosses windows. raw: what the type holds, here: this window's id.
+  // -> { tabId, windowId } for a tab of ANOTHER window, else null (a drag from this window takes the in-window path;
+  // anything malformed or not a tab is ignored).
+  const DRAG_TYPE = "application/x-vivarc-tab";
+  const crossDrop = ({ raw, here } = {}) => {
+    let data = null;
+    try { data = JSON.parse(raw); } catch (_) { return null; }
+    if (!data || typeof data !== "object" || data.kind !== "tab") return null;
+    if (!Number.isInteger(data.tabId) || !Number.isInteger(data.windowId) || data.windowId === here) return null;
+    return { tabId: data.tabId, windowId: data.windowId };
+  };
+  // Where a tab from another window lands beside `row` ({ index }): the list shows the highest index first, so above the
+  // row is the next index up. The middle of a row makes no folder across windows: the nearer edge counts (t: 0..1 down it).
+  const acrossIndex = (row, zone) => (zone === "before" ? row.index + 1 : row.index);
+  const acrossZone = (t) => (t < 0.5 ? "before" : "after");
 
   // Dragging a tab row out of the sidebar past the window's edge opens it in a new window (Byron, 2026-11-08).
   // point: where the drag ended and bounds: the window, both in screen pixels; screen: the display's size. -> the new
@@ -430,5 +448,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
 })();

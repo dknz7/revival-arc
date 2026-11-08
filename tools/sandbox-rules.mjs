@@ -685,6 +685,144 @@ tearCase("D.tear-off-favorite-stays", {
   expect: (s, b) => [noNewWindow(s), unchanged(b, s)],
 });
 
+// Task 8g: a tab row dragged from W's sidebar into O's sidebar. CDP cannot carry a drag between two windows by itself, so
+// the parts are: REAL: W's dragstart (a browser-driven HTML5 drag through setInterceptDrags + mouse events), the data it
+// writes (the custom type is read back from the intercepted drag data, case D.drag-across-payload), and the dragover and
+// drop O's own page receives (Input.dispatchDragEvent on O's target with W's exact data, so O's handler reads the type with
+// getData); and Vivaldi's tab move. SYNTHETIC: the hand-over between the two windows (the OS would do it), and W's dragend,
+// which is ended by a drop at OUT (outside W): that gives the worst case for the interplay, a source reporting
+// dropEffect "none" beyond its edge after another window took the tab. What a real source reports then is Byron's check.
+async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishAt = OUT, settleMs = 1500 } = {}) {
+  const grab = (win, finder, f) => waitFor(() => h.ev(`(() => { const r = ${finder}; if (!r) return null; r.scrollIntoView({ block: "center" }); const b = r.getBoundingClientRect(); const x = b.left + b.width / 2;
+    const top = document.elementFromPoint(x, b.top + b.height / 2); return r.contains(top) ? { x, y: b.top + b.height * ${f} } : null; })()`, win), 8000);
+  const from = await grab(src, srcFinder, 0.5), to = await grab(dst, dstFinder, frac);
+  if (!from) return "no row to drag";
+  if (!to) return "no row to drop on";
+  const cs = h.cdp(src), cd = h.cdp(dst);
+  let data = null;
+  const onMsg = (m) => { const d = JSON.parse(m.data); if (d.method === "Input.dragIntercepted") data = d.params.data; };
+  cs.ws.addEventListener("message", onMsg);
+  await cs.send("Input.setInterceptDrags", { enabled: true });
+  try {
+    await cs.send("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= 8; i++) { await cs.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x + i * 4, y: from.y + i * 3, button: "left", buttons: 1 }); await sleep(60); }
+    await sleep(500);
+    if (!data) return "the drag never started";
+    ctx.dragData = data;
+    for (const type of ["dragEnter", "dragOver", "drop"]) { await cd.send("Input.dispatchDragEvent", { type, x: to.x, y: to.y, data }); await sleep(150); }
+    await sleep(settleMs);
+    if (finishAt) {
+      const none = { items: [], dragOperationsMask: 1 };
+      await cs.send("Input.dispatchDragEvent", { type: "dragEnter", x: finishAt.x, y: finishAt.y, data: none });
+      await cs.send("Input.dispatchDragEvent", { type: "drop", x: finishAt.x, y: finishAt.y, data: none });
+    }
+    await cs.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: from.x, y: from.y, button: "left", buttons: 0, clickCount: 1 }).catch(() => {});
+  } finally { cs.ws.removeEventListener("message", onMsg); await cs.send("Input.setInterceptDrags", { enabled: false }).catch(() => {}); }
+  return "dropped";
+}
+const SET_ACROSS = async () => {
+  await mkWin("W", { width: 1000 }); await mkWin("O", { width: 1000 });
+  await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "X2", sp("X")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
+  await tab(ctx.O, "Y1", sp("Y"), { active: true }); await tab(ctx.O, "Y2", sp("Y")); await tab(ctx.O, "Y3", sp("Y")); await show(ctx.O, sp("Y")); await activate(ctx.tabs.Y1);
+  await focus(ctx.W);
+};
+const acrossCase = (id, { label = "X2", onto = "Y2", ontoFinder, frac, setup = SET_ACROSS, ready, finishAt, settleMs, expect }) => def(id, {
+  gesture: true, setup, ready: ready ?? (async () => (await waitFor(() => h.ev(`!!(${tabRowOf(label)})`, ctx.W), 8000)) && (await waitFor(() => h.ev(`!!(${ontoFinder ?? tabRowOf(onto)})`, ctx.O), 8000))),
+  act: () => dragAcross(ctx.W, tabRowOf(label), ctx.O, ontoFinder ?? tabRowOf(onto), { frac, finishAt, settleMs }), expect,
+});
+const noStranger = (s) => strangers(s).length ? "a new window was opened" : null;
+const shownStill = (s) => [recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X")), recIs(s, ctx.O, sp("Y")), showsSpace(s, ctx.O, sp("Y"))];
+// Above Y2's middle: X2 lands directly above Y2 in O (the list shows the highest index first, so one index higher), in
+// O's shown space Y, active there; W keeps X and its X1; no new window. W's dragend (none, outside) did not tear it off.
+acrossCase("D.drag-across", {
+  frac: 0.25,
+  expect: (s, b) => [tabIs(s, "X2", { win: ctx.O, space: sp("Y"), active: true }), tabIs(s, "X1", { win: ctx.W, space: sp("X") }),
+    find(s, ctx.tabs.X2)?.index === (find(b, ctx.tabs.Y2)?.index ?? -9) + 1 ? null : `X2 index ${find(s, ctx.tabs.X2)?.index}, want Y2's old ${find(b, ctx.tabs.Y2)?.index} + 1`,
+    find(s, ctx.tabs.Y2)?.index === find(b, ctx.tabs.Y2)?.index ? null : `Y2 moved: ${find(b, ctx.tabs.Y2)?.index} -> ${find(s, ctx.tabs.Y2)?.index}`,
+    ...shownStill(s), noStranger(s)],
+});
+// The worst case for the interplay: W's dragend (none, outside) comes at once, before O has finished moving the tab.
+acrossCase("D.drag-across-source-dragend-at-once", {
+  frac: 0.25, settleMs: 0,
+  expect: (s) => [tabIs(s, "X2", { win: ctx.O, space: sp("Y"), active: true }), tabIs(s, "X1", { win: ctx.W, space: sp("X") }), ...shownStill(s), noStranger(s)],
+});
+// Below Y2's middle: directly below it, at Y2's old index (Y2 is pushed up one).
+acrossCase("D.drag-across-below", {
+  frac: 0.75,
+  expect: (s, b) => [tabIs(s, "X2", { win: ctx.O, space: sp("Y"), active: true }),
+    find(s, ctx.tabs.X2)?.index === find(b, ctx.tabs.Y2)?.index ? null : `X2 index ${find(s, ctx.tabs.X2)?.index}, want Y2's old ${find(b, ctx.tabs.Y2)?.index}`,
+    find(s, ctx.tabs.Y2)?.index === (find(b, ctx.tabs.Y2)?.index ?? -9) + 1 ? null : `Y2 index ${find(s, ctx.tabs.Y2)?.index}, want old + 1`,
+    ...shownStill(s), noStranger(s)],
+});
+// The row's middle makes no folder across windows: the nearer edge decides (0.45 is above the middle).
+acrossCase("D.drag-across-middle-no-folder", {
+  frac: 0.45,
+  expect: async (s, b) => { const x = await extOf(ctx.tabs.X2); return [tabIs(s, "X2", { win: ctx.O, space: sp("Y"), active: true }),
+    find(s, ctx.tabs.X2)?.index === (find(b, ctx.tabs.Y2)?.index ?? -9) + 1 ? null : `X2 index ${find(s, ctx.tabs.X2)?.index}, want above Y2`,
+    x?.group ? `X2 joined a folder ${J(x.group)}` : null, ...shownStill(s), noStranger(s)]; },
+});
+// The tab that was W's active one: W falls back to another tab of its space (X1 here) and keeps showing X.
+acrossCase("D.drag-across-active", {
+  label: "X1",
+  expect: (s) => [tabIs(s, "X1", { win: ctx.O, space: sp("Y"), active: true }), tabIs(s, "X2", { win: ctx.W, space: sp("X") }), ...shownStill(s), noStranger(s)],
+});
+// The last tab of its space in W: W's record is on a space with no tab, and repair 1 puts it on default.
+acrossCase("D.drag-across-last-of-space", {
+  setup: async () => {
+    await mkWin("W", { width: 1000 }); await mkWin("O", { width: 1000 });
+    await tab(ctx.W, "X1", sp("X"), { active: true }); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
+    await tab(ctx.O, "Y1", sp("Y"), { active: true }); await tab(ctx.O, "Y2", sp("Y")); await show(ctx.O, sp("Y")); await activate(ctx.tabs.Y1); await focus(ctx.W);
+  }, label: "X1",
+  expect: (s) => [tabIs(s, "X1", { win: ctx.O, space: sp("Y"), active: true }), recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0), recIs(s, ctx.O, sp("Y")), noStranger(s),
+    inSpace(s, sp("X")).length ? "X still has tabs" : null],
+});
+// A default-space tab dropped on a named space's window joins that space.
+acrossCase("D.drag-across-default-tab", {
+  setup: async () => {
+    await mkWin("W", { width: 1000 }); await mkWin("O", { width: 1000 }); await tab(ctx.W, "D2", 0);
+    await tab(ctx.O, "Y1", sp("Y"), { active: true }); await tab(ctx.O, "Y2", sp("Y")); await show(ctx.O, sp("Y")); await activate(ctx.tabs.Y1); await focus(ctx.W);
+  }, label: "D2",
+  expect: (s) => [tabIs(s, "D2", { win: ctx.O, space: sp("Y"), active: true }), recIs(s, ctx.W, 0), recIs(s, ctx.O, sp("Y")), noStranger(s)],
+});
+// Into a window on its default space the tab becomes a default tab.
+acrossCase("D.drag-across-into-default", {
+  setup: async () => {
+    await mkWin("W", { width: 1000 }); await mkWin("O", { width: 1000 });
+    await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "X2", sp("X")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
+    await tab(ctx.O, "D2", 0); await focus(ctx.W);
+  }, label: "X2", onto: "D2",
+  expect: (s) => [tabIs(s, "X2", { win: ctx.O, space: 0, active: true }), tabIs(s, "X1", { win: ctx.W, space: sp("X") }), recIs(s, ctx.W, sp("X")), recIs(s, ctx.O, 0), noStranger(s)],
+});
+// A tab in a split view leaves it, and its peer in W leaves it too.
+acrossCase("D.drag-across-split", {
+  setup: async () => {
+    await SET_ACROSS();
+    const t = { id: "sbx-split", layout: "row", type: "selection" };
+    for (const [i, label] of ["X1", "X2"].entries()) {
+      const cur = await extOf(ctx.tabs[label]);
+      await h.ev(`chrome.tabs.update(${ctx.tabs[label]}, { vivExtData: ${J(J({ ...cur, tiling: { ...t, index: i } }))} }).then(() => 1)`, ctx.H);
+    }
+    await sleep(600);
+    if (!(await extOf(ctx.tabs.X2))?.tiling || !(await extOf(ctx.tabs.X1))?.tiling) throw new Error("the split view was not recorded on X1 and X2");
+  },
+  expect: async (s) => { const x1 = await extOf(ctx.tabs.X1), x2 = await extOf(ctx.tabs.X2); return [tabIs(s, "X2", { win: ctx.O, space: sp("Y") }),
+    x2?.tiling ? `X2 keeps tiling ${J(x2.tiling)}` : null, x1?.tiling ? `X1 (peer) keeps tiling ${J(x1.tiling)}` : null, noStranger(s)]; },
+});
+// Dropping on the New Tab row (the top of the list) puts the tab last in the window: the way in for a space with no rows.
+acrossCase("D.drag-across-new-tab-row", {
+  ontoFinder: `document.querySelector("#vm-panel .vm-newtab")`, frac: 0.5,
+  expect: (s, b) => [tabIs(s, "X2", { win: ctx.O, space: sp("Y"), active: true }),
+    find(s, ctx.tabs.X2)?.index === normal(s).find((w) => w.id === ctx.O).tabs.length - 1 ? null : `X2 is not the window's last tab (index ${find(s, ctx.tabs.X2)?.index})`,
+    ...shownStill(s), noStranger(s)],
+});
+// The same-window drag still reorders as before (the custom type is ignored when the source is this window).
+def("D.drag-across-same-window-unchanged", {
+  gesture: true, setup: SET_ACROSS, ready: () => waitFor(() => h.ev(`!!(${tabRowOf("X2")}) && !!(${tabRowOf("X1")})`, ctx.W), 8000),
+  act: () => dragAcross(ctx.W, tabRowOf("X1"), ctx.W, tabRowOf("X2"), { frac: 0.25, finishAt: null }),
+  expect: (s, b) => [tabIs(s, "X1", { win: ctx.W, space: sp("X") }), tabIs(s, "X2", { win: ctx.W, space: sp("X") }), noStranger(s),
+    find(s, ctx.tabs.X1)?.index > find(s, ctx.tabs.X2)?.index ? null : "X1 did not move above X2 (the in-window drop did not run)"],
+});
+
 // Part 3 decisions that are the same check as a row above.
 const ALIASES = { "P3.1": ["T.parked-other.click"], "P3.2": ["R.D8", "R.D2"] };
 
