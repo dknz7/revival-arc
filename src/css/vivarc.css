@@ -1029,6 +1029,14 @@
   pointer-events: none; -webkit-app-region: drag; app-region: drag;
 }
 
+/* Vivaldi's panel, on the right and auto-hidden, comes in from the window's right edge (14-panel-edge.js), which listens
+   over the window's background there, never over the page. A window that is not maximised has Vivaldi's 6px border
+   there and the Dia layout its page card's margin; the Arc layout maximised has the page right up to the edge, so it
+   gets the same 6px gap. Not in full screen, and not with the sidebar on the right (then the sidebar is at that edge). */
+#browser.vm-on.maximized:not(.vm-dia, .fullscreen):has(> .auto-hide-wrapper.right #panels-container):not(:has(#tabs-tabbar-container.right)) #webview-container {
+  margin-right: 6px !important;
+}
+
 /* Extensions hidden with "Hide Button" open from the puzzle piece in Vivaldi's drop-down (render_in_dropdown, set by
    the installer and 05-bootstrap.js): a list, icon then name, instead of Vivaldi's row of bare icons. The name is the
    button's own title. Vivaldi sizes the popup from its icon count (--popupWidth) and centres it with the same variable,

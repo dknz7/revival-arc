@@ -60,6 +60,8 @@ const startServer = async () => {
         window.stop = () => { try { o.stop(); } catch (_) {} return 1; };</script>`);
       return;
     }
+    // /long-<label>: a page tall enough to have a scrollbar (PE. cases).
+    if (req.url.startsWith("/long-")) { res.end(`<title>LONG-${req.url.slice(6)}</title><body style="margin:0">${"<p>line</p>".repeat(600)}</body>`); return; }
     res.end(`<title>page${req.url}</title>page ${req.url}`);
   });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
@@ -1950,6 +1952,119 @@ for (const layout of ["dia", "arc"]) {
     },
     expect: (s, b, r) => [r.bar && r.barFocused ? null : `the command bar did not open with the cursor: ${J(r)}`, r.afH === 0 && !r.fieldFocused ? null : `Vivaldi's field floated over the bar: ${J(r)}`],
   });
+}
+
+// Task 8m: Vivaldi's panel, on the right and auto-hidden, reveals from the window's right edge on every monitor
+// (14-panel-edge.js). Vivaldi's own edge test is native and never sees CDP's mouse; these cases see Vivarc's: a move onto
+// the right edge's background sends Vivaldi's edge event once and the panel comes; never over the page's scrollbar, a
+// dead corner or a control; nothing with the panel pinned or on the left. The sends are counted by a spy around the event's
+// dispatch on the background page (calls go through unchanged). Window positions on other monitors are in the task's probe
+// (task-8m-probe/edge.mjs): monitor layouts differ per machine. Both layouts.
+const PE_SPY = `(() => { const bg = chrome.extension.getBackgroundPage(), ev = bg.vivaldi.windowPrivate.onMouseCloseToEdge;
+  if (!ev.__peSpy) { const orig = ev.dispatch; ev.__peSpy = 1; ev.dispatch = function (...a) { bg.__peSends = (bg.__peSends || 0) + 1; return orig.apply(this, a); }; }
+  bg.__peSends = 0; return 1; })()`;
+const peSends = () => h.ev(`chrome.extension.getBackgroundPage().__peSends || 0`, ctx.H);
+// Vivaldi's own auto-hide action (found by its code, as the sandbox helper finds its stores): hides the right side.
+const peHide = (win) => h.ev(`(() => { const bg = chrome.extension.getBackgroundPage(); let load; bg.webpackChunkgapp_browser_react.push([[Symbol("pe")], {}, (r) => { load = r; }]);
+  for (const [k, f] of Object.entries(load.m)) { if (!String(f).includes("updateAutoHideVisibility(e,t,n){")) continue; const m = load(k);
+    for (const v of Object.values(m || {})) if (v && typeof v.updateAutoHideVisibility === "function") { v.updateAutoHideVisibility(${win}, "right", { visible: false, keepOpen: false }); return 1; } }
+  return 0; })()`, win);
+const peState = (win) => h.ev(`(() => { const b = document.querySelector("#browser"), w = b.querySelector(":scope > .auto-hide-wrapper.right"), wc = document.querySelector("#webview-container");
+  const r = wc.getBoundingClientRect(); return { inner: [innerWidth, innerHeight], wrapper: !!w, shown: !!w?.classList.contains("show"), max: b.classList.contains("maximized"),
+    pageRight: Math.round(r.right), gap: Math.round(innerWidth - r.right), ourMargin: getComputedStyle(wc).marginRight }; })()`, win);
+const peMove = (win, x, y, buttons = 0) => h.cdp(win).send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: buttons ? "left" : "none", buttons });
+const pePref = (path, value) => h.ev(`(vivaldi.prefs.set({ path: ${J(path)}, value: ${J(value)} }), 1)`, ctx.H);
+const peSetup = (maximized) => async () => {
+  await mkWin("W", { width: 1100 });
+  await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(origin + "/long-pe")}, active: true }).then(() => 1)`, ctx.H);
+  if (maximized) await h.ev(`chrome.windows.update(${ctx.W}, { state: "maximized" }).then(() => 1)`, ctx.H);
+  await sleep(1500);
+  await peHide(ctx.W); await sleep(700);
+};
+// Middle of the window, then onto the right edge (the last pixel column) at mid-height: polls for the panel.
+const peToEdge = async (y) => {
+  const s = await peState(ctx.W);
+  const [W, H] = s.inner;
+  await peMove(ctx.W, W / 2, H / 2); await sleep(150);
+  await peMove(ctx.W, W - 1, y ?? H / 2);
+  let now = s;
+  for (let i = 0; i < 10 && !now.shown; i++) { await sleep(100); now = await peState(ctx.W); }
+  return { before: s, after: now };
+};
+for (const layout of ["dia", "arc"]) {
+  for (const maximized of [true, false]) {
+    def(`PE.edge-reveals-${maximized ? "maximised" : "normal"}-${layout}`, {
+      layout, setup: peSetup(maximized),
+      act: async () => {
+        await h.ev(PE_SPY, ctx.H);
+        const r = await peToEdge();
+        const sends = await peSends();
+        // along the edge: the same arrival, no second send
+        await peHide(ctx.W); await sleep(500);
+        await peMove(ctx.W, r.before.inner[0] - 2, r.before.inner[1] / 2 + 40); await peMove(ctx.W, r.before.inner[0] - 3, r.before.inner[1] / 2 + 80); await sleep(400);
+        return { ...r, sends, sendsAfterSlide: await peSends(), shownAfterSlide: (await peState(ctx.W)).shown };
+      },
+      expect: (s, b, r) => [r.before.max === maximized ? null : `setup: window maximised ${r.before.max}`, r.before.shown ? "setup: the panel was already showing" : null,
+        r.after.shown ? null : `the panel did not reveal (gap at the right ${r.before.gap}px)`, r.sends === 1 ? null : `sent the edge event ${r.sends} times, want 1`,
+        r.sendsAfterSlide === 1 && !r.shownAfterSlide ? null : `sliding along the edge sent again (${r.sendsAfterSlide}) or revealed again`],
+    });
+  }
+  def(`PE.scrollbar-still-drags-${layout}`, {
+    layout, setup: peSetup(true),
+    act: async () => {
+      const page = (await targets()).find((t) => t.type === "page" && t.url.startsWith(origin + "/long-pe"));
+      if (!page) return { error: "no page target for the long page" };
+      const p = await Cdp.open(page.webSocketDebuggerUrl);
+      try {
+        await p.eval("scrollTo(0, 0), 1");
+        const sb = await p.eval("innerWidth - document.documentElement.clientWidth");
+        const s = await peState(ctx.W);
+        const x = s.pageRight - Math.max(2, Math.round(sb / 2)), y = 120;
+        await h.ev(PE_SPY, ctx.H);
+        const under = await h.ev(`document.elementFromPoint(${x}, ${y})?.tagName`, ctx.W);
+        const cdp = h.cdp(ctx.W);
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
+        await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+        for (let k = 1; k <= 6; k++) { await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: y + k * 40, button: "left", buttons: 1 }); await sleep(30); }
+        await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: y + 240, button: "left", buttons: 0, clickCount: 1 });
+        await sleep(300);
+        return { sb, x, gap: s.gap, under, scrolled: await p.eval("scrollY"), sends: await peSends(), shown: (await peState(ctx.W)).shown };
+      } finally { p.close(); }
+    },
+    expect: (s, b, r) => [r.sb > 0 ? null : "setup: the page has no scrollbar", r.under === "WEBVIEW" ? null : `the scrollbar is under ${r.under}, not the page`,
+      r.scrolled > 200 ? null : `the scrollbar did not drag (scrollY ${r.scrolled})`, r.sends === 0 && !r.shown ? null : `the drag revealed the panel (${r.sends} sends)`],
+  });
+  def(`PE.corner-and-controls-no-reveal-${layout}`, {
+    layout, setup: peSetup(true),
+    act: async () => {
+      await h.ev(PE_SPY, ctx.H);
+      const corner = await peToEdge(10);
+      const cornerSends = await peSends();
+      // 40 px down the edge: past the corner; in the Dia layout that is Vivaldi's close button
+      const at40 = await h.ev(`(() => { const e = document.elementFromPoint(innerWidth - 1, 40); return e ? e.tagName : null; })()`, ctx.W);
+      const ctl = await peToEdge(40);
+      return { corner: corner.after.shown, cornerSends, at40, ctl: ctl.after.shown, ctlSends: (await peSends()) - cornerSends };
+    },
+    expect: (s, b, r) => [!r.corner && r.cornerSends === 0 ? null : "a dead corner revealed the panel",
+      r.at40 !== "BUTTON" || (!r.ctl && r.ctlSends === 0) ? null : "Vivaldi's close button at the edge revealed the panel",
+      layout === "dia" && r.at40 !== "BUTTON" ? `setup: no window button at the edge at 40px (${r.at40}), the control half proves nothing` : null],
+  });
+  for (const [name, path, value, back] of [["pinned", "vivaldi.auto_hide.panel", false, true], ["on-the-left", "vivaldi.panels.position", "left", "right"]]) {
+    def(`PE.panel-${name}-no-reveal-${layout}`, {
+      layout, setup: peSetup(true),
+      act: async () => {
+        await pePref(path, value); await sleep(1500);
+        try {
+          await h.ev(PE_SPY, ctx.H);
+          const r = await peToEdge();
+          await sleep(500);
+          return { wrapper: r.after.wrapper, shown: (await peState(ctx.W)).shown, sends: await peSends(), ourMargin: r.after.ourMargin };
+        } finally { await pePref(path, back); await sleep(1500); }
+      },
+      expect: (s, b, r) => [r.sends === 0 ? null : `sent the edge event ${r.sends} times`, r.shown ? "a panel slid in" : null,
+        layout === "arc" && r.ourMargin !== "0px" ? `the page kept Vivarc's gap (${r.ourMargin})` : null],
+    });
+  }
 }
 
 // Part 3 decisions that are the same check as a row above.
