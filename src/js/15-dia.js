@@ -121,7 +121,20 @@
   // spaces hint names keys: Cmd on a Mac).
   const sidebarLabel = (shown, windows) => `${shown ? "Hide" : "Show"} sidebar (${windows ? "Ctrl" : "Cmd"}+S)`;
 
-  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, sidebarLabel, ROW_ITEMS };
+  // What of the top row's own buttons fits in `content` px (the row's width less its reserved window-button padding).
+  // `fixed` is what is never dropped (Vivaldi's menu, the sidebar button, Back); Forward then Reload go when even the
+  // empty breadcrumb would have no room. "" = all shown, "nofwd", "noreload" (Forward and Reload gone), or "tight":
+  // not even the fixed buttons fit, so the row slides left over the top of the sidebar by what is missing (--vm-dia-need) rather than
+  // lose the sidebar button or overlap the window buttons.
+  // Decided from natural widths only, never from what is shown now, so a change cannot undo itself.
+  const rowFit = (content, { fixed, forward, reload }) => {
+    if (content >= fixed + forward + reload) return "";
+    if (content >= fixed + reload) return "nofwd";
+    if (content >= fixed) return "noreload";
+    return "tight";
+  };
+
+  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, sidebarLabel, rowFit, ROW_ITEMS };
   if (!window.__vm.store) return;
 
   const { store, settings } = window.__vm;
@@ -313,10 +326,49 @@
     browser.style.setProperty("--vm-dia-left", `${left}px`);
     browser.style.setProperty("--vm-dia-right", `${right}px`);
   });
+  // The row's own buttons never shrink; when the page column is too narrow, whole ones drop out (rowFit), as data-vm-dia-fit
+  // on #browser for the CSS. Measured when the row's width changes (one frame later, so a drag resizes without thrashing).
+  // A button's natural width is remembered while it is shown, so the choice never depends on what is hidden now.
+  const natural = { forward: 37, reload: 37 };
+  const outerWidth = (node) => {
+    const style = getComputedStyle(node);
+    return node.getBoundingClientRect().width + (parseFloat(style.marginLeft) || 0) + (parseFloat(style.marginRight) || 0);
+  };
+  const fitRow = () => {
+    const browser = document.querySelector("#browser");
+    const row = document.querySelector("#main > .mainbar .toolbar-mainbar");
+    if (!browser || !row) return;
+    const style = getComputedStyle(row);
+    const reserved = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
+    // The page column's own width, from its edges rather than the row's (a row that has slid left over the sidebar, see
+    // "tight", would otherwise change what it is measured by); a Mac's traffic-light inset is the row's own offset.
+    const edge = (name) => parseFloat(browser.style.getPropertyValue(name)) || 0;
+    const inset = Math.max(0, row.getBoundingClientRect().left - edge("--vm-dia-left"));
+    const content = window.innerWidth - edge("--vm-dia-left") - inset - edge("--vm-dia-right") - reserved;
+    let fixed = 0;
+    for (const child of row.children) {
+      if (child === crumb || child.matches(".window-buttongroup, .toolbar-spacer-flexible, .toolbar-extensions")) continue;
+      const name = child.querySelector?.("[data-name]")?.dataset.name;
+      const own = name === "Forward" ? "forward" : name === "Reload" ? "reload" : null;
+      if (getComputedStyle(child).display === "none") continue;
+      const width = outerWidth(child);
+      if (own) natural[own] = width;
+      else fixed += width;
+    }
+    const fit = rowFit(content, { fixed, ...natural });
+    if (fit) browser.dataset.vmDiaFit = fit; else delete browser.dataset.vmDiaFit;
+    if (fit === "tight") browser.style.setProperty("--vm-dia-need", `${Math.ceil(fixed + reserved)}px`);
+    else browser.style.removeProperty("--vm-dia-need");
+  };
+  let fitting = 0;
+  const refit = () => { cancelAnimationFrame(fitting); fitting = requestAnimationFrame(fitRow); };
+  const rowSize = new ResizeObserver(refit);
+  let watchedRow = null;
+
   // The row is Vivaldi's and is re-rendered by it: the breadcrumb goes back after Reload whenever it goes missing.
   const place = () => {
     const browser = document.querySelector("#browser");
-    if (!browser?.classList.contains("vm-dia")) { crumb?.remove(); sideNode?.remove(); return; }
+    if (!browser?.classList.contains("vm-dia")) { crumb?.remove(); sideNode?.remove(); delete browser?.dataset.vmDiaFit; return; }
     const container = document.querySelector("#webview-container");
     if (container && container !== page) {
       if (page) pageEdges.unobserve(page);
@@ -325,11 +377,17 @@
     }
     const row = document.querySelector("#main > .mainbar .toolbar-mainbar");
     if (!row) return;
+    if (row !== watchedRow) {
+      if (watchedRow) rowSize.unobserve(watchedRow);
+      watchedRow = row;
+      rowSize.observe(row);
+    }
     if (!crumb) make();
     const anchor = row.querySelector("[data-name='Reload']")?.closest(".button-toolbar");
     if (anchor) { if (anchor.nextElementSibling !== crumb) anchor.after(crumb); }
     else if (crumb.parentElement !== row) row.prepend(crumb);
     placeSide(row);
+    refit();
   };
 
   const start = () => {

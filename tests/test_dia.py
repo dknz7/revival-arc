@@ -341,5 +341,39 @@ class MacHiddenSidebar(unittest.TestCase):
         self.assertIn(".vm-dia.mac.macos26:not(.fullscreen) { --vm-dia-traffic: calc(86px / var(--uiZoomLevel, 1)); }", self.CSS)  # 8 + 54 + 24
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the Dia layout's JavaScript")
+class NarrowRow(unittest.TestCase):
+    """A narrow page column drops whole buttons: Forward, then Reload; Back, the menu and the sidebar button never."""
+
+    SIZES = {"fixed": 130, "forward": 37, "reload": 37}  # menu + sidebar button + Back, as measured on Windows
+
+    def fit(self, content):
+        return js("window.__vm.dia.rowFit(content, sizes)", content=content, sizes=self.SIZES)
+
+    def test_a_row_with_room_keeps_everything(self):
+        self.assertEqual(self.fit(204), "")
+        self.assertEqual(self.fit(900), "")
+
+    def test_forward_goes_first_then_reload(self):
+        self.assertEqual(self.fit(203), "nofwd")
+        self.assertEqual(self.fit(167), "nofwd")
+        self.assertEqual(self.fit(166), "noreload")
+        self.assertEqual(self.fit(130), "noreload")
+
+    def test_when_not_even_the_kept_buttons_fit_they_are_clipped_not_overlapped(self):
+        self.assertEqual(self.fit(129), "tight")
+        self.assertEqual(self.fit(0), "tight")
+
+    def test_the_css_never_drops_the_menu_the_sidebar_button_or_back(self):
+        css = open(os.path.join(os.path.dirname(__file__), "..", "src", "css", "vivarc.css"), encoding="utf-8").read()
+        drops = [r for r in css.split("}") if "data-vm-dia-fit" in r and "display: none" in r]
+        self.assertTrue(drops)
+        for r in drops:
+            self.assertTrue('[data-name="Forward"]' in r or '[data-name="Reload"]' in r, r)
+            self.assertNotIn("Back", r)
+            self.assertNotIn("vivaldi", r)
+            self.assertNotIn("vm-dia-sidebar", r)
+
+
 if __name__ == "__main__":
     unittest.main()

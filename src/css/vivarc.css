@@ -919,19 +919,29 @@
 /* With the breadcrumb in the row, it is the row's free space (and its drag area): Copy link then sits by the window
    buttons, as in Dia. Vivaldi's spacer stays for a row without it. */
 #browser.vm-on.vm-dia .toolbar-mainbar:has(#vm-dia-crumb) > .toolbar-spacer-flexible { display: none !important; }
-/* A narrow window: Vivaldi's window buttons (minimise, maximise, close) always stay whole, last in the row, and the row's
-   own items give way to them. Measured at 744px wide, the crumb shrank to its padding but Copy link (flex: none) still
-   spilled out of it, over the buttons. Now the crumb clips what does not fit, and sizes by the row's free space alone
-   (inline-size containment: its content no longer takes part), which also lets container queries read that width.
-   In order: the title truncates with an ellipsis (above), then Copy link keeps just its icon (its tooltip still says
-   Copy link), then Translate hides, then Copy link; the row's buttons before the crumb shrink last of all. */
-#browser.vm-on.vm-dia .toolbar-mainbar > :is(button.vivaldi, #vm-dia-sidebar, .button-toolbar) { flex-shrink: 1; min-width: 0; overflow: hidden; }
+/* A narrow window: Vivaldi's window buttons (minimise, maximise, close) are placed by Vivaldi at the row's right, in
+   padding the row reserves for them; nothing of ours may reach them. Measured at 744px wide, the crumb shrank to its
+   padding but Copy link (flex: none) still spilled out of it, over them, and at 600px and 480px the row's own buttons did.
+   The row's buttons never shrink. The crumb sizes by the row's free space alone (inline-size containment: its content
+   no longer takes part) and clips, and container queries on it read that width. As it narrows: Copy link loses its
+   label (its tooltip still says Copy link), the title is gone, Translate hides, Copy link hides. Then 15-dia.js (rowFit)
+   drops Forward and then Reload through data-vm-dia-fit on #browser. Never dropped: Vivaldi's menu, the sidebar button,
+   Back, the window buttons; if even those do not fit ("tight": a very narrow window with a wide sidebar) the row slides left over the sidebar's top
+   strip by what is missing, so none is lost or overlapped. */
+#browser.vm-on.vm-dia .toolbar-mainbar > :is(button.vivaldi, #vm-dia-sidebar, .button-toolbar) { flex-shrink: 0; }
+#browser.vm-on.vm-dia[data-vm-dia-fit] .toolbar-mainbar > .button-toolbar:has([data-name="Forward"]) { display: none !important; }
+#browser.vm-on.vm-dia:is([data-vm-dia-fit="noreload"], [data-vm-dia-fit="tight"]) .toolbar-mainbar > .button-toolbar:has([data-name="Reload"]) { display: none !important; }
+#browser.vm-on.vm-dia[data-vm-dia-fit="tight"] #main > .mainbar {
+  left: min(var(--vm-dia-left, 0px), calc(100% - var(--vm-dia-right, 0px) - var(--vm-dia-need, 0px)));
+}
 #vm-dia-crumb { container-type: inline-size; flex: 1 1 0; overflow: hidden; }
 @container (max-width: 240px) { #vm-dia-crumb .vm-dia-share span { display: none; } #vm-dia-crumb .vm-dia-share { padding: 5px 8px; } }
 @container (max-width: 340px) { #vm-dia-crumb:has(.vm-dia-translate:not([hidden])) .vm-dia-share span { display: none; }
   #vm-dia-crumb:has(.vm-dia-translate:not([hidden])) .vm-dia-share { padding: 5px 8px; } }
-@container (max-width: 290px) { #vm-dia-crumb .vm-dia-translate { display: none; } }
-@container (max-width: 64px) { #vm-dia-crumb .vm-dia-share { display: none; } }
+@container (max-width: 110px) { #vm-dia-crumb .vm-dia-text { display: none; } }
+@container (max-width: 200px) { #vm-dia-crumb:has(.vm-dia-translate:not([hidden])) .vm-dia-text { display: none; } }
+@container (max-width: 140px) { #vm-dia-crumb .vm-dia-translate { display: none; } }
+@container (max-width: 31px) { #vm-dia-crumb .vm-dia-share { display: none; } }
 /* A drag region wins over anything drawn on top of it: while one of Vivaldi's popups is open (as Vivaldi itself does
    for its own drag areas), or the toolbar is being edited, the row is not title bar. */
 #browser.vm-on.vm-dia:is(:has(.OmniDropdown, .CustomizePanelPopup, .extension-popup, .button-popup), .toolbar-edit-mode) #vm-dia-crumb {
