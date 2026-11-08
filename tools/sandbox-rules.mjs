@@ -687,12 +687,12 @@ tearCase("D.tear-off-favorite-stays", {
 
 // Task 8g: a tab row dragged from W's sidebar into O's sidebar. CDP cannot carry a drag between two windows by itself, so
 // the parts are: REAL: W's dragstart (a browser-driven HTML5 drag through setInterceptDrags + mouse events), the data it
-// writes (the custom type is read back from the intercepted drag data, case D.drag-across-payload), and the dragover and
+// writes (the custom type is read back from the intercepted drag data), and the dragover and
 // drop O's own page receives (Input.dispatchDragEvent on O's target with W's exact data, so O's handler reads the type with
 // getData); and Vivaldi's tab move. SYNTHETIC: the hand-over between the two windows (the OS would do it), and W's dragend,
 // which is ended by a drop at OUT (outside W): that gives the worst case for the interplay, a source reporting
 // dropEffect "none" beyond its edge after another window took the tab. What a real source reports then is Byron's check.
-async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishAt = OUT, settleMs = 1500 } = {}) {
+async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishAt = OUT, settleMs = 1500, race = false } = {}) {
   const grab = (win, finder, f) => waitFor(() => h.ev(`(() => { const r = ${finder}; if (!r) return null; r.scrollIntoView({ block: "center" }); const b = r.getBoundingClientRect(); const x = b.left + b.width / 2;
     const top = document.elementFromPoint(x, b.top + b.height / 2); return r.contains(top) ? { x, y: b.top + b.height * ${f} } : null; })()`, win), 8000);
   const from = await grab(src, srcFinder, 0.5), to = await grab(dst, dstFinder, frac);
@@ -709,16 +709,35 @@ async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishA
     await sleep(500);
     if (!data) return "the drag never started";
     ctx.dragData = data;
-    for (const type of ["dragEnter", "dragOver", "drop"]) { await cd.send("Input.dispatchDragEvent", { type, x: to.x, y: to.y, data }); await sleep(150); }
-    await sleep(settleMs);
-    if (finishAt) {
+    // keep what the two sidebars warn while the drop runs, so a failure can say why
+    const hook = `(window.__w8g = [], console.warn = ((o) => (...a) => { window.__w8g.push(a.map(String).join(" ").slice(0, 200)); o.apply(console, a); })(console.warn), 1)`;
+    await h.ev(hook, dst).catch(() => {}); if (dst !== src) await h.ev(hook, src).catch(() => {});
+    const finish = async () => {
       const none = { items: [], dragOperationsMask: 1 };
       await cs.send("Input.dispatchDragEvent", { type: "dragEnter", x: finishAt.x, y: finishAt.y, data: none });
       await cs.send("Input.dispatchDragEvent", { type: "drop", x: finishAt.x, y: finishAt.y, data: none });
-    }
+    };
+    const at = (await grab(dst, dstFinder, frac)) ?? to; // the row may have moved since it was first measured: aim at where it is now
+    for (const type of ["dragEnter", "dragOver"]) { await cd.send("Input.dispatchDragEvent", { type, x: at.x, y: at.y, data }); await sleep(150); }
+    // race: the target's drop and the source's dragend are sent in the same instant (no wait between them)
+    const drop = cd.send("Input.dispatchDragEvent", { type: "drop", x: at.x, y: at.y, data });
+    if (race && finishAt) await Promise.all([drop, finish()]); else await drop;
+    await sleep(settleMs);
+    if (finishAt && !race) await finish();
+    await sleep(600);
+    ctx.warns = { dst: await h.ev(`window.__w8g`, dst).catch(() => null), src: dst !== src ? await h.ev(`window.__w8g`, src).catch(() => null) : null };
     await cs.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: from.x, y: from.y, button: "left", buttons: 0, clickCount: 1 }).catch(() => {});
   } finally { cs.ws.removeEventListener("message", onMsg); await cs.send("Input.setInterceptDrags", { enabled: false }).catch(() => {}); }
   return "dropped";
+}
+// Runs the act while counting normal windows every ~30 ms, then a while after it (a tear-off that wrongly fires comes
+// ~250 ms later): the most seen is kept in ctx.maxWins, so a window that flashes open and is gone again is still caught.
+// H, W and O are the three expected.
+async function sampled(act) {
+  ctx.maxWins = 0;
+  let stop = false;
+  const watcher = (async () => { while (!stop) { const n = await h.ev(`chrome.windows.getAll({ windowTypes: ["normal"] }).then((w) => w.length)`, ctx.H).catch(() => 0); ctx.maxWins = Math.max(ctx.maxWins, n); await sleep(30); } })();
+  try { return await act(); } finally { await sleep(1500); stop = true; await watcher; }
 }
 const SET_ACROSS = async () => {
   await mkWin("W", { width: 1000 }); await mkWin("O", { width: 1000 });
@@ -726,11 +745,11 @@ const SET_ACROSS = async () => {
   await tab(ctx.O, "Y1", sp("Y"), { active: true }); await tab(ctx.O, "Y2", sp("Y")); await tab(ctx.O, "Y3", sp("Y")); await show(ctx.O, sp("Y")); await activate(ctx.tabs.Y1);
   await focus(ctx.W);
 };
-const acrossCase = (id, { label = "X2", onto = "Y2", ontoFinder, frac, setup = SET_ACROSS, ready, finishAt, settleMs, expect }) => def(id, {
+const acrossCase = (id, { label = "X2", onto = "Y2", ontoFinder, frac, setup = SET_ACROSS, ready, finishAt, settleMs, race, expect }) => def(id, {
   gesture: true, setup, ready: ready ?? (async () => (await waitFor(() => h.ev(`!!(${tabRowOf(label)})`, ctx.W), 8000)) && (await waitFor(() => h.ev(`!!(${ontoFinder ?? tabRowOf(onto)})`, ctx.O), 8000))),
-  act: () => dragAcross(ctx.W, tabRowOf(label), ctx.O, ontoFinder ?? tabRowOf(onto), { frac, finishAt, settleMs }), expect,
+  act: () => sampled(() => dragAcross(ctx.W, tabRowOf(label), ctx.O, ontoFinder ?? tabRowOf(onto), { frac, finishAt, settleMs, race })), expect,
 });
-const noStranger = (s) => strangers(s).length ? "a new window was opened" : null;
+const noStranger = (s) => strangers(s).length ? `a new window was opened (warnings: ${J(ctx.warns)})` : ctx.maxWins > 3 ? `a window flashed open during the drop (${ctx.maxWins} normal windows seen, 3 expected)` : null;
 const shownStill = (s) => [recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X")), recIs(s, ctx.O, sp("Y")), showsSpace(s, ctx.O, sp("Y"))];
 // Above Y2's middle: X2 lands directly above Y2 in O (the list shows the highest index first, so one index higher), in
 // O's shown space Y, active there; W keeps X and its X1; no new window. W's dragend (none, outside) did not tear it off.
@@ -741,9 +760,9 @@ acrossCase("D.drag-across", {
     find(s, ctx.tabs.Y2)?.index === find(b, ctx.tabs.Y2)?.index ? null : `Y2 moved: ${find(b, ctx.tabs.Y2)?.index} -> ${find(s, ctx.tabs.Y2)?.index}`,
     ...shownStill(s), noStranger(s)],
 });
-// The worst case for the interplay: W's dragend (none, outside) comes at once, before O has finished moving the tab.
+// The worst case for the interplay: W's dragend (none, outside) is sent in the same instant as O's drop, so it can win against O's move; windows are counted throughout (a tear-off that wrongly fires shows as a 4th).
 acrossCase("D.drag-across-source-dragend-at-once", {
-  frac: 0.25, settleMs: 0,
+  frac: 0.25, settleMs: 0, race: true,
   expect: (s) => [tabIs(s, "X2", { win: ctx.O, space: sp("Y"), active: true }), tabIs(s, "X1", { win: ctx.W, space: sp("X") }), ...shownStill(s), noStranger(s)],
 });
 // Below Y2's middle: directly below it, at Y2's old index (Y2 is pushed up one).
@@ -818,7 +837,7 @@ acrossCase("D.drag-across-new-tab-row", {
 // The same-window drag still reorders as before (the custom type is ignored when the source is this window).
 def("D.drag-across-same-window-unchanged", {
   gesture: true, setup: SET_ACROSS, ready: () => waitFor(() => h.ev(`!!(${tabRowOf("X2")}) && !!(${tabRowOf("X1")})`, ctx.W), 8000),
-  act: () => dragAcross(ctx.W, tabRowOf("X1"), ctx.W, tabRowOf("X2"), { frac: 0.25, finishAt: null }),
+  act: () => sampled(() => dragAcross(ctx.W, tabRowOf("X1"), ctx.W, tabRowOf("X2"), { frac: 0.25, finishAt: null })),
   expect: (s, b) => [tabIs(s, "X1", { win: ctx.W, space: sp("X") }), tabIs(s, "X2", { win: ctx.W, space: sp("X") }), noStranger(s),
     find(s, ctx.tabs.X1)?.index > find(s, ctx.tabs.X2)?.index ? null : "X1 did not move above X2 (the in-window drop did not run)"],
 });

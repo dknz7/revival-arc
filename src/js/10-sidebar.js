@@ -287,9 +287,16 @@
       const place = spacesOf.tearOff({ ...there, tabCount: inWindow.length,
         screen: onDisplay ? { left: s.availLeft, top: s.availTop, width: s.availWidth, height: s.availHeight } : null });
       if (!place) return;
-      endBusy = window.__vm.spaceRepair?.gesture() ?? null; // before the first change; set at once, nothing awaited since
+      // Stand down BEFORE taking the busy mark if the tab has already left this window (another window's sidebar took it)
+      // or another gesture is running (that window's drop sets its mark first): then nothing here may touch the tab, and
+      // an early return clears no mark of ours because none is taken yet.
+      const gone = async () => myWindow() != null && (await chrome.tabs.get(payload.tab.id)).windowId !== myWindow();
+      if ((await gone()) || window.__vm.spaceRepair?.busy?.()) return;
+      endBusy = window.__vm.spaceRepair?.gesture() ?? null;
+      // A short wait, then look again: a drop that is just landing in another window has its move still in flight.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (await gone()) return;
       const tab = await chrome.tabs.get(payload.tab.id); // the row's copy may be stale
-      if (myWindow() != null && tab.windowId !== myWindow()) return; // another window's sidebar already took it
       const origin = { windowId: tab.windowId, index: tab.index, space: spacesOf.of(tab), active: tab.active };
       let fresh = null;
       try {

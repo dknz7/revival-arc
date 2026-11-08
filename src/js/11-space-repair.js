@@ -25,16 +25,31 @@
     const left = (Number(shared()[BUSY_KEY]) || 0) - Date.now();
     return left > 0 && left <= BUSY_MAX_MS ? left : 0;
   };
+  // Gestures can overlap (a drop into this window while another window's tear-off is still running): each holds its own
+  // token on the shared page, the key stands at the latest of them, and ending one never lowers the guard of another
+  // that is still running. A gesture that was never taken (or already ended) releases nothing.
+  const MARKS_KEY = "__vivarcSpaceGestureMarks";
   const gesture = () => {
-    const until = Date.now() + BUSY_MAX_MS;
-    shared()[BUSY_KEY] = until;
+    const page = shared();
+    const marks = page[MARKS_KEY] || (page[MARKS_KEY] = new Set());
+    // a mark on the key that is no gesture's of ours (another script's) is kept: it stands again when ours ends
+    const seen = Number(page[BUSY_KEY]) || 0;
+    const token = { until: Date.now() + BUSY_MAX_MS, other: [...marks].some((m) => m.until === seen) ? 0 : seen };
+    marks.add(token);
+    page[BUSY_KEY] = Math.max(seen, token.until);
     return () => {
-      // only clear our own mark: a later gesture's must stand
-      const page = shared();
-      if (page[BUSY_KEY] === until) delete page[BUSY_KEY];
+      const page = shared(), marks = page[MARKS_KEY];
+      if (!marks || !marks.delete(token)) return; // not ours to release
+      if (!marks.size) delete page[MARKS_KEY];
+      const now = Date.now();
+      const live = [token.other, ...[...marks].flatMap((m) => [m.until, m.other])].filter((u) => u > now);
+      if (live.length) page[BUSY_KEY] = Math.max(...live);
+      else if (!(Number(page[BUSY_KEY]) > token.until)) delete page[BUSY_KEY]; // a later mark set by other code stands
       schedule();
     };
   };
+  // Is a gesture (any window's) in progress? A tear-off stands down while one is, e.g. another window's drop of this tab.
+  const busy = () => busyFor() > 0;
 
   const warned = new Set();
   const warnOnce = (key, message) => {
@@ -135,7 +150,7 @@
     } else if (dirty) schedule();
   };
 
-  window.__vm.spaceRepair = { schedule, gesture };
+  window.__vm.spaceRepair = { schedule, gesture, busy };
 
   const start = async () => {
     if (!(await window.__vm.ready)) return;

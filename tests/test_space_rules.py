@@ -644,6 +644,19 @@ class RepairRuntime(unittest.TestCase):
         self.assertGreaterEqual(out["firstAt"], 250)
         self.assertEqual(out["bg"], {}, "the mark is gone once the gesture ends")
 
+    def test_overlapping_gestures_each_keep_the_guard_until_the_last_ends(self):
+        # a drop into this window while another gesture runs: the first to end (even twice) must not drop the other's guard
+        out = runtime(Repairs.D1, me=1, script="const a = repair.gesture(), b = repair.gesture(); b(); b(); later(250).then(a);")
+        self.assertEqual(out["calls"][:1], [["switch", 1, 0]])
+        self.assertGreaterEqual(out["firstAt"], 250, "repairs waited for the gesture still running")
+        self.assertEqual(out["bg"], {}, "all marks are gone once every gesture has ended")
+
+    def test_a_gesture_never_taken_releases_nothing(self):
+        import time
+        busy = {"__vivarcSpaceGesture": int(time.time() * 1000) + 9000}
+        out = runtime(Repairs.D1, me=1, bg=busy, script="const end = repair.gesture(); end(); end();")
+        self.assertEqual(out["calls"], [], "another gesture's mark still holds repairs off")
+
 
 def ws_tab(id, window_id, space=0, active=False, accessed=0):
     return {"id": id, "windowId": window_id, "active": active, "lastAccessed": accessed,
