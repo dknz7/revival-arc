@@ -842,6 +842,296 @@ def("D.drag-across-same-window-unchanged", {
     find(s, ctx.tabs.X1)?.index > find(s, ctx.tabs.X2)?.index ? null : "X1 did not move above X2 (the in-window drop did not run)"],
 });
 
+// ---------- Task 8k: the New Tab row's dropdown, driven with real mouse events ----------
+// The chevron, the menu rows and the flyouts are clicked with CDP mouse events (hover included), as a user would; what a
+// row does is then read from the browser's own state. All run in both layouts. NT_MENU is the menu without its flyouts.
+const NT_MENU = ".vm-menu:not(.vm-menu-flyout)";
+const NT_ROW = `document.querySelector("#vm-panel .vm-newtab")`;
+const NT_CHEV = `document.querySelector("#vm-panel .vm-newtab-chev")`;
+const NT_LABELS = ["Search Tabs…", "Open Tabs", "Recently Closed", "Recently Closed Windows", "Recently Cleaned", "---", "Mute All Tabs", "Close All Tabs"];
+const mouse = (win, type, x, y) => h.cdp(win).send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1 });
+const centre = (win, expr) => h.ev(`(() => { const e = ${expr}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const b = e.getBoundingClientRect(); return b.width && b.height ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null; })()`, win);
+const hoverOn = async (win, expr) => { const p = await waitFor(() => centre(win, expr), 6000); if (!p) return false; await mouse(win, "mouseMoved", p.x, p.y); return p; };
+const clickOn = async (win, expr) => { const p = await hoverOn(win, expr); if (!p) return false; await mouse(win, "mousePressed", p.x, p.y); await mouse(win, "mouseReleased", p.x, p.y); return true; };
+const labelOfRow = `((n.querySelector(".vm-menu-label") || n).textContent.trim())`;
+const menuRow = (label) => `[...document.querySelectorAll(${J(NT_MENU + " .vm-menu-item")})].find((n) => ${labelOfRow} === ${J(label)})`;
+const flyRow = (label) => `[...document.querySelectorAll(".vm-menu-flyout .vm-menu-item")].find((n) => ${labelOfRow} === ${J(label)})`;
+const rowsOf = (win, sel) => h.ev(`[...document.querySelectorAll(${J(sel)})].map((d) => d.className.includes("sep") ? "---" : d.className.includes("heading") ? "# " + d.textContent : (d.querySelector(".vm-menu-label") || d).textContent.trim() + (d.className.includes("marked") ? " *" : "") + (d.className.includes("disabled") ? " (disabled)" : ""))`, win);
+const hasEl = (win, sel) => h.ev(`!!document.querySelector(${J(sel)})`, win);
+const escapeAll = (win) => h.ev(`(document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), 1)`, win);
+// Hover the row (the chevron shows), click the chevron, wait for the menu.
+async function openDropdown(win) {
+  await mouse(win, "mouseMoved", 600, 500); await sleep(150);
+  if (!(await hoverOn(win, NT_ROW))) return false;
+  await sleep(250);
+  if (!(await clickOn(win, NT_CHEV))) return false;
+  return !!(await waitFor(() => hasEl(win, NT_MENU), 4000));
+}
+const openFly = async (win, label) => { if (!(await hoverOn(win, menuRow(label)))) return false; return !!(await waitFor(() => hasEl(win, ".vm-menu-flyout"), 4000)); };
+// Open the dropdown, open the flyout of `parent`, click its row `row`.
+async function pickFrom(win, parent, row) {
+  if (!(await openDropdown(win))) return "no dropdown";
+  if (!(await openFly(win, parent))) return `no ${parent} flyout`;
+  if (!(await clickOn(win, flyRow(row)))) return `no row ${row} in ${parent}: ${J(await rowsOf(win, ".vm-menu-flyout > div"))}`;
+  return "ok";
+}
+async function dropdownItem(win, label) {
+  if (!(await openDropdown(win))) return "no dropdown";
+  if (!(await clickOn(win, menuRow(label)))) return `no menu item ${label}: ${J(await rowsOf(win, NT_MENU + " > div"))}`;
+  return "ok";
+}
+const SET_NT = async () => {
+  await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "X2", sp("X")); await tab(ctx.W, "Y1", sp("Y"));
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W);
+};
+const ntCase = (id, c) => def(id, { gesture: true, ready: async () => (await waitFor(() => hasEl(ctx.W, "#vm-panel .vm-newtab-chev"), 8000)) && (await waitTile(ctx.W, "X")), setup: SET_NT, ...c });
+const byTitle = (s, title) => normal(s).flatMap((w) => w.tabs.map((t) => ({ ...t, win: w.id, space: t.ws ?? 0 }))).find((t) => t.title === title);
+
+// The chevron shows on hover, sits at the row's right edge, the label stays centred, and its click opens the menu (not the bar).
+ntCase("N.chevron-and-menu", {
+  act: async () => {
+    await mouse(ctx.W, "mouseMoved", 600, 500); await sleep(300);
+    const idle = await h.ev(`Number(getComputedStyle(${NT_CHEV}).opacity)`, ctx.W);
+    await hoverOn(ctx.W, NT_ROW); await sleep(350);
+    const hovered = await h.ev(`Number(getComputedStyle(${NT_CHEV}).opacity)`, ctx.W);
+    const geo = await h.ev(`(() => { const r = ${NT_ROW}.getBoundingClientRect(), c = ${NT_CHEV}.getBoundingClientRect(), t = ${NT_ROW}.querySelector(".vm-title").getBoundingClientRect(), p = ${NT_ROW}.querySelector(".vm-plus").getBoundingClientRect();
+      return { rowRight: r.right, chevRight: c.right, chevLeft: c.left, titleMid: (p.left + t.right) / 2, rowMid: r.left + r.width / 2 }; })()`, ctx.W);
+    await sleep(100);
+    if (!(await clickOn(ctx.W, NT_CHEV))) return { error: "no chevron" };
+    const open = await waitFor(() => hasEl(ctx.W, NT_MENU), 4000);
+    const labels = await rowsOf(ctx.W, NT_MENU + " > div");
+    const bar = await hasEl(ctx.W, "#vm-cmd");
+    // Recently Cleaned is disabled: hovering it opens nothing (Task 8n fills it in).
+    await hoverOn(ctx.W, menuRow("Recently Cleaned")); await sleep(500);
+    const cleanedFly = await hasEl(ctx.W, ".vm-menu-flyout");
+    // A second click on the chevron closes the menu.
+    await clickOn(ctx.W, NT_CHEV); await sleep(300);
+    const closed = !(await hasEl(ctx.W, ".vm-menu"));
+    return { idle, hovered, geo, open, labels, bar, cleanedFly, closed };
+  },
+  expect: (s, b, r) => [!r?.open ? "the menu did not open" : null, r.idle !== 0 ? `the chevron shows without hover (opacity ${r.idle})` : null, r.hovered !== 1 ? `the chevron is not shown on hover (opacity ${r.hovered})` : null,
+    r.geo.chevRight > r.geo.rowRight || r.geo.chevRight < r.geo.rowRight - 12 ? `the chevron is not at the row's right edge (${J(r.geo)})` : null,
+    Math.abs(r.geo.titleMid - r.geo.rowMid) > 2 ? `the + New Tab label is not centred (${J(r.geo)})` : null,
+    J(r.labels.map((l) => l.replace(" (disabled)", ""))) === J(NT_LABELS) ? null : `menu rows ${J(r.labels)}`,
+    r.labels[4] === "Recently Cleaned (disabled)" ? null : `Recently Cleaned is not disabled: ${r.labels[4]}`,
+    r.cleanedFly ? "the disabled Recently Cleaned opened a flyout" : null, r.bar ? "the chevron click opened the command bar" : null, r.closed ? null : "a second chevron click did not close the menu", unchanged(b, s)],
+});
+// The rest of the row keeps its click: the command bar opens, no menu.
+ntCase("N.row-click-opens-bar", {
+  act: async () => {
+    const r = await h.ev(`(() => { const b = ${NT_ROW}.getBoundingClientRect(); return { l: b.left, y: b.top + b.height / 2 }; })()`, ctx.W);
+    await mouse(ctx.W, "mouseMoved", r.l + 30, r.y); await sleep(200); await mouse(ctx.W, "mousePressed", r.l + 30, r.y); await mouse(ctx.W, "mouseReleased", r.l + 30, r.y);
+    const bar = await waitFor(() => hasEl(ctx.W, "#vm-cmd"), 4000);
+    const menu = await hasEl(ctx.W, ".vm-menu");
+    await escapeAll(ctx.W); await h.ev(`document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })) ?? 1`, ctx.W);
+    return { bar, menu };
+  },
+  expect: (s, b, r) => [r.bar ? null : "a click on the row (not the chevron) did not open the command bar", r.menu ? "it opened the menu too" : null, unchanged(b, s)],
+});
+// Search Tabs… opens the command bar, listing open tabs.
+ntCase("N.search-tabs", {
+  act: async () => {
+    const r = await dropdownItem(ctx.W, "Search Tabs…"); if (r !== "ok") return r;
+    const bar = await waitFor(() => hasEl(ctx.W, "#vm-cmd"), 4000);
+    const rows = await waitFor(() => h.ev(`[...document.querySelectorAll("#vm-cmd .vm-cmd-row .vm-cmd-title")].map((n) => n.textContent)`, ctx.W).then((x) => (x.length ? x : null)), 4000);
+    const menu = await hasEl(ctx.W, ".vm-menu");
+    await h.ev(`document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })) ?? 1`, ctx.W);
+    return { bar, rows, menu };
+  },
+  expect: (s, b, r) => [r.bar ? null : "the command bar did not open", r.menu ? "the menu stayed open" : null, r.rows?.includes("X2") ? null : `the bar does not list the open tabs (${J(r.rows)})`, unchanged(b, s)],
+});
+// Open Tabs: grouped by window then space, headings, this window's active tab marked, height capped, other windows listed.
+ntCase("N.open-tabs-list", {
+  setup: async () => { await SET_NT(); await mkWin("O", { width: 700 }); await tab(ctx.O, "Z1", sp("Z"), { active: true }); await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1); await focus(ctx.W); },
+  act: async () => {
+    if (!(await openDropdown(ctx.W))) return { error: "no dropdown" };
+    if (!(await openFly(ctx.W, "Open Tabs"))) return { error: "no Open Tabs flyout" };
+    const rows = await rowsOf(ctx.W, ".vm-menu-flyout > div");
+    const box = await h.ev(`(() => { const f = document.querySelector(".vm-menu-flyout"), m = document.querySelector(${J(NT_MENU)}), b = f.getBoundingClientRect(), a = m.getBoundingClientRect();
+      return { maxH: getComputedStyle(f).maxHeight, overflowY: getComputedStyle(f).overflowY, right: b.right, left: b.left, menuRight: a.right, vw: innerWidth, height: b.height, favicons: f.querySelectorAll(".vm-ico").length }; })()`, ctx.W);
+    await escapeAll(ctx.W);
+    return { rows, box, menuGone: !(await hasEl(ctx.W, ".vm-menu")) };
+  },
+  expect: (s, b, r) => {
+    const i = (l) => r.rows.indexOf(l);
+    const order = ["# This window · X", "X1 *", "X2", "# This window · Y", "Y1"].map(i);
+    return [order.some((x) => x < 0) || order.some((x, k) => k && x <= order[k - 1]) ? `This window's groups are missing or out of order: ${J(r.rows)}` : null,
+      r.rows.filter((x) => x.endsWith(" *")).length === 1 ? null : `want exactly one active tab marked: ${J(r.rows)}`,
+      r.rows.some((x) => /^# Window \d+ · Z$/.test(x)) && r.rows.includes("Z1") ? null : `the other window's Z group is missing: ${J(r.rows)}`,
+      i("# This window · X") < r.rows.findIndex((x) => /^# Window \d+/.test(x)) ? null : "this window does not come first",
+      r.box.favicons >= 4 ? null : `row icons ${r.box.favicons}`, parseFloat(r.box.maxH) <= 420 && r.box.overflowY === "auto" ? null : `height not capped: ${r.box.maxH} ${r.box.overflowY}`,
+      r.box.left >= r.box.menuRight - 8 ? null : `flyout not beside the menu: ${J(r.box)}`, r.menuGone ? null : "Escape did not close the menu and flyout", unchanged(b, s)];
+  },
+});
+// Picking a tab parked in this window's other space shows that space (repair 2 must not snap it back).
+ntCase("N.open-tabs-pick-parked", {
+  act: () => pickFrom(ctx.W, "Open Tabs", "Y1"),
+  expect: (s) => [tabIs(s, "Y1", { win: ctx.W, space: sp("Y"), active: true }), recIs(s, ctx.W, sp("Y")), showsSpace(s, ctx.W, sp("Y"))],
+});
+// Picking a tab in another window that shows its space: that window comes to the front with the tab active.
+ntCase("N.open-tabs-pick-other-window-shown", {
+  setup: async () => { await SET_NT(); await mkWin("O", { width: 700 }); await tab(ctx.O, "Z1", sp("Z"), { active: true }); await tab(ctx.O, "Z2", sp("Z")); await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1); await focus(ctx.W); },
+  act: () => pickFrom(ctx.W, "Open Tabs", "Z2"),
+  expect: async (s) => [tabIs(s, "Z2", { win: ctx.O, space: sp("Z"), active: true }), recIs(s, ctx.O, sp("Z")), focusIs(s, ctx.O), recIs(s, ctx.W, sp("X"))],
+});
+// ...and one parked in another window: that window switches to the tab's space first.
+ntCase("N.open-tabs-pick-other-window-parked", {
+  setup: async () => { await SET_NT(); await mkWin("O", { width: 700 }); await tab(ctx.O, "Z1", sp("Z")); await tab(ctx.O, "Z2", sp("Z")); await focus(ctx.W); },
+  act: () => pickFrom(ctx.W, "Open Tabs", "Z1"),
+  expect: (s) => [tabIs(s, "Z1", { win: ctx.O, space: sp("Z"), active: true }), recIs(s, ctx.O, sp("Z")), showsSpace(s, ctx.O, sp("Z")), focusIs(s, ctx.O), recIs(s, ctx.W, sp("X"))],
+});
+// Recently Closed: a closed tab of the space on screen comes back in its space, shown.
+ntCase("N.recently-closed-restore", {
+  setup: async () => { await SET_NT(); await tab(ctx.W, "Gone1", sp("X")); await waitFor(() => h.ev(`chrome.tabs.get(${ctx.tabs.Gone1}).then((t) => t.title === "Gone1" && t.status === "complete")`, ctx.H), 8000); await sleep(400); await h.ev(`chrome.tabs.remove(${ctx.tabs.Gone1}).then(() => 1)`, ctx.H); await sleep(800); await activate(ctx.tabs.X1); await focus(ctx.W); },
+  act: () => pickFrom(ctx.W, "Recently Closed", "Gone1"),
+  expect: (s) => { const t = byTitle(s, "Gone1"); return [t ? null : "Gone1 was not restored", t && t.win !== ctx.W ? `restored into ${roleOf(t.win)}` : null, t && t.space !== sp("X") ? `restored into ${spaceName(t.space)}` : null,
+    t && !t.active ? "the restored tab is not shown" : null, recIs(s, ctx.W, sp("X"))]; },
+});
+// A closed default-space tab restored while the window shows a named space: shown like a pick, so the window goes to default
+// with it (repair 2 would otherwise snap back to the space and leave the tab parked).
+ntCase("N.recently-closed-restore-other-space", {
+  // the tab is made while the window shows its default space (a tab made on X would be X's), closed, and X shown after
+  setup: async () => {
+    await mkWin("W", { width: 900 }); await tab(ctx.W, "GoneD", 0); await waitFor(() => h.ev(`chrome.tabs.get(${ctx.tabs.GoneD}).then((t) => t.title === "GoneD" && t.status === "complete")`, ctx.H), 8000); await sleep(400); await h.ev(`chrome.tabs.remove(${ctx.tabs.GoneD}).then(() => 1)`, ctx.H); await sleep(800);
+    await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "X2", sp("X")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W);
+  },
+  act: () => pickFrom(ctx.W, "Recently Closed", "GoneD"),
+  expect: (s) => { const t = byTitle(s, "GoneD"); return [t ? null : "GoneD was not restored", t && t.space !== 0 ? `restored into ${spaceName(t.space)}` : null, t && !t.active ? "the restored tab is not shown" : null, recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0)]; },
+});
+// Recently Closed Windows: Vivaldi rehomed the closed window's named-space tabs to H before it closed (D2), so its entry holds
+// only its default-space tabs; the label counts those, and the restored window has exactly that many. The rehomed tabs stay in H.
+def("N.closed-window-restore", {
+  gesture: true,
+  setup: async () => {
+    await mkWin("W", { width: 900 }); await tab(ctx.W, "WD1", 0); await tab(ctx.W, "X1", sp("X")); await tab(ctx.W, "X2", sp("X")); await focus(ctx.W);
+    // a tab that has not loaded is not recorded when its window closes
+    for (const l of ["WD1", "X1", "X2"]) await waitFor(() => h.ev(`chrome.tabs.get(${ctx.tabs[l]}).then((t) => t.title === ${J(l)} && t.status === "complete")`, ctx.H), 8000);
+    ctx.Wgone = ctx.W; await h.ev(`chrome.windows.remove(${ctx.W}).then(() => 1)`, ctx.H); delete ctx.W;
+    await sleep(2500); await focus(ctx.H);
+  },
+  ready: async () => !!(await waitFor(() => hasEl(ctx.H, "#vm-panel .vm-newtab-chev"), 8000)),
+  act: async () => {
+    if (!(await openDropdown(ctx.H))) return "no dropdown";
+    if (!(await openFly(ctx.H, "Recently Closed Windows"))) return "no flyout";
+    ctx.closedRows = await rowsOf(ctx.H, ".vm-menu-flyout > div");
+    if (!(await clickOn(ctx.H, `document.querySelector(".vm-menu-flyout .vm-menu-item")`))) return "no row";
+    await waitFor(() => h.ev(`chrome.windows.getAll({ windowTypes: ["normal"] }).then((w) => w.length > 1)`, ctx.H), 8000);
+    return "ok";
+  },
+  expect: (s) => {
+    const n = newWindow(s); const w = n && normal(s).find((x) => x.id === n);
+    const want = Number(/^(\d+) tabs?/.exec(ctx.closedRows?.[0] || "")?.[1]);
+    return [n == null ? "no restored window" : null, w && w.tabs.length !== want ? `the label said ${ctx.closedRows[0]}, the window has ${w.tabs.length} tabs` : null,
+      w && !w.tabs.some((t) => t.title === "WD1") ? "WD1 did not come back" : null, w && w.tabs.some((t) => t.ws) ? "the restored window holds a named-space tab" : null,
+      tabIs(s, "X1", { win: ctx.H, space: sp("X") }), tabIs(s, "X2", { win: ctx.H, space: sp("X") })];
+  },
+});
+// Mute All Tabs mutes every tab of this window (parked spaces too), the row then says Unmute All Tabs, which undoes it;
+// another window's tabs are not touched.
+ntCase("N.mute-all", {
+  setup: async () => { await SET_NT(); await mkWin("O", { width: 700 }); await tab(ctx.O, "Z1", sp("Z")); await focus(ctx.W); },
+  act: async () => {
+    const mutedOf = (label) => h.ev(`chrome.tabs.get(${ctx.tabs[label]}).then((t) => !!t.mutedInfo?.muted)`, ctx.H);
+    const first = (await openDropdown(ctx.W)) ? (await rowsOf(ctx.W, NT_MENU + " > div")).filter((x) => /mute/i.test(x))[0] : "no dropdown";
+    await clickOn(ctx.W, menuRow("Mute All Tabs")); await sleep(800);
+    const after = { X1: await mutedOf("X1"), X2: await mutedOf("X2"), Y1: await mutedOf("Y1"), Z1: await mutedOf("Z1") };
+    const reopened = await openDropdown(ctx.W);
+    const second = (await rowsOf(ctx.W, NT_MENU + " > div")).filter((x) => /mute/i.test(x))[0];
+    await clickOn(ctx.W, menuRow("Unmute All Tabs")); await sleep(800);
+    const undone = { X1: await mutedOf("X1"), X2: await mutedOf("X2"), Y1: await mutedOf("Y1"), Z1: await mutedOf("Z1") };
+    return { first, after, second, undone, reopened };
+  },
+  expect: (s, b, r) => [r.first === "Mute All Tabs" ? null : `first label ${r.first}`, r.after.X1 && r.after.X2 && r.after.Y1 ? null : `not all of W's tabs muted: ${J(r.after)}`, r.after.Z1 ? "another window's tab was muted" : null,
+    r.second === "Unmute All Tabs" ? null : `second label ${r.second} (dropdown reopened: ${r.reopened})`, Object.values(r.undone).some(Boolean) ? `Unmute left tabs muted: ${J(r.undone)}` : null, unchanged(b, s)],
+});
+// Close All Tabs asks first, saying how many (folders stay); Cancel closes nothing; confirming closes what Clear does.
+const SET_CLOSEALL = async () => {
+  await mkWin("W", { width: 900 });
+  for (const l of ["X1", "X2", "X3", "X4", "X5"]) await tab(ctx.W, l, sp("X"), { active: l === "X1" });
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
+  // a folder made as the sidebar makes one (Vivaldi ignores a `group` written to vivExtData)
+  const made = await h.ev(`vivaldi.tabsPrivate.move({ tabIds: [${ctx.tabs.X4}, ${ctx.tabs.X5}], target: ${ctx.tabs.X4}, tweaks: ["do-not-reparent", "create-new-group", "target-is-tab"], debug: "sbx" }).then((r) => r?.group || null, (e) => "err:" + e)`, ctx.W);
+  if (!made || String(made).startsWith("err:")) throw new Error("no folder: " + made);
+  await sleep(800); await focus(ctx.W);
+};
+const survivors = (s) => ["X1", "X2", "X3", "X4", "X5"].filter((l) => find(s, ctx.tabs[l])).join(",");
+ntCase("N.close-all-cancel", {
+  setup: SET_CLOSEALL,
+  act: async () => {
+    const r = await dropdownItem(ctx.W, "Close All Tabs"); if (r !== "ok") return { error: r };
+    await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
+    const ask = await rowsOf(ctx.W, NT_MENU + " > div");
+    await sleep(300); const before = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
+    await clickOn(ctx.W, menuRow("Cancel")); await sleep(800);
+    return { ask, before, after: await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H) };
+  },
+  expect: (s, b, r) => [r.ask?.[0] === "Close 3 tabs (folders stay)" ? null : `the question was ${J(r.ask)}`, r.before === r.after ? null : "Cancel closed tabs", unchanged(b, s)],
+});
+ntCase("N.close-all-confirm", {
+  setup: SET_CLOSEALL,
+  act: async () => {
+    const r = await dropdownItem(ctx.W, "Close All Tabs"); if (r !== "ok") return { error: r };
+    await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
+    const ask = await rowsOf(ctx.W, NT_MENU + " > div");
+    await sleep(300); const early = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
+    await clickOn(ctx.W, menuRow(ask[0])); await sleep(1500);
+    return { ask, early };
+  },
+  expect: (s, b, r) => [r.ask?.[0] === "Close 3 tabs (folders stay)" ? null : `the question was ${J(r.ask)}`, r.early === 5 + 1 ? null : `${r.early} tabs before confirming (6 incl. W's start tab)`,
+    survivors(s) === "X4,X5" ? null : `survivors ${survivors(s)}, want the folder's X4,X5`, inSpace(s, sp("X")).every((t) => t.win === ctx.W) ? null : "tabs moved window"],
+});
+// The same setup, closed with the existing Clear button: the same survivors (the reuse is the point).
+ntCase("N.clear-button-same-set", {
+  setup: SET_CLOSEALL,
+  act: async () => { await h.ev(`document.querySelector("#vm-panel .vm-clear").click()`, ctx.W); await sleep(1500); return "ok"; },
+  expect: (s) => [survivors(s) === "X4,X5" ? null : `Clear left ${survivors(s)}`],
+});
+// Empty and failing lists never throw into the UI: one disabled row says so.
+ntCase("N.flyout-empty-and-error", {
+  act: async () => {
+    await h.ev(`(() => { window.__realClosed = chrome.sessions.getRecentlyClosed; chrome.sessions.getRecentlyClosed = () => Promise.resolve([]); return 1; })()`, ctx.W);
+    let empty, failed;
+    try {
+      await openDropdown(ctx.W); await openFly(ctx.W, "Recently Closed"); empty = await rowsOf(ctx.W, ".vm-menu-flyout > div");
+      await hoverOn(ctx.W, menuRow("Recently Closed Windows")); await sleep(600); const emptyW = await rowsOf(ctx.W, ".vm-menu-flyout > div"); empty = [...empty, ...emptyW];
+      await escapeAll(ctx.W);
+      await h.ev(`(chrome.sessions.getRecentlyClosed = () => Promise.reject(new Error("boom")), 1)`, ctx.W);
+      await openDropdown(ctx.W); await openFly(ctx.W, "Recently Closed"); failed = await rowsOf(ctx.W, ".vm-menu-flyout > div");
+      await escapeAll(ctx.W);
+    } finally { await h.ev(`(chrome.sessions.getRecentlyClosed = window.__realClosed, 1)`, ctx.W); }
+    return { empty, failed };
+  },
+  expect: (s, b, r) => [J(r.empty) === J(["Nothing here (disabled)", "Nothing here (disabled)"]) ? null : `empty lists: ${J(r.empty)}`, J(r.failed) === J(["Could not load this (disabled)"]) ? null : `a failing list: ${J(r.failed)}`, unchanged(b, s)],
+});
+// The flyout flips to the other side when it would run off the window.
+ntCase("N.flyout-flips", {
+  act: async () => {
+    if (!(await openDropdown(ctx.W))) return { error: "no dropdown" };
+    await h.ev(`(() => { const m = document.querySelector(${J(NT_MENU)}); m.style.left = (innerWidth - m.getBoundingClientRect().width - 8) + "px"; return 1; })()`, ctx.W);
+    if (!(await openFly(ctx.W, "Open Tabs"))) return { error: "no flyout" };
+    const box = await h.ev(`(() => { const f = document.querySelector(".vm-menu-flyout").getBoundingClientRect(), m = document.querySelector(${J(NT_MENU)}).getBoundingClientRect(); return { fRight: f.right, fLeft: f.left, mLeft: m.left, vw: innerWidth }; })()`, ctx.W);
+    await escapeAll(ctx.W);
+    return box;
+  },
+  expect: (s, b, r) => [r.error ?? null, r.fRight <= r.vw ? null : `the flyout runs off the window: ${J(r)}`, r.fRight <= r.mLeft + 6 ? null : `it did not flip to the menu's left side: ${J(r)}`],
+});
+// Existing flat menus render exactly as before (golden: captured from the build before this task): a tab row's menu has
+// plain items, dividers and no rich/flyout markup, and the delete confirmation keeps its danger row.
+ntCase("N.flat-menus-unchanged", {
+  act: async () => {
+    const tabHtml = await h.ev(`(() => { const r = [...document.querySelectorAll(".vm-tab")].find((r) => r.textContent.includes("X2")); const b = r.getBoundingClientRect();
+      r.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 8 })); const m = document.querySelector(".vm-menu"); return m ? m.outerHTML.replace(/ style="[^"]*"/, "") : null; })()`, ctx.W);
+    await escapeAll(ctx.W); await sleep(200);
+    const del = await deleteLabel(ctx.W, "Y");
+    return { tabHtml, del };
+  },
+  expect: (s, b, r) => {
+    const g = (parts) => `<div class="vm-menu">${parts.map((p) => (p === "-" ? '<div class="vm-menu-sep"></div>' : `<div class="vm-menu-item">${p}</div>`)).join("")}</div>`;
+    const want = g(["Pin Tab", "Add to Favorites", "-", "Move to Vivarc", "Move to Y", "Move to Z", "-", "Duplicate Tab", "Copy Link", "-", "Close Tab", "Close Other Tabs"]);
+    return [r.tabHtml === want ? null : `the tab menu changed:\n        ${r.tabHtml}\n        want ${want}`, r.del?.label === "Delete “Y” and close its 1 tab" ? null : `the delete confirmation changed: ${J(r.del)}`, unchanged(b, s)];
+  },
+});
+
 // Part 3 decisions that are the same check as a row above.
 const ALIASES = { "P3.1": ["T.parked-other.click"], "P3.2": ["R.D8", "R.D2"] };
 

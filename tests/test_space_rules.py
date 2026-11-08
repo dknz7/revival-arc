@@ -890,5 +890,80 @@ class CrossWindowDrop(unittest.TestCase):
         self.assertEqual(json.loads(js("workspaces.tornData(tab)", tab=tab))["workspaceId"], 0)
 
 
+class NewTabMenu(unittest.TestCase):
+    """Task 8k: what the New Tab row's dropdown lists (pure helpers; the menu itself is checked live in the sandbox)."""
+    SPACES = [{"id": 10, "name": "Work"}, {"id": 20, "name": "Play"}]
+
+    def groups(self, tabs, here=1, spaces=None):
+        return js("workspaces.openTabGroups(tabs, spaces, here, 'Home')", tabs=tabs, spaces=self.SPACES if spaces is None else spaces, here=here)
+
+    @staticmethod
+    def tab(id, window, space=0, index=0, **over):
+        t = {"id": id, "windowId": window, "index": index, "title": f"t{id}", "url": f"https://e.test/{id}",
+             "vivExtData": json.dumps({"workspaceId": space} if space else {})}
+        t.update(over)
+        return t
+
+    def test_open_tabs_group_by_window_then_space_with_this_window_first(self):
+        tabs = [self.tab(1, 2), self.tab(2, 1, 20), self.tab(3, 1, 10), self.tab(4, 1, 0), self.tab(5, 2, 10)]
+        out = self.groups(tabs, here=2)
+        self.assertEqual([(g["heading"], [t["id"] for t in g["tabs"]]) for g in out], [
+            ("This window · Home", [1]), ("This window · Work", [5]),
+            ("Window 1 · Home", [4]), ("Window 1 · Work", [3]), ("Window 1 · Play", [2])])
+
+    def test_one_window_needs_no_window_name(self):
+        out = self.groups([self.tab(1, 1, 10), self.tab(2, 1, 0)])
+        self.assertEqual([g["heading"] for g in out], ["Home", "Work"])
+
+    def test_tabs_in_a_group_follow_the_window_order_and_empty_groups_are_left_out(self):
+        tabs = [self.tab(1, 1, 0, index=5), self.tab(2, 1, 0, index=2)]
+        out = self.groups(tabs)
+        self.assertEqual([t["id"] for t in out[0]["tabs"]], [2, 1])
+        self.assertEqual(len(out), 1)
+        self.assertEqual(self.groups([]), [])
+
+    def test_a_space_the_list_does_not_know_still_gets_a_heading(self):
+        out = self.groups([self.tab(1, 1, 99)])
+        self.assertEqual([g["heading"] for g in out], ["Space"])
+
+    def test_mute_all_says_unmute_only_when_every_tab_is_muted(self):
+        def mute(*flags):
+            return js("workspaces.muteAllLabel(tabs)", tabs=[{"mutedInfo": {"muted": f}} for f in flags])
+        self.assertEqual(mute(False, False), "Mute All Tabs")
+        self.assertEqual(mute(True, False), "Mute All Tabs")
+        self.assertEqual(mute(True, True), "Unmute All Tabs")
+        self.assertEqual(js("workspaces.muteAllLabel([{}, {mutedInfo: {muted: true}}])"), "Mute All Tabs")
+        self.assertEqual(js("workspaces.muteAllLabel([])"), "Mute All Tabs")
+
+    @staticmethod
+    def sessions():
+        def win(sid, *titles):
+            return {"window": {"sessionId": sid, "tabs": [{"title": t, "url": f"https://e.test/{t}"} for t in titles]}}
+
+        def tab(sid, title):
+            return {"tab": {"sessionId": sid, "title": title, "url": f"https://e.test/{sid}", "favIconUrl": "f"}}
+        return [tab("a", "A"), win("w1", "First", "Second"), tab("b", ""), win("w2", "Solo"), {"tab": {"title": "no id"}}, tab("c", "C")]
+
+    def test_recently_closed_tabs_are_the_tab_entries_newest_first_and_capped(self):
+        out = js("workspaces.closedTabs(s, 2)", s=self.sessions())
+        self.assertEqual([(t["sessionId"], t["title"]) for t in out], [("a", "A"), ("b", "https://e.test/b")])
+        self.assertEqual(len(js("workspaces.closedTabs(s)", s=self.sessions())), 3)  # the one with no session id is skipped
+
+    def test_recently_closed_windows_say_how_many_tabs_will_come_back_and_name_the_first(self):
+        out = js("workspaces.closedWindows(s)", s=self.sessions())
+        self.assertEqual([(w["sessionId"], w["label"]) for w in out], [("w1", "2 tabs — First"), ("w2", "1 tab — Solo")])
+
+    def test_a_long_first_title_is_cut_and_an_untitled_tab_falls_back_to_its_address(self):
+        long = js("workspaces.closedWindowLabel({tabs: [{title: 'x'.repeat(80)}]})")
+        self.assertTrue(long.startswith("1 tab — xxx") and long.endswith("…") and len(long) < 45, long)
+        self.assertEqual(js("workspaces.closedWindowLabel({tabs: [{title: '', url: 'https://e.test/p'}, {}]})"), "2 tabs — https://e.test/p")
+        self.assertEqual(js("workspaces.closedWindowLabel({tabs: []})"), "0 tabs")
+
+    def test_close_all_says_how_many_close_and_that_folders_stay(self):
+        self.assertEqual(js("workspaces.closeAllLabel(1, 0)"), "Close 1 tab")
+        self.assertEqual(js("workspaces.closeAllLabel(5, 0)"), "Close 5 tabs")
+        self.assertEqual(js("workspaces.closeAllLabel(5, 2)"), "Close 5 tabs (folders stay)")
+
+
 if __name__ == "__main__":
     unittest.main()

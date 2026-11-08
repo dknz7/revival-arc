@@ -382,6 +382,52 @@
   const moveTargets = (list, shownId) =>
     (list || []).filter((s) => s.id !== shownId).map((s) => ({ id: s.id, name: s.name }));
 
+  // The New Tab row's dropdown (Task 8k).
+  // "Open Tabs": the tabs grouped by window, then space. This window comes first, the others by id; within a window the
+  // default space leads, then the spaces in `list`'s order (a space the list does not know goes last, still shown), and
+  // within a group the tabs in window order. Headings are the space's name alone when there is one window, else
+  // "This window · Work" / "Window 2 · Work" (the number is the window's place among the windows listed, by id).
+  // -> [{ window, space, heading, tabs }]
+  const openTabGroups = (tabs, list, here, defaultName = "Home") => {
+    const all = tabs || [];
+    const windows = [...new Set(all.map((t) => t.windowId))].sort((a, b) => a - b);
+    const names = new Map([[0, defaultName], ...(list || []).map((s) => [s.id, s.name])]);
+    const order = [0, ...(list || []).map((s) => s.id)];
+    const place = (id) => (order.includes(id) ? order.indexOf(id) : order.length);
+    const out = [];
+    for (const window of [...windows.filter((w) => w === here), ...windows.filter((w) => w !== here)]) {
+      const mine = all.filter((t) => t.windowId === window);
+      const spaces = [...new Set(mine.map(of))].sort((a, b) => place(a) - place(b) || a - b);
+      for (const space of spaces) {
+        const name = names.get(space) ?? "Space";
+        const heading = windows.length === 1 ? name : `${window === here ? "This window" : `Window ${windows.indexOf(window) + 1}`} · ${name}`;
+        out.push({ window, space, heading, tabs: mine.filter((t) => of(t) === space).sort((a, b) => a.index - b.index) });
+      }
+    }
+    return out;
+  };
+  // "Mute All Tabs" flips to "Unmute All Tabs" once every listed tab is muted.
+  const muteAllLabel = (tabs) => ((tabs || []).length && tabs.every((t) => t.mutedInfo?.muted) ? "Unmute All Tabs" : "Mute All Tabs");
+  // chrome.sessions.getRecentlyClosed -> the entries the dropdown lists, newest first (the API's order), each with a
+  // sessionId (restorable). A closed tab shows its title, else its address.
+  const closedTabs = (sessions, max = 10) => (sessions || []).filter((s) => s.tab?.sessionId)
+    .map((s) => ({ sessionId: s.tab.sessionId, title: s.tab.title || s.tab.url || "Untitled", url: s.tab.url || "", favIconUrl: s.tab.favIconUrl || "" }))
+    .slice(0, max);
+  // "2 tabs — First title": the count is what the entry holds, which is what comes back (measured: Vivaldi has rehomed a
+  // closing window's named-space tabs by then, so an entry holds that window's default-space tabs only).
+  const closedWindowLabel = (entry, cut = 30) => {
+    const tabs = entry?.tabs || [];
+    const noun = `${tabs.length} tab${tabs.length === 1 ? "" : "s"}`;
+    const first = tabs[0] && (tabs[0].title || tabs[0].url);
+    if (!first) return noun;
+    return `${noun} — ${first.length > cut ? `${first.slice(0, cut - 1).trimEnd()}…` : first}`;
+  };
+  const closedWindows = (sessions, max = 10) => (sessions || []).filter((s) => s.window?.sessionId)
+    .map((s) => ({ sessionId: s.window.sessionId, count: (s.window.tabs || []).length, label: closedWindowLabel(s.window) }))
+    .slice(0, max);
+  // The confirmation for "Close All Tabs": the loose tabs that Clear closes; tab folders stay.
+  const closeAllLabel = (count, folders = 0) => `Close ${count} tab${count === 1 ? "" : "s"}${folders ? " (folders stay)" : ""}`;
+
   // Vivaldi's record of which space each window shows (its workspace store): activeIn(windowId) is that space's id, 0
   // for the default space (a window with no entry); all() maps each recorded space's id to the window showing it.
   // Null when the store is not found, and the caller decides what to fall back to.
@@ -448,5 +494,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, removalScope, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT };
 })();

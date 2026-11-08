@@ -283,7 +283,11 @@
     if (pick.kind === "focus") return native.focus(pick.window);
     if (pick.kind === "switch") await native.switchTo(pick.window, pick.space);
     await chrome.tabs.update(tab.id, { active: true });
+    // The sidebar's Open Tabs list can pick a tab of another window, which activating does not bring forward.
+    const here = (await chrome.windows.getCurrent().catch(() => null))?.id;
+    if (here != null && tab.windowId != null && here !== tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
   };
+  window.__vm.pickTab = pickTab; // shared with the sidebar's New Tab dropdown (Open Tabs, Recently Closed)
 
   const run = (row) => {
     if (!row || (row.type === "search" && !row.query)) return;

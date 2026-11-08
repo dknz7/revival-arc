@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- A dropdown on the **+ New Tab** row: hover it and a chevron shows at the right; the rest of the row still opens the command bar. The menu has Search Tabs, an Open Tabs list (every window, by space), Recently Closed tabs, Recently Closed Windows, Mute/Unmute All Tabs and Close All Tabs (asks first; the same tabs the Clear button closes). Lists open as side flyouts.
 - Fix: on a Mac, with the Dia layout and the sidebar hidden, the top row starts after the traffic lights instead of running under them, with the room Vivaldi itself leaves for them. The strip beside them still drags the window.
 - Dia layout: a **Translate** button left of Copy link, on pages that are not in English. It translates the page into English in place with Vivaldi's own translation, which the Dia layout otherwise hides with the address bar. Once the page is translated, the button says **Show original**.
 - Ctrl+shift+click a space tile (cmd+shift+click on a Mac) to move the space to a new window of its own, the reverse of shift+click's "bring it here".

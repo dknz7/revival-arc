@@ -200,13 +200,74 @@
 
   // ---- context menu ----
   let menu = null;
-  const closeMenu = () => { menu?.remove(); menu = null; };
+  // Side flyouts (Task 8k): panes opened beside a menu row, one at a time. They are siblings of the menu, not children:
+  // the glass look gives .vm-menu a backdrop-filter, which would make a position:fixed child position against the menu.
+  let flyouts = [];
+  let flyoutSeq = 0;
+  let flyoutTimer = 0;
+  const closeFlyouts = () => { flyoutSeq++; clearTimeout(flyoutTimer); for (const pane of flyouts.splice(0)) { pane.owner?.classList.remove("open"); pane.remove(); } };
+  const closeMenu = () => { closeFlyouts(); menu?.remove(); menu = null; };
+
+  // Menu items are [label, action, danger] (the original kind: [] is a divider), or an object for what the arrays cannot
+  // say: { label, action(event), danger, disabled, heading, icon (a node before the label), mark (the current one),
+  // flyout: async () => items, opened to the side on hover or click }. Only the arrays path existed before Task 8k and it
+  // builds exactly what it did.
+  const objectRow = (spec, inFlyout) => {
+    if (spec.heading) return el("div", "vm-menu-heading", spec.heading);
+    const item = el("div", `vm-menu-item rich${spec.danger ? " danger" : ""}${spec.disabled ? " disabled" : ""}${spec.flyout ? " has-flyout" : ""}${spec.mark ? " marked" : ""}`);
+    if (spec.icon) item.append(spec.icon);
+    item.append(el("span", "vm-menu-label", spec.label));
+    if (spec.disabled) item.setAttribute("aria-disabled", "true");
+    if (!inFlyout) {
+      // Moving onto a row of the menu: its own flyout opens, any other closes. A short wait when one is already open, so a
+      // pointer crossing a row on its way to the flyout does not swap it.
+      item.addEventListener("mouseenter", () => {
+        clearTimeout(flyoutTimer);
+        if (flyouts[0]?.owner === item) return;
+        flyoutTimer = setTimeout(() => { closeFlyouts(); if (spec.flyout && !spec.disabled) openFlyout(item, spec); }, flyouts.length ? 140 : 0);
+      });
+    }
+    if (spec.disabled) return item;
+    if (spec.flyout) {
+      item.addEventListener("click", () => { clearTimeout(flyoutTimer); if (flyouts[0]?.owner !== item) openFlyout(item, spec); });
+    } else {
+      item.addEventListener("click", (e) => { closeMenu(); try { Promise.resolve(spec.action?.(e)).catch((error) => console.warn("[vivarc] menu action:", error)); } catch (error) { console.warn("[vivarc] menu action:", error); } });
+    }
+    return item;
+  };
+  const openFlyout = async (item, spec) => {
+    closeFlyouts();
+    const mine = flyoutSeq;
+    let rows;
+    try { rows = await spec.flyout(); } catch (error) {
+      console.warn("[vivarc] menu flyout:", error);
+      rows = [{ label: "Could not load this", disabled: true }];
+    }
+    if (mine !== flyoutSeq || !menu || !item.isConnected) return;
+    const pane = el("div", "vm-menu vm-menu-flyout");
+    pane.owner = item;
+    for (const row of rows.length ? rows : [{ label: "Nothing here", disabled: true }]) {
+      pane.append(Array.isArray(row) ? el("div", "vm-menu-sep") : objectRow(row, true));
+    }
+    (document.querySelector("#browser") || document.body).append(pane);
+    flyouts.push(pane);
+    // Beside the menu, the other side if it would run off the window; down to fit, never above the window's top.
+    const at = menu.getBoundingClientRect();
+    const row = item.getBoundingClientRect();
+    const { width, height } = pane.getBoundingClientRect();
+    const right = at.right - 4;
+    pane.style.left = `${right + width > window.innerWidth - 8 ? Math.max(8, at.left - width + 4) : right}px`;
+    pane.style.top = `${Math.max(8, Math.min(row.top - 7, window.innerHeight - height - 8))}px`;
+    item.classList.add("open");
+  };
   const showMenu = (event, items) => {
     event.preventDefault();
     event.stopPropagation();
     closeMenu();
     menu = el("div", "vm-menu");
-    for (const [label, action, danger] of items) {
+    for (const entry of items) {
+      if (!Array.isArray(entry)) { menu.append(objectRow(entry, false)); continue; }
+      const [label, action, danger] = entry;
       if (!label) { menu.append(el("div", "vm-menu-sep")); continue; }
       const item = el("div", `vm-menu-item${danger ? " danger" : ""}`, label);
       item.addEventListener("click", () => { closeMenu(); action(); });
@@ -216,8 +277,14 @@
     const { width, height } = menu.getBoundingClientRect();
     menu.style.left = `${Math.min(event.clientX, window.innerWidth - width - 8)}px`;
     menu.style.top = `${Math.min(event.clientY, window.innerHeight - height - 8)}px`;
+    return menu;
   };
-  const outside = (e) => { if (menu && !menu.contains(e.target)) closeMenu(); };
+  // A press inside the menu or a flyout is not outside; nor is one on the New Tab dropdown's chevron, which toggles its menu.
+  const outside = (e) => {
+    if (!menu || menu.contains(e.target) || flyouts.some((pane) => pane.contains(e.target))) return;
+    if (e.target.closest?.(".vm-newtab-chev")) return;
+    closeMenu();
+  };
   document.addEventListener("mousedown", outside, true);
   document.addEventListener("focusin", outside, true);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeMenu(); });
@@ -1168,6 +1235,118 @@
     return bar;
   };
 
+  // ---- Clear, and Close All Tabs (the New Tab dropdown) ----
+  // What the sidebar lists in this space, and of it what Clear closes: the loose tabs only, a folder is a deliberate
+  // grouping. blank: the space's own blank tabs (not listed, not closed).
+  const clearSet = () => {
+    const taken = new Set([...state.bound.values()].map((t) => t.id));
+    const blank = state.tabs.filter((t) => isBlankUrl(t.url || ""));
+    const open = state.tabs.filter((t) => !isBlankUrl(t.url || "") && !taken.has(t.id));
+    const listed = stacksOf.entries(open);
+    return { blank, listed, loose: listed.filter((e) => e.type === "tab").map((e) => e.tab) };
+  };
+  const closeLoose = async (loose, blank) => {
+    if (!loose.length) return;
+    if (loose.length + blank.length === state.tabs.length) await chrome.tabs.create({});
+    chrome.tabs.remove(loose.map((t) => t.id));
+  };
+
+  // ---- the New Tab row's dropdown (Task 8k) ----
+  const say = (detail) => window.dispatchEvent(new CustomEvent("vm-toast", { detail }));
+  const tidy = (items) => items.filter((item, i, all) => !(Array.isArray(item) && !item.length && (!i || (Array.isArray(all[i - 1]) && !all[i - 1].length) || i === all.length - 1)));
+  // Task 8n fills these two. cleaned: the "Recently Cleaned ›" row (a flyout spec; shown disabled until then).
+  // cleanUp: () => the rows for Clean Up Tabs and ✓ Clean Up Daily (none until then; the dividers around an empty hook
+  // collapse, see tidy).
+  const newTabHooks = {
+    cleaned: () => ({ label: "Recently Cleaned", disabled: true, flyout: null }),
+    cleanUp: () => [],
+  };
+  // Shows a tab the way a command-bar pick does (workspaces.tabPick: its space first, so repair 2 never snaps it back;
+  // another window is focused), under the repair busy mark.
+  const showTab = async (tab) => {
+    const end = window.__vm.spaceRepair?.gesture() ?? null;
+    try {
+      if (window.__vm.pickTab) await window.__vm.pickTab(tab);
+      else await chrome.tabs.update(tab.id, { active: true });
+    } catch (error) {
+      console.warn("[vivarc] show tab:", error);
+      say("Could not open that tab");
+    } finally { end?.(); refresh(false); }
+  };
+  const restoreClosed = async (sessionId) => {
+    const end = window.__vm.spaceRepair?.gesture() ?? null;
+    try {
+      const restored = await chrome.sessions.restore(sessionId);
+      // A restored tab comes back in its old space, active in this window: shown like a pick, or it would be parked or
+      // gathered away. A restored window is its own, on its default space.
+      if (restored?.tab) await window.__vm.pickTab?.(await chrome.tabs.get(restored.tab.id));
+    } catch (error) {
+      console.warn("[vivarc] restore:", error);
+      say("Could not restore that");
+    } finally { end?.(); refresh(false); }
+  };
+  const tabRows = (entries, open) => entries.map((t) => ({ label: t.title || t.url, icon: iconEl(t.url, t.favIconUrl), mark: !!t.mark, action: () => open(t) }));
+  const closedSessions = async () => chrome.sessions.getRecentlyClosed({ maxResults: 25 });
+  const openTabsFlyout = async () => {
+    const here = myWindow();
+    const tabs = (await chrome.tabs.query({ windowType: "normal" })).filter((t) => !isBlankUrl(t.pendingUrl || t.url || ""));
+    const groups = spacesOf.openTabGroups(tabs, state.workspaces, here, state.defaultSpace ? spacesOf.label(state.defaultSpace) : "Home");
+    return groups.flatMap((g) => [{ heading: g.heading },
+      ...tabRows(g.tabs.map((t) => ({ ...t, mark: t.active && t.windowId === here })), showTab)]);
+  };
+  const confirmCloseAll = (event) => {
+    const { listed, loose } = clearSet();
+    const label = spacesOf.closeAllLabel(loose.length, listed.length - loose.length);
+    showMenu(event, [[label, async () => {
+      const now = clearSet(); // as Clear does, from what is listed now
+      try { await closeLoose(now.loose, now.blank); } catch (error) { console.warn("[vivarc] close all:", error); say("Could not close the tabs"); }
+    }, true], ["Cancel", () => {}]]);
+  };
+  const muteAll = async (tabs) => {
+    const muted = spacesOf.muteAllLabel(tabs) === "Mute All Tabs";
+    try { await Promise.all(tabs.filter((t) => !!t.mutedInfo?.muted !== muted).map((t) => chrome.tabs.update(t.id, { muted }))); }
+    catch (error) { console.warn("[vivarc] mute all:", error); say(`Could not ${muted ? "mute" : "unmute"} every tab`); }
+  };
+  // The dropdown's rows, top to bottom. `mine`: this window's tabs.
+  const newTabMenuItems = (mine) => tidy([
+    { label: "Search Tabs…", action: () => window.dispatchEvent(new CustomEvent("vm-open-command-bar")) },
+    { label: "Open Tabs", flyout: openTabsFlyout },
+    { label: "Recently Closed", flyout: async () => tabRows(spacesOf.closedTabs(await closedSessions()), (t) => restoreClosed(t.sessionId)) },
+    { label: "Recently Closed Windows", flyout: async () => spacesOf.closedWindows(await closedSessions()).map((w) => ({ label: w.label, action: () => restoreClosed(w.sessionId) })) },
+    newTabHooks.cleaned(),
+    [],
+    ...newTabHooks.cleanUp(),
+    [],
+    { label: spacesOf.muteAllLabel(mine), action: () => muteAll(mine) },
+    // Disabled when Clear would close nothing.
+    { label: "Close All Tabs", disabled: !clearSet().loose.length, action: confirmCloseAll },
+  ]);
+  const openNewTabMenu = async (anchor) => {
+    let mine = state.allTabs.filter((t) => t.windowId === myWindow());
+    try { mine = await chrome.tabs.query({ windowId: myWindow() }); } catch (_) {}
+    const at = anchor.getBoundingClientRect();
+    const made = showMenu({ clientX: at.left, clientY: at.bottom + 4, preventDefault() {}, stopPropagation() {} }, newTabMenuItems(mine));
+    made.dataset.owner = "newtab";
+    anchor.querySelector(".vm-newtab-chev")?.classList.add("open");
+  };
+  const CHEVRON_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
+  // The chevron at the right edge of the + New Tab row: appears on hover or focus; its click is its own, the rest of the
+  // row still opens the command bar. A second click closes the menu.
+  const newTabChevron = (row) => {
+    const chev = el("button", `vm-newtab-chev${menu?.dataset.owner === "newtab" ? " open" : ""}`);
+    chev.type = "button";
+    chev.title = "Tab menu";
+    chev.setAttribute("aria-label", "Tab menu");
+    chev.setAttribute("aria-haspopup", "menu");
+    chev.innerHTML = CHEVRON_SVG;
+    chev.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (menu?.dataset.owner === "newtab") { closeMenu(); chev.classList.remove("open"); return; }
+      openNewTabMenu(row).catch((error) => { console.warn("[vivarc] new tab menu:", error); say("Could not open the tab menu"); });
+    });
+    return chev;
+  };
+
   // ---- render ----
   const currentUrlField = () => {
     const active = state.allTabs.find((tab) => tab.active);
@@ -1218,26 +1397,17 @@
     }
     if (state.pinned) state.pinned.children.forEach((c) => body.append(pinnedNode(c, 0)));
 
-    const taken = new Set([...state.bound.values()].map((t) => t.id));
-    const blank = state.tabs.filter((t) => isBlankUrl(t.url || ""));
-    const open = state.tabs.filter((t) => !isBlankUrl(t.url || "") && !taken.has(t.id));
-    const listed = stacksOf.entries(open);
+    const { blank, listed, loose } = clearSet();
     shownStacks = listed.filter((e) => e.type === "stack").map((e) => e.id);
-    // Clear closes the loose tabs only: a folder is a deliberate grouping.
-    const loose = listed.filter((e) => e.type === "tab").map((e) => e.tab);
     const divider = el("div", "vm-divider");
     const clear = el("span", "vm-clear", "Clear");
-    clear.addEventListener("click", async () => {
-      if (!loose.length) return;
-      if (loose.length + blank.length === state.tabs.length) await chrome.tabs.create({});
-      chrome.tabs.remove(loose.map((t) => t.id));
-    });
+    clear.addEventListener("click", () => closeLoose(loose, blank));
     divider.append(clear);
     wireDrop(divider, { accept: isBookmark, onDrop: (_zone, data) => unpin(data) });
     body.append(divider);
     const fresh = el("div", "vm-row vm-newtab");
     fresh.style.paddingLeft = "8px";
-    fresh.append(el("span", "vm-plus", "+"), el("span", "vm-title", "New Tab"));
+    fresh.append(el("span", "vm-plus", "+"), el("span", "vm-title", "New Tab"), newTabChevron(fresh));
     fresh.addEventListener("click", () => window.dispatchEvent(new CustomEvent("vm-open-command-bar")));
     // The New Tab row is the top of the list (the highest index), so a tab from another window dropped here goes last in
     // the window: the way in when this space has no tab rows to drop on.
