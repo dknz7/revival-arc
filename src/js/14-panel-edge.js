@@ -10,8 +10,10 @@
 // Only moves over the window's bare background count (the gap right of the page: Vivaldi's 6 px border in a window
 // that is not maximised, the Dia page card's 8 px margin, and in the Arc layout maximised a 6 px gap vivarc.css makes for
 // it), never over the page, its scrollbar or a control, so nothing at that edge loses a click or a drag. Where nothing
-// stops the pointer, it still has to come to rest in that gap (or Vivaldi's own 4 px): a wider target than Vivaldi's alone,
-// not a catch for a pointer that flies straight past (that would also pop the panel on every move to the next monitor).
+// stops the pointer, it has to pause in that gap (DWELL, below; or Vivaldi's own 4 px): a wider target than Vivaldi's
+// alone, not a catch for a pointer that flies straight past, which would pop the panel on every move to the next monitor.
+// A pause is "no move out of the gap and no leaving the window" for DWELL ms; a move from the gap straight back onto the
+// page is not heard here (the page hears it), so a pointer that dips into the gap and back that fast still reveals.
 (() => {
   const REACH = 10; // Vivaldi's reach in a window that is not maximised
   const CORNER = 34; // Vivaldi's dead corners
@@ -39,7 +41,11 @@
     return BACKGROUND.has(key);
   };
 
-  window.__vm.panelEdge = { atEdge, step, wanted, REACH, CORNER, PAUSE };
+  // A pointer only passing through (a fling onto the next monitor) must not pop the panel: an arrival counts once the
+  // pointer has paused in the gap for DWELL ms, that is, no move out of the gap and no leaving the window in that time.
+  const DWELL = 80;
+
+  window.__vm.panelEdge = { atEdge, step, wanted, REACH, CORNER, PAUSE, DWELL };
   if (!window.__vm.onShortcut) return; // loaded for a test
 
   let warned = false;
@@ -48,31 +54,48 @@
     warned = true;
     console.warn("[vivarc] panel edge:", error);
   };
+  // Vivaldi's edge event on the background page (Vivaldi's listener lives there). Looked up at each use, so a background
+  // page not ready yet at start-up only delays this, and it is tried again at the next arrival.
   const edgeEvent = () => {
     try { return chrome.extension.getBackgroundPage?.()?.vivaldi?.windowPrivate?.onMouseCloseToEdge; } catch (_) { return null; }
   };
-  if (typeof edgeEvent()?.dispatch !== "function") {
-    warn("Vivaldi's edge event cannot be sent here; its own edge test is all there is");
-    return;
-  }
 
-  let memo = { inside: false, lastAt: 0 };
-  const onMove = (e) => {
-    const here = backgroundOf(e.target) &&
-      atEdge({ x: e.clientX, y: e.clientY, width: window.innerWidth, height: window.innerHeight, buttons: e.buttons });
-    const next = step(memo, here, Date.now());
-    memo = next.memo;
-    if (!next.arrived || !window.__vm.cssLoaded) return;
+  const reveal = () => {
+    if (!window.__vm.cssLoaded) return;
     const browser = document.querySelector("#browser");
     const wrapper = browser?.querySelector(":scope > .auto-hide-wrapper.right");
     const go = wanted({ wrapper: !!wrapper, holdsPanel: !!wrapper?.querySelector("#panels-container"),
       shown: !!wrapper?.classList.contains("show"), fullscreen: !!browser?.classList.contains("fullscreen") });
-    if (!go) return;
     const id = window.vivaldiWindowId;
-    if (typeof id !== "number") return;
-    try { edgeEvent().dispatch(id, { mousePosition: "right" }); } catch (error) { warn(error); }
+    if (!go || typeof id !== "number") return;
+    const event = edgeEvent();
+    if (typeof event?.dispatch !== "function") {
+      warn("Vivaldi's edge event cannot be sent (yet); its own edge test is all there is for now");
+      return;
+    }
+    try { event.dispatch(id, { mousePosition: "right" }); } catch (error) { warn(error); }
+  };
+
+  let memo = { inside: false, lastAt: 0 };
+  let dwell = null;
+  const cancel = () => { clearTimeout(dwell); dwell = null; };
+  const onMove = (e) => {
+    const here = atEdge({ x: e.clientX, y: e.clientY, width: window.innerWidth, height: window.innerHeight, buttons: e.buttons }) &&
+      backgroundOf(e.target);
+    const next = step(memo, here, Date.now());
+    memo = next.memo;
+    if (!here) cancel();
+    if (!next.arrived) return;
+    cancel();
+    dwell = setTimeout(() => { dwell = null; if (memo.inside) reveal(); }, DWELL);
   };
   document.addEventListener("mousemove", onMove, { capture: true, passive: true });
-  document.addEventListener("mouseleave", () => { memo = { ...memo, inside: false }; }, { capture: true, passive: true });
+  // The pointer left the window (not just one element inside it: those mouseleaves do not reach a listener on the document
+  // outside the capture phase, and are checked off anyway).
+  document.addEventListener("mouseleave", (e) => {
+    if (e.target !== document && e.target !== document.documentElement) return;
+    memo = { ...memo, inside: false };
+    cancel();
+  }, { passive: true });
   console.log("[vivarc] panel edge started");
 })();

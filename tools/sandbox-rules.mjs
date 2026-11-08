@@ -1954,8 +1954,8 @@ for (const layout of ["dia", "arc"]) {
   });
 }
 
-// Task 8m: Vivaldi's panel, on the right and auto-hidden, reveals from the window's right edge on every monitor
-// (14-panel-edge.js). Vivaldi's own edge test is native and never sees CDP's mouse; these cases see Vivarc's: a move onto
+// Task 8m: Vivaldi's panel, on the right and auto-hidden, reveals when the pointer pauses in the window's right-edge gap
+// (14-panel-edge.js), whichever monitor the window is on. Vivaldi's own edge test is native and never sees CDP's mouse; these cases see Vivarc's: a move onto
 // the right edge's background sends Vivaldi's edge event once and the panel comes; never over the page's scrollbar, a
 // dead corner or a control; nothing with the panel pinned or on the left. The sends are counted by a spy around the event's
 // dispatch on the background page (calls go through unchanged). Window positions on other monitors are in the task's probe
@@ -1979,7 +1979,7 @@ const peSetup = (maximized) => async () => {
   await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(origin + "/long-pe")}, active: true }).then(() => 1)`, ctx.H);
   if (maximized) await h.ev(`chrome.windows.update(${ctx.W}, { state: "maximized" }).then(() => 1)`, ctx.H);
   await sleep(1500);
-  await peHide(ctx.W); await sleep(700);
+  await peHide(ctx.W); await peHide(ctx.H); await sleep(700);
 };
 // Middle of the window, then onto the right edge (the last pixel column) at mid-height: polls for the panel.
 const peToEdge = async (y) => {
@@ -1997,18 +1997,50 @@ for (const layout of ["dia", "arc"]) {
       layout, setup: peSetup(maximized),
       act: async () => {
         await h.ev(PE_SPY, ctx.H);
+        const other0 = await peState(ctx.H);
         const r = await peToEdge();
         const sends = await peSends();
-        // along the edge: the same arrival, no second send
-        await peHide(ctx.W); await sleep(500);
+        // along the edge (within PAUSE of the arrival): the same arrival, no second send
+        await peHide(ctx.W); await sleep(300);
         await peMove(ctx.W, r.before.inner[0] - 2, r.before.inner[1] / 2 + 40); await peMove(ctx.W, r.before.inner[0] - 3, r.before.inner[1] / 2 + 80); await sleep(400);
-        return { ...r, sends, sendsAfterSlide: await peSends(), shownAfterSlide: (await peState(ctx.W)).shown };
+        const slide = { sendsAfterSlide: await peSends(), shownAfterSlide: (await peState(ctx.W)).shown };
+        // The other window (H) hears the same event on the shared background page: its panel must have stayed hidden.
+        const other = await peState(ctx.H);
+        // The check can see a reveal in H: the same event, naming H, does show H's panel.
+        await h.ev(`(chrome.extension.getBackgroundPage().vivaldi.windowPrivate.onMouseCloseToEdge.dispatch(${ctx.H}, { mousePosition: "right" }), 1)`, ctx.H);
+        await sleep(700);
+        const control = (await peState(ctx.H)).shown;
+        await peHide(ctx.H);
+        return { ...r, sends, other0, other, control, ...slide };
       },
       expect: (s, b, r) => [r.before.max === maximized ? null : `setup: window maximised ${r.before.max}`, r.before.shown ? "setup: the panel was already showing" : null,
         r.after.shown ? null : `the panel did not reveal (gap at the right ${r.before.gap}px)`, r.sends === 1 ? null : `sent the edge event ${r.sends} times, want 1`,
+        r.other0.wrapper && !r.other0.shown ? null : `setup: the other window's panel is not auto-hidden on the right (${J(r.other0)}), the check proves nothing`,
+        r.other.shown ? "the other window's panel revealed too" : null,
+        r.control ? null : "setup: the event naming the other window did not show its panel, so the check above cannot see a reveal there",
         r.sendsAfterSlide === 1 && !r.shownAfterSlide ? null : `sliding along the edge sent again (${r.sendsAfterSlide}) or revealed again`],
     });
   }
+  // A fling: one move sampled in the gap, then at once out of the window (onto the next monitor): no send, no panel.
+  // Then a pause in the gap: one send, the panel comes.
+  def(`PE.fling-no-reveal-pause-reveals-${layout}`, {
+    layout, setup: peSetup(true),
+    act: async () => {
+      await h.ev(PE_SPY, ctx.H);
+      const s = await peState(ctx.W);
+      const [W, H] = s.inner;
+      await peMove(ctx.W, W / 2, H / 2); await sleep(150);
+      await peMove(ctx.W, W - 1, H / 2); await peMove(ctx.W, W + 60, H / 2);
+      await sleep(600);
+      const fling = { sends: await peSends(), shown: (await peState(ctx.W)).shown };
+      await peMove(ctx.W, W / 2, H / 2); await sleep(1200); // back in, and past the pause that makes the next a new arrival
+      await peMove(ctx.W, W - 1, H / 2 + 20);
+      await sleep(600);
+      return { fling, pause: { sends: await peSends(), shown: (await peState(ctx.W)).shown } };
+    },
+    expect: (s, b, r) => [r.fling.sends === 0 && !r.fling.shown ? null : `a fling through the gap revealed the panel (${r.fling.sends} sends)`,
+      r.pause.sends === 1 && r.pause.shown ? null : `a pause in the gap: ${r.pause.sends} sends, shown ${r.pause.shown}`],
+  });
   def(`PE.scrollbar-still-drags-${layout}`, {
     layout, setup: peSetup(true),
     act: async () => {
