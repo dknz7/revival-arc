@@ -295,7 +295,7 @@ test('switching tab in this window closes an edit bar, keeping its page; a switc
 
 // The bar edits tab 10 (window 1, recorded on `shown`) and Enter picks its first row, tab 20. Vivaldi's record and switch
 // are faked; every switch, focus and activation lands in one log, in order.
-async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true } = {}) {
+async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true, minimised = null } = {}) {
   const space = await editUrl(tabs);
   const log = [];
   space.context.window.__vm.native = {
@@ -306,6 +306,11 @@ async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwit
   };
   const update = space.context.chrome.tabs.update;
   space.context.chrome.tabs.update = async (id, opts) => { log.push(['update', id, { ...opts }]); return update(id, opts); };
+  // minimised: the windows that are minimised; leave it null and chrome.windows has no get (the older tests' fake)
+  if (minimised) {
+    space.context.chrome.windows.get = async id => ({ id, state: minimised.includes(id) ? 'minimized' : 'normal' });
+    space.context.chrome.windows.update = async (id, opts) => { log.push(['window', id, { ...opts }]); };
+  }
   space.inputs[0].value = '';
   await space.inputs[0].events.input();
   await press(space.inputs[0], 'Enter');
@@ -322,6 +327,16 @@ test('a tab picked from the bar in the space on screen is just activated', async
 test("a tab picked from the bar whose space is shown in another window goes to that window, as a tile click does", async () => {
   const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { all: [[1, 1], [2, 2]] });
   assert.deepEqual(log, [['focus', 2]]);
+});
+test('a tab picked in another window that is minimised brings that window back to normal, then focuses it', async () => {
+  const focused = await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { all: [[1, 1], [2, 2]], minimised: [2] });
+  assert.deepEqual(focused.log, [['window', 2, { state: 'normal', focused: true }], ['focus', 2]], 'its space is shown there');
+  const activated = await pickTab({ 10: page(10, 1), 20: page(20, 0, 2) }, { all: [[1, 1]], minimised: [2] });
+  assert.deepEqual(activated.log, [['update', 20, { active: true }], ['window', 2, { state: 'normal', focused: true }]]);
+});
+test('a tab picked in another window that is not minimised is only focused', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 0, 2) }, { all: [[1, 1]], minimised: [] });
+  assert.deepEqual(log, [['update', 20, { active: true }], ['window', 2, { focused: true }]]);
 });
 test("without Vivaldi's record or switch a tab picked from the bar is activated as before", async () => {
   assert.deepEqual((await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { record: false })).log, [['update', 20, { active: true }]]);

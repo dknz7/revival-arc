@@ -280,12 +280,19 @@
     const record = native?.hasSwitch() ? native.record() : null;
     const pick = record && spaces ? spaces.tabPick(tab, record.activeIn(tab.windowId), record.all().get(spaces.of(tab)) ?? null)
       : { kind: "activate" };
-    if (pick.kind === "focus") return native.focus(pick.window);
+    // Focusing a minimised window leaves it in the taskbar: it is brought back to normal.
+    const minimised = async (id) => { try { return (await chrome.windows.get(id))?.state === "minimized"; } catch (_) { return false; } };
+    if (pick.kind === "focus") {
+      if (await minimised(pick.window)) await chrome.windows.update(pick.window, { state: "normal", focused: true });
+      return native.focus(pick.window);
+    }
     if (pick.kind === "switch") await native.switchTo(pick.window, pick.space);
     await chrome.tabs.update(tab.id, { active: true });
     // The sidebar's Open Tabs list can pick a tab of another window, which activating does not bring forward.
     const here = (await chrome.windows.getCurrent().catch(() => null))?.id;
-    if (here != null && tab.windowId != null && here !== tab.windowId) await chrome.windows.update(tab.windowId, { focused: true });
+    if (here != null && tab.windowId != null && here !== tab.windowId) {
+      await chrome.windows.update(tab.windowId, (await minimised(tab.windowId)) ? { state: "normal", focused: true } : { focused: true });
+    }
   };
   window.__vm.pickTab = pickTab; // shared with the sidebar's New Tab dropdown (Open Tabs, Recently Closed)
 

@@ -428,6 +428,52 @@
   // The confirmation for "Close All Tabs": the loose tabs that Clear closes; tab folders stay.
   const closeAllLabel = (count, folders = 0) => `Close ${count} tab${count === 1 ? "" : "s"}${folders ? " (folders stay)" : ""}`;
 
+  // ---- Clean Up (Task 8n) ----
+  // Tabs idle this long are cleaned; the store keeps what was cleaned this long, at most this many, and the daily clean
+  // is due once this long has passed.
+  const CLEAN_IDLE_MS = 7 * 24 * 3600 * 1000;
+  const CLEAN_KEEP_MS = 30 * 24 * 3600 * 1000;
+  const CLEAN_KEEP_MAX = 200;
+  const CLEAN_EVERY_MS = 24 * 3600 * 1000;
+
+  // Which tabs Clean Up closes -> their ids. tabs: every tab in every normal window; now: ms; idleMs: a tab is cleaned
+  // when it was last used MORE than this long ago (exactly this long ago is kept); space and window: the scope, each
+  // left out for "all" (the daily run leaves both out; the menu's passes this window and the space on screen, where the
+  // default space is 0). Never cleaned, whatever their age: pinned tabs, tabs bound to a Vivarc pin or favorite
+  // (vivarcPin in vivExtData), the tab on screen in ANY window (active), tabs playing sound (audible), and a tab whose
+  // last use is unknown. Tabs inside folders are cleaned like any other.
+  const cleanupSet = ({ tabs, now, space, window, idleMs = CLEAN_IDLE_MS } = {}) => {
+    if (!Array.isArray(tabs) || !Number.isFinite(now)) return [];
+    const bound = (t) => { try { return !!JSON.parse(t.vivExtData || "{}").vivarcPin; } catch (_) { return false; } };
+    return tabs.filter((t) => Number.isFinite(t.lastAccessed) && now - t.lastAccessed > idleMs
+      && !t.pinned && !t.active && !t.audible && !bound(t)
+      && (window == null || t.windowId === window) && (space == null || of(t) === space)).map((t) => t.id);
+  };
+  // What a cleaned tab is remembered by.
+  const cleanedEntry = (tab, now) => ({ url: tab.pendingUrl || tab.url || "", title: tab.title || "", favIconUrl: tab.favIconUrl || "", space: of(tab), cleanedAt: now });
+  // The Recently Cleaned list after `added` joins `list`: newest first, entries older than 30 days dropped, at most 200
+  // (the oldest go), an entry without an address dropped. Order among equal times is kept (added first).
+  const keepCleaned = (list, added, now) => [...(added || []), ...(list || [])]
+    .filter((e) => e && typeof e.url === "string" && e.url && Number.isFinite(e.cleanedAt) && now - e.cleanedAt <= CLEAN_KEEP_MS)
+    .map((e, i) => [e, i]).sort((a, b) => b[0].cleanedAt - a[0].cleanedAt || a[1] - b[1]).map(([e]) => e).slice(0, CLEAN_KEEP_MAX);
+  // Is the daily clean due? When it never ran (or the stored time is unreadable or in the future), or a day has passed.
+  const cleanupDue = (last, now, every = CLEAN_EVERY_MS) => !Number.isFinite(last) || !(last > 0) || last > now || now - last >= every;
+  // "today", "1 day ago", "5 days ago"
+  const cleanedAgo = (cleanedAt, now) => {
+    const days = Math.max(0, Math.floor((now - cleanedAt) / 86400000));
+    return days === 0 ? "today" : `${days} day${days === 1 ? "" : "s"} ago`;
+  };
+  // Where a cleaned tab comes back. spaces: the ids of the spaces that exist (null when the list can't be read: then the
+  // entry's space is trusted); shown: the space on screen in `here`; tabs: every normal window's tabs and record: Map
+  // spaceId -> windowId, for livesIn. -> { window, space }: its own space in the window it lives in (the default space:
+  // here), else, if the space no longer exists, the space on screen in `here`.
+  const cleanedHome = ({ entry, here, shown, spaces, tabs, record }) => {
+    const space = entry?.space || 0;
+    if (!space) return { window: here, space: 0 };
+    if (Array.isArray(spaces) && !spaces.includes(space)) return { window: here, space: shown || 0 };
+    return { window: livesIn(tabs, record, space) ?? here, space };
+  };
+
   // Vivaldi's record of which space each window shows (its workspace store): activeIn(windowId) is that space's id, 0
   // for the default space (a window with no entry); all() maps each recorded space's id to the window showing it.
   // Null when the store is not found, and the caller decides what to fall back to.
@@ -494,5 +540,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

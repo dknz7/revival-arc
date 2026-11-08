@@ -83,6 +83,9 @@ async function reset() {
   await sleep(500);
   s = await h.snap(H);
   if ((await h.ev(`vivaldi.prefs.get("vivaldi.tabs.visible").then((r) => r?.value ?? r)`, H)) === false) await h.ev(`vivaldi.prefs.set({ path: "vivaldi.tabs.visible", value: true }).then(() => 1)`, H);
+  // Task 8n: no test clock, the daily toggle off, nothing cleaned, no daily run recorded (per profile, shared by the windows)
+  await h.ev(`(async () => { const c = window.__vm.cleanup; if (c) c.test = null; if (window.__vm.settings.get("cleanupDaily")) window.__vm.settings.set("cleanupDaily", false);
+    await window.__vm.store.set("cleaned", []); await window.__vm.store.set("lastCleanup", 0); return 1; })()`, H).catch(() => {});
   ctx.roles = { H }; ctx.tabs = {}; ctx.spaces = {};
   for (const k of ["W", "O", "V", "N"]) delete ctx[k];
   await unbusy(true);
@@ -848,7 +851,7 @@ def("D.drag-across-same-window-unchanged", {
 const NT_MENU = ".vm-menu:not(.vm-menu-flyout)";
 const NT_ROW = `document.querySelector("#vm-panel .vm-newtab")`;
 const NT_CHEV = `document.querySelector("#vm-panel .vm-newtab-chev")`;
-const NT_LABELS = ["Search Tabs…", "Open Tabs", "Recently Closed", "Recently Closed Windows", "Recently Cleaned", "---", "Mute All Tabs", "Close All Tabs"];
+const NT_LABELS = ["Search Tabs…", "Open Tabs", "Recently Closed", "Recently Closed Windows", "Recently Cleaned", "---", "Clean Up Tabs", "Clean Up Daily", "---", "Mute All Tabs", "Close All Tabs"];
 const mouse = (win, type, x, y) => h.cdp(win).send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1 });
 const centre = (win, expr) => h.ev(`(() => { const e = ${expr}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const b = e.getBoundingClientRect(); return b.width && b.height ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null; })()`, win);
 const hoverOn = async (win, expr) => { const p = await waitFor(() => centre(win, expr), 6000); if (!p) return false; await mouse(win, "mouseMoved", p.x, p.y); return p; };
@@ -901,7 +904,7 @@ ntCase("N.chevron-and-menu", {
     const open = await waitFor(() => hasEl(ctx.W, NT_MENU), 4000);
     const labels = await rowsOf(ctx.W, NT_MENU + " > div");
     const bar = await hasEl(ctx.W, "#vm-cmd");
-    // Recently Cleaned is disabled: hovering it opens nothing (Task 8n fills it in).
+    // Recently Cleaned is disabled while nothing was cleaned: hovering it opens nothing.
     await hoverOn(ctx.W, menuRow("Recently Cleaned")); await sleep(500);
     const cleanedFly = await hasEl(ctx.W, ".vm-menu-flyout");
     // A second click on the chevron closes the menu.
@@ -1065,7 +1068,7 @@ ntCase("N.close-all-cancel", {
     await clickOn(ctx.W, menuRow("Cancel")); await sleep(800);
     return { ask, before, after: await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H) };
   },
-  expect: (s, b, r) => [r.ask?.[0] === "Close 3 tabs (folders stay)" ? null : `the question was ${J(r.ask)}`, r.before === r.after ? null : "Cancel closed tabs", unchanged(b, s)],
+  expect: (s, b, r) => [J(r.ask) === J(["Cancel", "Close 3 tabs (folders stay)"]) ? null : `the question was ${J(r.ask)} (Cancel first, then the question)`, r.before === r.after ? null : "Cancel closed tabs", unchanged(b, s)],
 });
 ntCase("N.close-all-confirm", {
   setup: SET_CLOSEALL,
@@ -1074,10 +1077,10 @@ ntCase("N.close-all-confirm", {
     await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
     const ask = await rowsOf(ctx.W, NT_MENU + " > div");
     await sleep(300); const early = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
-    await clickOn(ctx.W, menuRow(ask[0])); await sleep(1500);
+    await clickOn(ctx.W, menuRow(ask[1])); await sleep(1500);
     return { ask, early };
   },
-  expect: (s, b, r) => [r.ask?.[0] === "Close 3 tabs (folders stay)" ? null : `the question was ${J(r.ask)}`, r.early === 5 + 1 ? null : `${r.early} tabs before confirming (6 incl. W's start tab)`,
+  expect: (s, b, r) => [r.ask?.[1] === "Close 3 tabs (folders stay)" ? null : `the question was ${J(r.ask)}`, r.early === 5 + 1 ? null : `${r.early} tabs before confirming (6 incl. W's start tab)`,
     survivors(s) === "X4,X5" ? null : `survivors ${survivors(s)}, want the folder's X4,X5`, inSpace(s, sp("X")).every((t) => t.win === ctx.W) ? null : "tabs moved window"],
 });
 // The same setup, closed with the existing Clear button: the same survivors (the reuse is the point).
@@ -1130,6 +1133,347 @@ ntCase("N.flat-menus-unchanged", {
     const want = g(["Pin Tab", "Add to Favorites", "-", "Move to Vivarc", "Move to Y", "Move to Z", "-", "Duplicate Tab", "Copy Link", "-", "Close Tab", "Close Other Tabs"]);
     return [r.tabHtml === want ? null : `the tab menu changed:\n        ${r.tabHtml}\n        want ${want}`, r.del?.label === "Delete “Y” and close its 1 tab" ? null : `the delete confirmation changed: ${J(r.del)}`, unchanged(b, s)];
   },
+});
+
+// ---------- Task 8k follow-ups (8n): the dropdown's small fixes ----------
+// The confirm menu opens with the pointer on Cancel: a second click at the same spot (a double-click) cannot confirm.
+ntCase("N.close-all-doubleclick", {
+  setup: SET_CLOSEALL,
+  act: async () => {
+    if (!(await openDropdown(ctx.W))) return { error: "no dropdown" };
+    const p = await hoverOn(ctx.W, menuRow("Close All Tabs")); if (!p) return { error: "no Close All Tabs row" };
+    const count = () => h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
+    const before = await count();
+    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y); // the click that opens the question
+    await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
+    const under = await h.ev(`(() => { const e = document.elementFromPoint(${p.x}, ${p.y}); return e ? (e.textContent || e.className).slice(0, 40) : null; })()`, ctx.W);
+    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y); // ...and the second click of a double-click
+    await sleep(1200);
+    return { before, after: await count(), under };
+  },
+  expect: (s, b, r) => [r.before === r.after ? null : `a double-click closed tabs (${r.before} -> ${r.after}); the pointer was on ${J(r.under)}`, r.under?.startsWith("Close ") ? `the destructive row was under the pointer: ${J(r.under)}` : null, unchanged(b, s)],
+});
+// The chevron's highlight (.open) goes out however the menu closes: Escape, a click outside, picking a row.
+ntCase("N.chevron-open-clears", {
+  act: async () => {
+    const lit = () => hasEl(ctx.W, "#vm-panel .vm-newtab-chev.open");
+    const out = {};
+    await openDropdown(ctx.W); out.litOpen = await lit();
+    await escapeAll(ctx.W); await sleep(250); out.escape = await lit();
+    await openDropdown(ctx.W);
+    await mouse(ctx.W, "mousePressed", 700, 420); await mouse(ctx.W, "mouseReleased", 700, 420); await sleep(250); out.outside = await lit(); out.outsideMenu = await hasEl(ctx.W, ".vm-menu");
+    await openDropdown(ctx.W);
+    await clickOn(ctx.W, menuRow("Search Tabs…")); await sleep(300); out.pick = await lit();
+    await h.ev(`document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })) ?? 1`, ctx.W);
+    return out;
+  },
+  expect: (s, b, r) => [r.litOpen ? null : "the chevron did not light while the menu was open", r.escape ? "still lit after Escape" : null, r.outsideMenu ? "a click outside did not close the menu" : null,
+    r.outside ? "still lit after a click outside" : null, r.pick ? "still lit after picking a row" : null, unchanged(b, s)],
+});
+// Mute All Tabs: one tab that cannot be muted does not fail the rest, and the toast says how many failed.
+ntCase("N.mute-all-partial", {
+  act: async () => {
+    const mutedOf = (label) => h.ev(`chrome.tabs.get(${ctx.tabs[label]}).then((t) => !!t.mutedInfo?.muted)`, ctx.H);
+    const stub = (rule) => h.ev(`(() => { window.__realUpdate ||= chrome.tabs.update.bind(chrome.tabs); chrome.tabs.update = (id, props, ...rest) => (props && props.muted !== undefined && (${rule}) ? Promise.reject(new Error("cannot")) : window.__realUpdate(id, props, ...rest)); return 1; })()`, ctx.W);
+    const out = {};
+    try {
+      await stub(`id === ${ctx.tabs.X2}`);
+      await dropdownItem(ctx.W, "Mute All Tabs"); out.toast1 = await waitFor(() => toastNow(ctx.W), 5000, 100);
+      out.muted1 = { X1: await mutedOf("X1"), X2: await mutedOf("X2"), Y1: await mutedOf("Y1") };
+      await h.ev(`chrome.tabs.update = window.__realUpdate; 1`, ctx.W);
+      await h.ev(`(async () => { for (const t of await chrome.tabs.query({ windowId: ${ctx.W} })) await chrome.tabs.update(t.id, { muted: false }); return 1; })()`, ctx.W);
+      await sleep(2600); // the first toast goes
+      await stub("true");
+      await dropdownItem(ctx.W, "Mute All Tabs"); out.toast2 = await waitFor(() => toastNow(ctx.W), 5000, 100);
+    } finally { await h.ev(`(window.__realUpdate && (chrome.tabs.update = window.__realUpdate), 1)`, ctx.W); }
+    return out;
+  },
+  expect: (s, b, r) => [/^Could not mute 1 of \d+ tabs$/.test(r.toast1 || "") ? null : `partial failure toast ${J(r.toast1)}`, r.muted1?.X1 && r.muted1?.Y1 ? null : `the other tabs were not muted: ${J(r.muted1)}`, r.muted1?.X2 ? "X2 should not have muted" : null,
+    r.toast2 === "Could not mute any tab" ? null : `total failure toast ${J(r.toast2)}`, unchanged(b, s)],
+});
+// Picking a tab in a minimised window brings the window back (not just focus).
+ntCase("N.open-tabs-pick-minimised", {
+  setup: async () => { await SET_NT(); await mkWin("O", { width: 700 }); await tab(ctx.O, "Z1", sp("Z"), { active: true }); await tab(ctx.O, "Z2", sp("Z")); await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1); await focus(ctx.W);
+    await h.ev(`chrome.windows.update(${ctx.O}, { state: "minimized" }).then(() => 1)`, ctx.H); await sleep(800); },
+  act: async () => {
+    const before = await h.ev(`chrome.windows.get(${ctx.O}).then((w) => w.state)`, ctx.H);
+    const r = await pickFrom(ctx.W, "Open Tabs", "Z2"); if (r !== "ok") return r;
+    await sleep(1200);
+    return { before, state: await h.ev(`chrome.windows.get(${ctx.O}).then((w) => w.state)`, ctx.H) };
+  },
+  expect: (s, b, r) => [r.before === "minimized" ? null : `the setup did not minimise O (${r.before})`, r.state === "normal" ? null : `O is ${r.state}, want normal`, tabIs(s, "Z2", { win: ctx.O, space: sp("Z"), active: true }), focusIs(s, ctx.O)],
+});
+
+// ---------- Task 8n: Clean Up Tabs, Clean Up Daily, Recently Cleaned ----------
+// Vivaldi's lastAccessed cannot be backdated, so these use the cleanup module's test hook, window.__vm.cleanup.test (null
+// unless set here): { idleMs, now }. "Old" tabs are made, 3 s pass, "fresh" ones are made, and the clock is frozen at that
+// moment with an idle limit of 2.5 s: the old tabs are idle, the fresh ones are not. What the hook does NOT replace: the menu,
+// the toast, Undo, the flyout, the real store, the real chrome.tabs.remove / create, the leader check, the settings toggle.
+const IDLE = 2500;
+const freeze = async (win, at, idle = IDLE) => { await h.ev(`(window.__vm.cleanup.test = { idleMs: ${idle}, now: () => ${at} }, 1)`, win); return at; };
+const toastNow = (win) => h.ev(`document.querySelector("#vm-copied")?.textContent || null`, win);
+const cleanedList = (win) => h.ev(`window.__vm.cleanup.list().then((l) => l.map((e) => ({ title: e.title, space: e.space, at: e.cleanedAt, url: e.url })))`, win);
+const titles = (s, title) => normal(s).flatMap((w) => w.tabs.filter((t) => t.title === title).map((t) => ({ ...t, win: w.id, space: t.ws ?? 0 })));
+const loaded = (labels) => waitFor(() => h.ev(`Promise.all(${J(labels.map((l) => ctx.tabs[l]))}.map((id) => chrome.tabs.get(id))).then((ts) => ts.every((t) => t.status === "complete"))`, ctx.H), 10000);
+// W (900 wide) shows X: X1 active, X2 X3 idle, Xp pinned, Xb a favorite's tab (vivarcPin), X4 fresh; Y1 idle in the parked space Y; D1 idle in
+// the default space. O shows Z: Z1 active, Z2 idle. age: false skips the wait, so nothing is idle.
+const SET_CU = async ({ age = true } = {}) => {
+  await mkWin("W", { width: 900 });
+  await tab(ctx.W, "X1", sp("X"), { active: true }); for (const l of ["X2", "X3", "Xp"]) await tab(ctx.W, l, sp("X"));
+  await tab(ctx.W, "Y1", sp("Y")); await tab(ctx.W, "D1", 0);
+  await mkWin("O", { width: 700 }); await tab(ctx.O, "Z1", sp("Z"), { active: true }); await tab(ctx.O, "Z2", sp("Z"));
+  await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
+  await h.ev(`chrome.tabs.update(${ctx.tabs.Xp}, { pinned: true }).then(() => 1)`, ctx.H);
+  // Xb: a real favorite opened from the sidebar, so its tab carries vivarcPin (a hand-written one is stripped by the pins module)
+  const xbUrl = `${origin}/xb-${Date.now()}`;
+  await bookmark(await favoritesFolder(), "Xb", xbUrl);
+  if (!(await clickFav(ctx.W, "Xb"))) throw new Error("the favorite Xb is not in W sidebar");
+  const xb = await waitFor(async () => tabsFor(await h.snap(ctx.H), xbUrl)[0], 8000);
+  if (!xb) throw new Error("opening the favorite made no tab");
+  ctx.tabs.Xb = xb.id; await sleep(800); await activate(ctx.tabs.X1);
+  await loaded(["X1", "X2", "X3", "Xp", "Xb", "Y1", "D1", "Z1", "Z2"]);
+  await focus(ctx.W);
+  if (age) await sleep(3200);
+  await tab(ctx.W, "X4", sp("X")); await loaded(["X4"]);
+  ctx.frozen = Date.now();
+  for (const w of [ctx.H, ctx.W, ctx.O]) await freeze(w, ctx.frozen, age ? IDLE : 600000);
+  await focus(ctx.W);
+};
+const cuCase = (id, c) => ntCase(id, { setup: SET_CU, ...c });
+const gone = (s, ...labels) => labels.map((l) => (find(s, ctx.tabs[l]) ? `${l} was not cleaned` : null));
+const kept = (s, ...labels) => labels.map((l) => (find(s, ctx.tabs[l]) ? null : `${l} was cleaned`));
+const cleanUpFromMenu = async () => { const r = await dropdownItem(ctx.W, "Clean Up Tabs"); return r; };
+
+// The dropdown has the two rows, the toggle is off by default, a click turns it on (saved per profile, ✓ shown), another turns it off,
+// and the setting is in Vivarc Settings too.
+cuCase("CU.menu-rows-and-toggle", {
+  act: async () => {
+    const out = {};
+    const checkState = () => h.ev(`(() => { const r = [...document.querySelectorAll(${J(NT_MENU + " .vm-menu-item")})].find((n) => n.textContent.includes("Clean Up Daily")); return r ? { check: r.querySelector(".vm-menu-check")?.textContent ?? null, aria: r.getAttribute("aria-checked"), role: r.getAttribute("role") } : null; })()`, ctx.W);
+    const others = () => h.ev(`[...document.querySelectorAll(${J(NT_MENU + " .vm-menu-item")})].filter((n) => !n.textContent.includes("Clean Up Daily") && n.querySelector(".vm-menu-check")).length`, ctx.W);
+    if (!(await openDropdown(ctx.W))) return { error: "no dropdown" };
+    out.labels = await rowsOf(ctx.W, NT_MENU + " > div"); out.off = await checkState(); out.others = await others(); out.defaultSaved = await h.ev(`window.__vm.settings.get("cleanupDaily")`, ctx.W);
+    await clickOn(ctx.W, menuRow("Clean Up Daily")); await sleep(500);
+    out.menuClosed = !(await hasEl(ctx.W, ".vm-menu"));
+    out.on = await h.ev(`window.__vm.settings.get("cleanupDaily")`, ctx.W);
+    out.stored = await h.ev(`window.__vm.store.get("settings", {}).then((s) => s.cleanupDaily)`, ctx.W);
+    out.otherWindow = await waitFor(() => h.ev(`window.__vm.settings.get("cleanupDaily")`, ctx.O), 3000, 100);
+    await openDropdown(ctx.W); out.checked = await checkState();
+    await escapeAll(ctx.W); await sleep(200);
+    await h.ev(`window.dispatchEvent(new CustomEvent("vm-open-settings")), 1`, ctx.W); await sleep(400);
+    out.settingsRow = await h.ev(`[...document.querySelectorAll(".vm-set-row")].map((r) => r.querySelector(".vm-set-label")?.textContent).find((t) => /Clean up tabs daily/.test(t || "")) ?? null`, ctx.W);
+    out.settingsOn = await h.ev(`(() => { const r = [...document.querySelectorAll(".vm-set-row")].find((r) => /Clean up tabs daily/.test(r.textContent)); return r?.querySelector("input")?.checked ?? null; })()`, ctx.W);
+    await h.ev(`window.dispatchEvent(new CustomEvent("vm-open-settings")), 1`, ctx.W); await sleep(300);
+    await openDropdown(ctx.W); await clickOn(ctx.W, menuRow("Clean Up Daily")); await sleep(500);
+    out.backOff = await h.ev(`window.__vm.settings.get("cleanupDaily")`, ctx.W);
+    return out;
+  },
+  expect: (s, b, r) => [J(r.labels?.map((l) => l.replace(" (disabled)", ""))) === J(NT_LABELS) ? null : `menu rows ${J(r.labels)}`, r.off?.check === "" && r.off?.aria === "false" && r.off?.role === "menuitemcheckbox" ? null : `off state ${J(r.off)}`,
+    r.others === 0 ? null : `${r.others} other rows got a check slot`, r.defaultSaved === false ? null : "the toggle is not off by default", r.menuClosed ? null : "the menu stayed open", r.on === true && r.stored === true ? null : `on ${r.on}, stored ${r.stored}`,
+    r.otherWindow === true ? null : "the other window did not hear the setting", r.checked?.check === "✓" && r.checked?.aria === "true" ? null : `on state ${J(r.checked)}`,
+    r.settingsRow === "Clean up tabs daily (idle 7 days)" && r.settingsOn === true ? null : `Vivarc Settings: ${J(r.settingsRow)} ${r.settingsOn}`, r.backOff === false ? null : "a second click did not turn it off", unchanged(b, s)],
+});
+// Clean Up Tabs: this window's space on screen only; idle tabs go, and the never-cleaned ones stay (active, pinned, bound, fresh, other spaces/windows).
+cuCase("CU.clean-space", {
+  act: async () => {
+    const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r };
+    const toast = await waitFor(() => toastNow(ctx.W), 6000, 100);
+    const undo = await hasEl(ctx.W, "#vm-copied .vm-toast-action");
+    await sleep(800);
+    return { toast, undo, list: await cleanedList(ctx.W) };
+  },
+  expect: (s, b, r) => [...gone(s, "X2", "X3"), ...kept(s, "X1", "Xp", "Xb", "X4", "Y1", "D1", "Z1", "Z2"), tabIs(s, "X1", { win: ctx.W, active: true }), r.toast === "Cleaned 2 tabsUndo" || r.toast === "Cleaned 2 tabs" || /^Cleaned 2 tabs/.test(r.toast || "") ? null : `toast ${J(r.toast)}`,
+    r.undo ? null : "the toast has no Undo button", J(r.list.map((e) => e.title).sort()) === J(["X2", "X3"]) ? null : `Recently Cleaned holds ${J(r.list.map((e) => e.title))}`,
+    r.list.every((e) => e.space === sp("X") && e.at === ctx.frozen && e.url.startsWith("data:")) ? null : `entries ${J(r.list)}`, recIs(s, ctx.W, sp("X")), recIs(s, ctx.O, sp("Z"))],
+});
+// Undo reopens exactly those tabs, in their space, off the list; the tab on screen is still X1.
+cuCase("CU.undo", {
+  act: async () => {
+    const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r };
+    if (!(await waitFor(() => h.ev(`!!document.querySelector("#vm-copied .vm-toast-action")`, ctx.W), 6000, 100))) return { error: "no Undo button" };
+    const mid = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.filter((x) => x.title === "X2" || x.title === "X3").length)`, ctx.H);
+    await h.ev(`document.querySelector("#vm-copied .vm-toast-action").click()`, ctx.W);
+    await waitFor(() => h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.filter((x) => x.title === "X2" || x.title === "X3").length === 2)`, ctx.H), 8000, 200);
+    await sleep(1200);
+    return { mid, list: await cleanedList(ctx.W), toast: await toastNow(ctx.W) };
+  },
+  expect: (s, b, r) => { const x2 = titles(s, "X2"), x3 = titles(s, "X3"); return [r.mid === 0 ? null : `${r.mid} of X2/X3 still open before Undo`,
+    x2.length === 1 && x3.length === 1 ? null : `X2 x${x2.length}, X3 x${x3.length} after Undo`, x2[0] && (x2[0].win !== ctx.W || x2[0].space !== sp("X")) ? `X2 in ${roleOf(x2[0].win)}/${spaceName(x2[0].space)}` : null,
+    x3[0] && (x3[0].win !== ctx.W || x3[0].space !== sp("X")) ? `X3 in ${roleOf(x3[0].win)}/${spaceName(x3[0].space)}` : null, r.list.length === 0 ? null : `still listed: ${J(r.list)}`,
+    tabIs(s, "X1", { win: ctx.W, active: true }), recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X"))]; },
+});
+// Nothing idle: a toast says so and nothing changes.
+cuCase("CU.nothing-to-clean", {
+  setup: () => SET_CU({ age: false }),
+  act: async () => {
+    const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r };
+    const toast = await waitFor(() => toastNow(ctx.W), 5000, 100);
+    return { toast, list: await cleanedList(ctx.W) };
+  },
+  expect: (s, b, r) => [r.toast === "Nothing to clean" ? null : `toast ${J(r.toast)}`, r.list.length === 0 ? null : `the list has ${J(r.list)}`, unchanged(b, s)],
+});
+// The list is written BEFORE the tabs close, and the repair busy mark stands while they do.
+cuCase("CU.store-before-close", {
+  act: async () => {
+    await h.ev(`(() => { window.__realRemove = chrome.tabs.remove.bind(chrome.tabs); chrome.tabs.remove = async (ids) => {
+      window.__seen = { ids: [].concat(ids), listed: (await window.__vm.store.get("cleaned", [])).map((e) => e.title), busyMs: (Number(chrome.extension.getBackgroundPage().__vivarcSpaceGesture) || 0) - Date.now() };
+      return window.__realRemove(ids); }; return 1; })()`, ctx.W);
+    let seen;
+    try { const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r }; await waitFor(() => toastNow(ctx.W), 6000, 100); await sleep(500); seen = await h.ev(`window.__seen`, ctx.W); }
+    finally { await h.ev(`(window.__realRemove && (chrome.tabs.remove = window.__realRemove), 1)`, ctx.W); }
+    return { seen, ids: [ctx.tabs.X2, ctx.tabs.X3] };
+  },
+  expect: (s, b, r) => [r.seen ? null : "chrome.tabs.remove never ran", J([...(r.seen?.ids || [])].sort()) === J([...r.ids].sort()) ? null : `closed ${J(r.seen?.ids)}`, J([...(r.seen?.listed || [])].sort()) === J(["X2", "X3"]) ? null : `the list at the moment of closing: ${J(r.seen?.listed)}`,
+    r.seen?.busyMs > 0 ? null : `no repair busy mark while closing (${r.seen?.busyMs})`, ...gone(s, "X2", "X3")],
+});
+// Closing fails: the tabs stay, the list does not claim them, the toast says so.
+cuCase("CU.close-fails", {
+  act: async () => {
+    await h.ev(`(() => { window.__realRemove = chrome.tabs.remove.bind(chrome.tabs); chrome.tabs.remove = () => Promise.reject(new Error("no")); return 1; })()`, ctx.W);
+    try { const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r }; const toast = await waitFor(() => toastNow(ctx.W), 6000, 100); await sleep(500); return { toast, list: await cleanedList(ctx.W) }; }
+    finally { await h.ev(`(window.__realRemove && (chrome.tabs.remove = window.__realRemove), 1)`, ctx.W); }
+  },
+  expect: (s, b, r) => [r.toast === "Could not clean up the tabs" ? null : `toast ${J(r.toast)}`, r.list.length === 0 ? null : `the list claims ${J(r.list.map((e) => e.title))}`, unchanged(b, s)],
+});
+// The store keeps 30 days and 200 entries, newest first.
+cuCase("CU.store-pruned", {
+  act: async () => {
+    await h.ev(`(async () => { const f = ${ctx.frozen}, D = 86400000; const seed = Array.from({ length: 199 }, (_, i) => ({ url: "https://e.test/s" + i, title: "s" + i, favIconUrl: "", space: 0, cleanedAt: f - (i + 1) * 60000 }));
+      seed.push({ url: "https://e.test/d29", title: "d29", favIconUrl: "", space: 0, cleanedAt: f - 29 * D }, { url: "https://e.test/d31", title: "d31", favIconUrl: "", space: 0, cleanedAt: f - 31 * D });
+      await window.__vm.store.set("cleaned", seed); return 1; })()`, ctx.W);
+    const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r };
+    await waitFor(() => toastNow(ctx.W), 6000, 100); await sleep(500);
+    return { list: await cleanedList(ctx.W) };
+  },
+  expect: (s, b, r) => { const t = r.list.map((e) => e.title); return [r.list.length === 200 ? null : `kept ${r.list.length}, want 200`, J(t.slice(0, 2).sort()) === J(["X2", "X3"]) ? null : `newest first? ${J(t.slice(0, 3))}`,
+    t.includes("d31") ? "the 31-day-old entry was kept" : null, t.includes("d29") ? "the 29-day-old entry should have been the one to drop for the 200 cap" : null,
+    r.list.every((e, i, a) => !i || a[i - 1].at >= e.at) ? null : "not newest first"]; },
+});
+// Open the Recently Cleaned flyout after the menu cleaned this window's space: rows with favicon, title, age; a click reopens in its space and shows it.
+cuCase("CU.flyout-restore", {
+  act: async () => {
+    const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r };
+    await waitFor(() => toastNow(ctx.W), 6000, 100); await sleep(900);
+    if (!(await openDropdown(ctx.W))) return { error: "no dropdown" };
+    if (!(await openFly(ctx.W, "Recently Cleaned"))) return { error: "no flyout" };
+    const rows = await rowsOf(ctx.W, ".vm-menu-flyout > div");
+    const notes = await h.ev(`[...document.querySelectorAll(".vm-menu-flyout .vm-menu-note")].map((n) => n.textContent)`, ctx.W);
+    const icons = await h.ev(`document.querySelectorAll(".vm-menu-flyout .vm-ico").length`, ctx.W);
+    if (!(await clickOn(ctx.W, flyRow("X2")))) return { error: `no X2 row: ${J(rows)}` };
+    await waitFor(() => h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.some((x) => x.title === "X2"))`, ctx.H), 8000, 200);
+    await sleep(1500);
+    return { rows, notes, icons, list: await cleanedList(ctx.W), menuGone: !(await hasEl(ctx.W, ".vm-menu")) };
+  },
+  expect: (s, b, r) => { const x2 = titles(s, "X2"); return [J(r.rows) === J(["X3", "X2", "---", "Clear list"]) && J(r.notes) === J(["today", "today"]) ? null : `flyout ${J(r.rows)} notes ${J(r.notes)}`, r.icons === 2 ? null : `${r.icons} favicons`,
+    x2.length === 1 ? null : `X2 x${x2.length}`, x2[0] && (x2[0].win !== ctx.W || x2[0].space !== sp("X")) ? `X2 in ${roleOf(x2[0].win)}/${spaceName(x2[0].space)}` : null, x2[0] && !x2[0].active ? "the reopened tab is not shown" : null,
+    J(r.list.map((e) => e.title)) === J(["X3"]) ? null : `list after: ${J(r.list.map((e) => e.title))}`, r.menuGone ? null : "the menu stayed open", recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X"))]; },
+});
+// A tab of a space that lives in another window comes back in THAT window, shown the way a pick shows it.
+cuCase("CU.flyout-restore-other-window", {
+  act: async () => {
+    await h.ev(`window.__vm.cleanup.run({ win: ${ctx.O}, space: ${sp("Z")} }).then((r) => r.count)`, ctx.W);
+    await sleep(900);
+    return pickFrom(ctx.W, "Recently Cleaned", "Z2");
+  },
+  expect: async (s) => { await sleep(1500); const z = titles(s, "Z2"); return [z.length === 1 ? null : `Z2 x${z.length}`, z[0] && (z[0].win !== ctx.O || z[0].space !== sp("Z")) ? `Z2 in ${roleOf(z[0].win)}/${spaceName(z[0].space)}` : null,
+    z[0] && !z[0].active ? "Z2 is not shown" : null, recIs(s, ctx.O, sp("Z")), recIs(s, ctx.W, sp("X")), focusIs(s, ctx.O)]; },
+});
+// The space was deleted since: the tab comes back in the space on screen in this window.
+cuCase("CU.flyout-restore-deleted-space", {
+  act: async () => {
+    await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("Y")} }).then((r) => r.count)`, ctx.W);
+    await sleep(600);
+    await h.ev(`window.__sbx.mgr.removeWorkspace(${ctx.W}, ${sp("Y")}).then(() => 1, () => 0)`, ctx.W); await sleep(1500);
+    return pickFrom(ctx.W, "Recently Cleaned", "Y1");
+  },
+  expect: (s) => { const y = titles(s, "Y1"); return [y.length === 1 ? null : `Y1 x${y.length}`, y[0] && (y[0].win !== ctx.W || y[0].space !== sp("X")) ? `Y1 in ${roleOf(y[0].win)}/${spaceName(y[0].space)}, want W/X (the space on screen)` : null,
+    y[0] && !y[0].active ? "Y1 is not shown" : null, recIs(s, ctx.W, sp("X"))]; },
+});
+// A default-space tab comes back in the default space even while the window shows a named one.
+cuCase("CU.flyout-restore-default-space", {
+  act: async () => {
+    await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: 0 }).then((r) => r.count)`, ctx.W);
+    await sleep(900);
+    return pickFrom(ctx.W, "Recently Cleaned", "D1");
+  },
+  expect: (s) => { const d = titles(s, "D1"); return [d.length === 1 ? null : `D1 x${d.length}`, d[0] && (d[0].win !== ctx.W || d[0].space !== 0) ? `D1 in ${roleOf(d[0].win)}/${spaceName(d[0].space)}` : null,
+    d[0] && !d[0].active ? "D1 is not shown" : null, recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0)]; },
+});
+// Clear list asks first with Cancel under the pointer; a second click at that spot does not confirm; confirming empties the list and the row goes disabled.
+cuCase("CU.clear-list", {
+  act: async () => {
+    await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => r.count)`, ctx.W);
+    await sleep(900);
+    const out = {};
+    if (!(await openDropdown(ctx.W)) || !(await openFly(ctx.W, "Recently Cleaned"))) return { error: "no flyout" };
+    const p = await hoverOn(ctx.W, flyRow("Clear list"));
+    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y);
+    await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
+    out.ask = await rowsOf(ctx.W, NT_MENU + " > div");
+    out.under = await h.ev(`(() => { const e = document.elementFromPoint(${p.x}, ${p.y}); return e ? (e.textContent || e.className).slice(0, 40) : null; })()`, ctx.W);
+    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y); await sleep(600); // the second click of a double-click
+    out.afterDouble = (await cleanedList(ctx.W)).length;
+    if (!(await hasEl(ctx.W, ".vm-menu"))) { await openDropdown(ctx.W); await openFly(ctx.W, "Recently Cleaned"); await clickOn(ctx.W, flyRow("Clear list")); await waitFor(() => hasEl(ctx.W, NT_MENU), 3000); }
+    await clickOn(ctx.W, menuRow("Cancel")); await sleep(500);
+    out.afterCancel = (await cleanedList(ctx.W)).length;
+    await openDropdown(ctx.W); await openFly(ctx.W, "Recently Cleaned"); await clickOn(ctx.W, flyRow("Clear list"));
+    await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
+    await clickOn(ctx.W, menuRow(out.ask[1])); await sleep(700);
+    out.afterClear = (await cleanedList(ctx.W)).length;
+    await openDropdown(ctx.W); out.rowAfter = (await rowsOf(ctx.W, NT_MENU + " > div")).find((x) => x.startsWith("Recently Cleaned"));
+    await escapeAll(ctx.W);
+    return out;
+  },
+  expect: (s, b, r) => [r.error ?? null, J(r.ask) === J(["Cancel", "Clear 2 cleaned tabs"]) ? null : `the question was ${J(r.ask)}`, r.under?.startsWith("Clear ") ? `the destructive row was under the pointer: ${J(r.under)}` : null,
+    r.afterDouble === 2 ? null : `a double-click changed the list (${r.afterDouble})`, r.afterCancel === 2 ? null : `Cancel changed the list (${r.afterCancel})`, r.afterClear === 0 ? null : `still ${r.afterClear} after confirming`,
+    r.rowAfter === "Recently Cleaned (disabled)" ? null : `Recently Cleaned row after: ${J(r.rowAfter)}`],
+});
+// Clean Up Daily: ONE window runs it (the leader), once a day, across every space of every window, silently, with the usual exclusions.
+cuCase("CU.daily-leader-once", {
+  act: async () => {
+    const out = {};
+    const tick = (win) => h.ev(`window.__vm.cleanup.tick()`, win);
+    const count = () => h.ev(`chrome.tabs.query({ windowType: "normal" }).then((t) => t.length)`, ctx.H);
+    const hook = (win) => h.ev(`(() => { window.__logs = []; if (window.__logHook) return 1; window.__logHook = true; const o = console.log.bind(console); console.log = (...a) => { window.__logs.push(a.map(String).join(" ")); o(...a); }; return 1; })()`, win);
+    for (const w of [ctx.H, ctx.W, ctx.O]) await hook(w);
+    out.offTick = await tick(ctx.H);                                      // the toggle is off by default
+    await dropdownItem(ctx.W, "Clean Up Daily");                          // turned on from W's menu, as a user would
+    out.heard = await waitFor(() => h.ev(`window.__vm.settings.get("cleanupDaily")`, ctx.H), 4000, 100);
+    await h.ev(`window.__vm.store.set("lastCleanup", ${ctx.frozen - 25 * 3600 * 1000}).then(() => 1)`, ctx.H); // last ran 25 h ago
+    out.before = await count();
+    out.nonLeader = await tick(ctx.W); out.nonLeaderO = await tick(ctx.O);
+    out.afterNonLeader = await count();
+    out.parallel = await Promise.all([tick(ctx.H), tick(ctx.H)]);        // start-up and the timer at once
+    await sleep(2000);
+    out.after = await count();
+    out.again = await tick(ctx.H); out.againW = await tick(ctx.W);
+    out.last = await h.ev(`window.__vm.store.get("lastCleanup", 0)`, ctx.H);
+    out.logs = { H: await h.ev(`window.__logs.filter((l) => l.includes("cleanup:"))`, ctx.H), W: await h.ev(`window.__logs.filter((l) => l.includes("cleanup:"))`, ctx.W), O: await h.ev(`window.__logs.filter((l) => l.includes("cleanup:"))`, ctx.O) };
+    out.toasts = [await toastNow(ctx.H), await toastNow(ctx.W), await toastNow(ctx.O)];
+    out.list = (await cleanedList(ctx.H)).map((e) => e.title).sort();
+    out.allLogs = await h.ev(`window.__logs`, ctx.H);
+    return out;
+  },
+  expect: (s, b, r) => [r.error ?? null, r.offTick === "off" ? null : `with the toggle off the tick said ${J(r.offTick)}`, r.heard === true ? null : "the leader did not hear the toggle",
+    r.nonLeader === "not leader" && r.nonLeaderO === "not leader" ? null : `non-leaders said ${J([r.nonLeader, r.nonLeaderO])}`, r.afterNonLeader === r.before ? null : "a non-leader closed tabs",
+    r.parallel.filter((x) => x === 7).length === 1 && r.parallel.filter((x) => x === "busy").length === 1 ? null : `two ticks at once: ${J(r.parallel)}`,
+    r.before - r.after === 7 ? null : `${r.before - r.after} tabs closed, want 7 (X2 X3 Y1 D1 Z2 and the idle start tabs of W and O)`, ...gone(s, "X2", "X3", "Y1", "D1", "Z2"), titles(s, "W-d0").length || titles(s, "O-d0").length ? "an idle start tab was not cleaned" : null, ...kept(s, "X1", "Xp", "Xb", "X4", "Z1"),
+    r.again === "not due" ? null : `a second look said ${J(r.again)}`, r.againW === "not leader" ? null : `W's look said ${J(r.againW)}`, r.last === ctx.frozen ? null : `lastCleanup ${r.last}, want ${ctx.frozen}`,
+    J(r.logs.H) === J(["[vivarc] cleanup: 7 tabs"]) && !r.logs.W.length && !r.logs.O.length ? null : `log lines ${J(r.logs)}`, r.toasts.every((t) => t === null) ? null : `a toast showed: ${J(r.toasts)}`,
+    J(r.list) === J(["D1", "O-d0", "W-d0", "X2", "X3", "Y1", "Z2"]) ? null : `Recently Cleaned holds ${J(r.list)}`, tabIs(s, "X1", { win: ctx.W, active: true }), tabIs(s, "Z1", { win: ctx.O, active: true })],
+});
+// The daily clock: not due within a day, due again after one (the recorded time moves with the clock hook).
+cuCase("CU.daily-due-decision", {
+  act: async () => {
+    const out = {};
+    out.toggled = await dropdownItem(ctx.W, "Clean Up Daily"); out.heard = await waitFor(() => h.ev(`window.__vm.settings.get("cleanupDaily")`, ctx.H), 4000, 100);
+    await h.ev(`window.__vm.store.set("lastCleanup", ${ctx.frozen - 23 * 3600 * 1000}).then(() => 1)`, ctx.H);
+    out.at23h = await h.ev(`window.__vm.cleanup.tick()`, ctx.H);
+    await h.ev(`window.__vm.store.set("lastCleanup", ${ctx.frozen - 24 * 3600 * 1000}).then(() => 1)`, ctx.H);
+    out.at24h = await h.ev(`window.__vm.cleanup.tick()`, ctx.H);
+    return out;
+  },
+  expect: (s, b, r) => [r.toggled === "ok" && r.heard === true ? null : `toggle: ${J([r.toggled, r.heard])}`, r.at23h === "not due" ? null : `23 h after: ${J(r.at23h)}`, r.at24h === 7 ? null : `24 h after: ${J(r.at24h)}, want 7 tabs`],
 });
 
 // Part 3 decisions that are the same check as a row above.

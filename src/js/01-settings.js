@@ -16,6 +16,8 @@
       fromConfig: (c) => (c.suggestions === undefined ? undefined : ["default", "ddg"].includes(c.suggestions)) },
     { key: "diaLayout", label: "Dia layout", hint: "A slim row over the page for back, forward, reload, the page's site and title, and the window buttons, with the sidebar up to the top. Off puts your own toolbar and window frame back.",
       default: false, onClass: "vm-dia" },
+    { key: "cleanupDaily", label: "Clean up tabs daily (idle 7 days)", hint: "Once a day, close the tabs you have not used for 7 days, in every space. Pinned tabs, favorites, tabs on screen and tabs playing sound stay. Cleaned tabs wait in New Tab menu > Recently Cleaned for 30 days.",
+      default: false },
   ];
 
   const resolve = (schema, config, saved) => Object.fromEntries(schema.map((s) => {

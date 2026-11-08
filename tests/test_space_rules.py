@@ -965,5 +965,157 @@ class NewTabMenu(unittest.TestCase):
         self.assertEqual(js("workspaces.closeAllLabel(5, 2)"), "Close 5 tabs (folders stay)")
 
 
+DAY = 24 * 3600 * 1000
+
+
+class CleanUp(unittest.TestCase):
+    """Task 8n: which tabs Clean Up closes, what Recently Cleaned keeps, when the daily run is due (pure helpers; the menu,
+    the closing, Undo and the daily runner are checked live in the sandbox)."""
+    NOW = 100 * DAY
+
+    @classmethod
+    def tab(cls, id, idle_days=8, window=1, space=0, **over):
+        t = {"id": id, "windowId": window, "lastAccessed": cls.NOW - idle_days * DAY, "vivExtData": json.dumps({"workspaceId": space} if space else {}),
+             "url": f"https://e.test/{id}", "title": f"t{id}"}
+        t.update(over)
+        return t
+
+    def set(self, tabs, **over):
+        args = {"tabs": tabs, "now": self.NOW}
+        args.update(over)
+        return js("workspaces.cleanupSet(args)", args=args)
+
+    def test_a_tab_idle_more_than_a_week_is_cleaned_and_a_fresh_one_is_not(self):
+        self.assertEqual(self.set([self.tab(1, 8), self.tab(2, 6.9), self.tab(3, 30)]), [1, 3])
+
+    def test_exactly_seven_days_is_kept_and_a_millisecond_more_is_cleaned(self):
+        self.assertEqual(self.set([self.tab(1, 7)]), [])
+        self.assertEqual(self.set([self.tab(1, 7, lastAccessed=self.NOW - 7 * DAY - 1)]), [1])
+
+    def test_idle_time_is_a_parameter(self):
+        self.assertEqual(self.set([self.tab(1, 2), self.tab(2, 0.5)], idleMs=DAY), [1])
+
+    def test_a_pinned_tab_is_never_cleaned(self):
+        self.assertEqual(self.set([self.tab(1, 40, pinned=True)]), [])
+
+    def test_a_tab_bound_to_a_vivarc_pin_or_favorite_is_never_cleaned(self):
+        bound = self.tab(1, 40, vivExtData=json.dumps({"vivarcPin": "b1", "workspaceId": 5}))
+        self.assertEqual(self.set([bound, self.tab(2, 40, vivExtData=json.dumps({"vivarcHome": "x"}))]), [2])
+
+    def test_the_tab_on_screen_is_never_cleaned_in_any_window(self):
+        self.assertEqual(self.set([self.tab(1, 40, active=True), self.tab(2, 40, window=2, active=True), self.tab(3, 40, window=2)]), [3])
+
+    def test_a_tab_playing_sound_is_never_cleaned(self):
+        self.assertEqual(self.set([self.tab(1, 40, audible=True), self.tab(2, 40, audible=False)]), [2])
+
+    def test_a_tab_whose_last_use_is_unknown_is_never_cleaned(self):
+        t = self.tab(1)
+        del t["lastAccessed"]
+        self.assertEqual(self.set([t, self.tab(2, 40, lastAccessed=None)]), [])
+
+    def test_a_tab_in_a_folder_is_cleaned_like_any_other(self):
+        self.assertEqual(self.set([self.tab(1, 40, vivExtData=json.dumps({"group": "g1", "workspaceId": 5}))]), [1])
+
+    def test_the_menu_run_is_one_window_and_one_space(self):
+        tabs = [self.tab(1, 40, window=1, space=0), self.tab(2, 40, window=1, space=5), self.tab(3, 40, window=2, space=0), self.tab(4, 40, window=2, space=5)]
+        self.assertEqual(self.set(tabs, window=1, space=5), [2])
+        self.assertEqual(self.set(tabs, window=1, space=0), [1])
+        self.assertEqual(self.set(tabs, window=2, space=0), [3])
+
+    def test_the_daily_run_leaves_scope_out_and_takes_every_space_in_every_window(self):
+        tabs = [self.tab(1, 40, window=1, space=0), self.tab(2, 40, window=1, space=5), self.tab(3, 40, window=2, space=0),
+                self.tab(4, 40, window=2, space=6, active=True), self.tab(5, 40, window=2, space=6)]
+        self.assertEqual(self.set(tabs), [1, 2, 3, 5])
+
+    def test_nothing_to_go_on_cleans_nothing(self):
+        self.assertEqual(js("workspaces.cleanupSet()"), [])
+        self.assertEqual(js("workspaces.cleanupSet({tabs: [], now: 5})"), [])
+        self.assertEqual(js("workspaces.cleanupSet({tabs: t, now: NaN})", t=[self.tab(1)]), [])
+
+    @staticmethod
+    def entry(url, at, space=0):
+        return {"url": url, "title": url, "favIconUrl": "", "space": space, "cleanedAt": at}
+
+    def keep(self, old, added, now=None):
+        return js("workspaces.keepCleaned(old, added, now)", old=old, added=added, now=self.NOW if now is None else now)
+
+    def test_what_was_cleaned_is_remembered_by_address_title_icon_space_and_time(self):
+        tab = self.tab(1, 8, space=5, favIconUrl="https://e.test/f.png")
+        self.assertEqual(js("workspaces.cleanedEntry(tab, 77)", tab=tab), {"url": "https://e.test/1", "title": "t1", "favIconUrl": "https://e.test/f.png", "space": 5, "cleanedAt": 77})
+        self.assertEqual(js("workspaces.cleanedEntry(tab, 1)", tab={"id": 2})["url"], "")
+
+    def test_the_list_is_newest_first_with_the_new_entries_ahead_of_equal_times(self):
+        out = self.keep([self.entry("old", self.NOW - 2 * DAY), self.entry("older", self.NOW - 3 * DAY)], [self.entry("a", self.NOW), self.entry("b", self.NOW)])
+        self.assertEqual([e["url"] for e in out], ["a", "b", "old", "older"])
+
+    def test_entries_older_than_thirty_days_are_dropped_and_exactly_thirty_stays(self):
+        out = self.keep([self.entry("edge", self.NOW - 30 * DAY), self.entry("gone", self.NOW - 30 * DAY - 1)], [])
+        self.assertEqual([e["url"] for e in out], ["edge"])
+
+    def test_at_most_two_hundred_are_kept_and_the_oldest_go(self):
+        # built in JS: 250 entries would overflow the command line
+        out = js("""(() => {
+          const e = (url, cleanedAt) => ({ url, cleanedAt });
+          const old = Array.from({ length: 150 }, (_, i) => e("o" + i, now - 1000 - i));
+          const added = Array.from({ length: 100 }, (_, i) => e("n" + i, now - i));
+          return workspaces.keepCleaned(old, added, now).map((x) => x.url);
+        })()""", now=self.NOW)
+        self.assertEqual(len(out), 200)
+        self.assertEqual(out[0], "n0")
+        self.assertEqual(out[-1], "o99")
+        self.assertNotIn("o100", out)
+
+    def test_a_broken_entry_is_dropped_not_thrown_on(self):
+        out = self.keep([None, {"url": "", "cleanedAt": self.NOW}, {"url": "x"}, "junk", self.entry("ok", self.NOW)], None)
+        self.assertEqual([e["url"] for e in out], ["ok"])
+        self.assertEqual(js("workspaces.keepCleaned(null, null, 5)"), [])
+
+    def due(self, last, now=None):
+        return js("workspaces.cleanupDue(last, now)", last=last, now=self.NOW if now is None else now)
+
+    def test_the_daily_run_is_due_when_it_never_ran_or_a_day_has_passed(self):
+        self.assertTrue(self.due(None))
+        self.assertTrue(self.due(0))
+        self.assertTrue(self.due("junk"))
+        self.assertTrue(self.due(self.NOW - DAY))
+        self.assertTrue(self.due(self.NOW - 3 * DAY))
+
+    def test_the_daily_run_is_not_due_within_the_day(self):
+        self.assertFalse(self.due(self.NOW - DAY + 1))
+        self.assertFalse(self.due(self.NOW))
+
+    def test_a_last_run_in_the_future_is_due_so_a_wrong_clock_cannot_stop_it_for_good(self):
+        self.assertTrue(self.due(self.NOW + 5 * DAY))
+
+    def test_ages_read_in_days(self):
+        def ago(ms):
+            return js("workspaces.cleanedAgo(0, ms)", ms=ms)
+        self.assertEqual(ago(0), "today")
+        self.assertEqual(ago(DAY - 1), "today")
+        self.assertEqual(ago(DAY), "1 day ago")
+        self.assertEqual(ago(5 * DAY + 3), "5 days ago")
+        self.assertEqual(js("workspaces.cleanedAgo(10, 5)"), "today")  # a clock that went back
+
+    def home(self, entry_space, **over):
+        args = {"entry": {"space": entry_space}, "here": 1, "shown": 5, "spaces": [5, 6], "record": [[6, 2]],
+                "tabs": [self.tab(9, 1, window=2, space=6)]}
+        args.update(over)
+        return js("workspaces.cleanedHome({...a, record: new Map(a.record)})", a=args)
+
+    def test_a_cleaned_tab_goes_back_to_its_space_in_the_window_it_lives_in(self):
+        self.assertEqual(self.home(6), {"window": 2, "space": 6})
+
+    def test_a_default_space_tab_comes_back_here(self):
+        self.assertEqual(self.home(0), {"window": 1, "space": 0})
+
+    def test_a_space_that_no_longer_exists_means_the_space_on_screen_here(self):
+        self.assertEqual(self.home(7), {"window": 1, "space": 5})
+        self.assertEqual(self.home(7, shown=0), {"window": 1, "space": 0})
+
+    def test_a_space_with_no_window_comes_back_here_and_an_unreadable_list_trusts_the_entry(self):
+        self.assertEqual(self.home(5, record=[], tabs=[]), {"window": 1, "space": 5})
+        self.assertEqual(self.home(7, spaces=None, record=[], tabs=[]), {"window": 1, "space": 7})
+
+
 if __name__ == "__main__":
     unittest.main()

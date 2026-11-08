@@ -206,17 +206,28 @@
   let flyoutSeq = 0;
   let flyoutTimer = 0;
   const closeFlyouts = () => { flyoutSeq++; clearTimeout(flyoutTimer); for (const pane of flyouts.splice(0)) { pane.owner?.classList.remove("open"); pane.remove(); } };
-  const closeMenu = () => { closeFlyouts(); menu?.remove(); menu = null; };
+  // The New Tab chevron stays lit while its menu is open (.open); it goes out whenever the menu does, however it closed.
+  const closeMenu = () => {
+    closeFlyouts(); menu?.remove(); menu = null;
+    for (const chev of document.querySelectorAll(".vm-newtab-chev.open")) chev.classList.remove("open");
+  };
 
   // Menu items are [label, action, danger] (the original kind: [] is a divider), or an object for what the arrays cannot
   // say: { label, action(event), danger, disabled, heading, icon (a node before the label), mark (the current one),
-  // flyout: async () => items, opened to the side on hover or click }. Only the arrays path existed before Task 8k and it
-  // builds exactly what it did.
+  // check (true / false: a toggle, a ✓ before the label while on; absent for every other row), note (small text after
+  // the label), flyout: async () => items, opened to the side on hover or click }. Only the arrays path existed before
+  // Task 8k and it builds exactly what it did.
   const objectRow = (spec, inFlyout) => {
     if (spec.heading) return el("div", "vm-menu-heading", spec.heading);
     const item = el("div", `vm-menu-item rich${spec.danger ? " danger" : ""}${spec.disabled ? " disabled" : ""}${spec.flyout ? " has-flyout" : ""}${spec.mark ? " marked" : ""}`);
     if (spec.icon) item.append(spec.icon);
+    if (typeof spec.check === "boolean") {
+      item.append(el("span", "vm-menu-check", spec.check ? "✓" : ""));
+      item.setAttribute("role", "menuitemcheckbox");
+      item.setAttribute("aria-checked", String(spec.check));
+    }
     item.append(el("span", "vm-menu-label", spec.label));
+    if (spec.note) item.append(el("span", "vm-menu-note", spec.note));
     if (spec.disabled) item.setAttribute("aria-disabled", "true");
     if (!inFlyout) {
       // Moving onto a row of the menu: its own flyout opens, any other closes. A short wait when one is already open, so a
@@ -1254,12 +1265,32 @@
   // ---- the New Tab row's dropdown (Task 8k) ----
   const say = (detail) => window.dispatchEvent(new CustomEvent("vm-toast", { detail }));
   const tidy = (items) => items.filter((item, i, all) => !(Array.isArray(item) && !item.length && (!i || (Array.isArray(all[i - 1]) && !all[i - 1].length) || i === all.length - 1)));
-  // Task 8n fills these two. cleaned: the "Recently Cleaned ›" row (a flyout spec; shown disabled until then).
-  // cleanUp: () => the rows for Clean Up Tabs and ✓ Clean Up Daily (none until then; the dividers around an empty hook
-  // collapse, see tidy).
+  // Clean Up (Task 8n; the work is in 13-cleanup.js, window.__vm.cleanup). cleaned: the "Recently Cleaned ›" row, a
+  // flyout, disabled while the list is empty (cleanedNow: read when the menu opens). cleanUp: the rows for Clean Up Tabs
+  // and the ✓ Clean Up Daily toggle (none without the module; the dividers around no rows collapse, see tidy).
+  let cleanedNow = [];
+  const cleanerOf = () => window.__vm.cleanup ?? null;
+  // Asks first. The confirm menu opens with the pointer on its first row, so that row is Cancel: a double-click on the
+  // row that opened it cannot confirm.
+  const confirmClearCleaned = (event, count) => showMenu(event, [["Cancel", () => {}],
+    [`Clear ${count} cleaned tab${count === 1 ? "" : "s"}`, () => cleanerOf()?.clearAll().catch((error) => { console.warn("[vivarc] clear cleaned:", error); say("Could not clear the list"); }), true]]);
+  const cleanedFlyout = async () => {
+    const cleaner = cleanerOf();
+    const entries = cleaner ? await cleaner.list() : [];
+    const at = cleaner?.now() ?? Date.now();
+    if (!entries.length) return [];
+    return [...entries.slice(0, 20).map((e) => ({ label: e.title || e.url, icon: iconEl(e.url, e.favIconUrl), note: spacesOf.cleanedAgo(e.cleanedAt, at), action: () => cleaner.reopenOne(e) })),
+      [], { label: "Clear list", action: (event) => confirmClearCleaned(event, entries.length) }];
+  };
   const newTabHooks = {
-    cleaned: () => ({ label: "Recently Cleaned", disabled: true, flyout: null }),
-    cleanUp: () => [],
+    cleaned: () => (cleanedNow.length ? { label: "Recently Cleaned", flyout: cleanedFlyout } : { label: "Recently Cleaned", disabled: true, flyout: null }),
+    cleanUp: () => {
+      const cleaner = cleanerOf();
+      if (!cleaner) return [];
+      const daily = !!window.__vm.settings?.get("cleanupDaily");
+      return [{ label: "Clean Up Tabs", action: () => cleaner.cleanUpNow() },
+        { label: "Clean Up Daily", check: daily, action: () => window.__vm.settings?.set("cleanupDaily", !daily) }];
+    },
   };
   // Shows a tab the way a command-bar pick does (workspaces.tabPick: its space first, so repair 2 never snaps it back;
   // another window is focused), under the repair busy mark.
@@ -1297,15 +1328,21 @@
   const confirmCloseAll = (event) => {
     const { listed, loose } = clearSet();
     const label = spacesOf.closeAllLabel(loose.length, listed.length - loose.length);
-    showMenu(event, [[label, async () => {
+    // Cancel first: the menu opens with the pointer on its first row, and a double-click must not confirm
+    showMenu(event, [["Cancel", () => {}], [label, async () => {
       const now = clearSet(); // as Clear does, from what is listed now
       try { await closeLoose(now.loose, now.blank); } catch (error) { console.warn("[vivarc] close all:", error); say("Could not close the tabs"); }
-    }, true], ["Cancel", () => {}]]);
+    }, true]]);
   };
+  // Every tab is tried; one that cannot be (un)muted does not fail the rest, and the toast says how many did not.
   const muteAll = async (tabs) => {
     const muted = spacesOf.muteAllLabel(tabs) === "Mute All Tabs";
-    try { await Promise.all(tabs.filter((t) => !!t.mutedInfo?.muted !== muted).map((t) => chrome.tabs.update(t.id, { muted }))); }
-    catch (error) { console.warn("[vivarc] mute all:", error); say(`Could not ${muted ? "mute" : "unmute"} every tab`); }
+    const todo = tabs.filter((t) => !!t.mutedInfo?.muted !== muted);
+    const results = await Promise.allSettled(todo.map((t) => chrome.tabs.update(t.id, { muted })));
+    const failed = results.filter((r) => r.status === "rejected");
+    if (!failed.length) return;
+    console.warn("[vivarc] mute all:", failed[0].reason);
+    say(failed.length === todo.length ? `Could not ${muted ? "mute" : "unmute"} any tab` : `Could not ${muted ? "mute" : "unmute"} ${failed.length} of ${todo.length} tabs`);
   };
   // The dropdown's rows, top to bottom. `mine`: this window's tabs.
   const newTabMenuItems = (mine) => tidy([
@@ -1324,6 +1361,7 @@
   const openNewTabMenu = async (anchor) => {
     let mine = state.allTabs.filter((t) => t.windowId === myWindow());
     try { mine = await chrome.tabs.query({ windowId: myWindow() }); } catch (_) {}
+    try { cleanedNow = (await cleanerOf()?.list()) ?? []; } catch (_) { cleanedNow = []; }
     const at = anchor.getBoundingClientRect();
     const made = showMenu({ clientX: at.left, clientY: at.bottom + 4, preventDefault() {}, stopPropagation() {} }, newTabMenuItems(mine));
     made.dataset.owner = "newtab";
