@@ -971,7 +971,7 @@ DAY = 24 * 3600 * 1000
 class CleanUp(unittest.TestCase):
     """Task 8n: which tabs Clean Up closes, what Recently Cleaned keeps, when the daily run is due (pure helpers; the menu,
     the closing, Undo and the daily runner are checked live in the sandbox)."""
-    NOW = 100 * DAY
+    NOW = 1800000000000  # a realistic clock (2027): the unknown-age rule treats anything before 2000 as unknown
 
     @classmethod
     def tab(cls, id, idle_days=8, window=1, space=0, **over):
@@ -1012,6 +1012,32 @@ class CleanUp(unittest.TestCase):
         t = self.tab(1)
         del t["lastAccessed"]
         self.assertEqual(self.set([t, self.tab(2, 40, lastAccessed=None)]), [])
+
+    def test_a_last_use_of_zero_or_before_the_year_2000_is_unknown_and_kept(self):
+        self.assertEqual(self.set([self.tab(1, lastAccessed=0), self.tab(2, lastAccessed=946684799999), self.tab(3, lastAccessed=-5)]), [])
+        self.assertEqual(self.set([self.tab(1, lastAccessed=946684800001)]), [1])
+
+    def test_a_malformed_vivextdata_fails_closed_and_the_tab_is_kept(self):
+        self.assertEqual(self.set([self.tab(1, vivExtData="{not json"), self.tab(2, vivExtData="null"), self.tab(3, vivExtData=json.dumps([1]))]), [])
+
+    def test_a_tab_with_no_address_is_kept_because_it_would_close_with_no_entry(self):
+        self.assertEqual(self.set([self.tab(1, url=""), self.tab(2, url=None), self.tab(3, url="", pendingUrl="https://e.test/p")]), [3])
+
+    def test_a_private_tab_is_never_cleaned(self):
+        self.assertEqual(self.set([self.tab(1, 40, incognito=True), self.tab(2, 40, incognito=False)]), [2])
+
+    @staticmethod
+    def tiled(id, tiling, **over):
+        return CleanUp.tab(id, 40, vivExtData=json.dumps({"tiling": {"id": tiling, "layout": "row", "type": "tile", "index": id}}), **over)
+
+    def test_a_tab_visible_in_a_split_view_with_the_active_one_counts_as_on_screen(self):
+        tabs = [self.tiled(1, "t1", active=True), self.tiled(2, "t1"), self.tiled(3, "t2"), self.tab(4, 40)]
+        self.assertEqual(self.set(tabs), [3, 4])
+
+    def test_a_split_view_only_shields_within_its_own_window(self):
+        tabs = [self.tiled(1, "t1", active=True), self.tiled(2, "t1", window=2), self.tiled(3, "t1", window=2, active=True)]
+        self.assertEqual(self.set(tabs), [])
+        self.assertEqual(self.set([self.tiled(1, "t1", active=True, window=1), self.tiled(2, "t1", window=2)]), [2])
 
     def test_a_tab_in_a_folder_is_cleaned_like_any_other(self):
         self.assertEqual(self.set([self.tab(1, 40, vivExtData=json.dumps({"group": "g1", "workspaceId": 5}))]), [1])
@@ -1064,6 +1090,35 @@ class CleanUp(unittest.TestCase):
         self.assertEqual(out[0], "n0")
         self.assertEqual(out[-1], "o99")
         self.assertNotIn("o100", out)
+
+    def test_every_closable_tab_has_a_stored_entry_when_a_run_is_over_the_cap(self):
+        # 250 candidates in one run against 150 older entries: the list holds 200, and only tabs whose entry is in it may close
+        out = js("""(() => {
+          const e = (url, cleanedAt) => ({ url, title: url, favIconUrl: "", space: 0, cleanedAt });
+          const old = Array.from({ length: 150 }, (_, i) => e("o" + i, now - 1000 - i));
+          const added = Array.from({ length: 250 }, (_, i) => e("n" + i, now));
+          const list = workspaces.keepCleaned(old, added, now);
+          const ok = workspaces.confirmedEntries(list, added);
+          return { len: list.length, closable: ok.filter(Boolean).length, firstOk: ok.indexOf(false), allOldGone: list.every((x) => x.url.startsWith("n")),
+                   listed: added.filter((_, i) => ok[i]).every((a) => list.some((x) => x.url === a.url)) };
+        })()""", now=self.NOW)
+        self.assertEqual(out["len"], 200)
+        self.assertEqual(out["closable"], 200)
+        self.assertEqual(out["firstOk"], 200)  # the first 200 fit, the last 50 stay open
+        self.assertTrue(out["allOldGone"])  # older entries went first
+        self.assertTrue(out["listed"])
+
+    def test_confirmation_is_per_entry_and_counts_identical_entries_once_each(self):
+        out = js("""(() => {
+          const a = { url: "u", title: "t", space: 0, cleanedAt: 5 };
+          return [workspaces.confirmedEntries([a], [a, a]), workspaces.confirmedEntries([], [a]), workspaces.confirmedEntries([a, a], [a, a]), workspaces.confirmedEntries(null, [a])];
+        })()""")
+        self.assertEqual(out, [[True, False], [False], [True, True], [False]])
+
+    def test_the_daily_leader_is_the_lowest_non_private_normal_window(self):
+        wins = [{"id": 1, "type": "normal", "incognito": True}, {"id": 2, "type": "normal", "incognito": False}, {"id": 3, "type": "normal"}, {"id": 0, "type": "popup"}]
+        self.assertEqual(js("workspaces.cleanupLeader(w)", w=wins), 2)
+        self.assertIsNone(js("workspaces.cleanupLeader(w)", w=[wins[0]]))
 
     def test_a_broken_entry_is_dropped_not_thrown_on(self):
         out = self.keep([None, {"url": "", "cleanedAt": self.NOW}, {"url": "x"}, "junk", self.entry("ok", self.NOW)], None)

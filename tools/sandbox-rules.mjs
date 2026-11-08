@@ -1076,7 +1076,7 @@ ntCase("N.close-all-confirm", {
     const r = await dropdownItem(ctx.W, "Close All Tabs"); if (r !== "ok") return { error: r };
     await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
     const ask = await rowsOf(ctx.W, NT_MENU + " > div");
-    await sleep(300); const early = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
+    await sleep(700); const early = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
     await clickOn(ctx.W, menuRow(ask[1])); await sleep(1500);
     return { ask, early };
   },
@@ -1418,7 +1418,7 @@ cuCase("CU.clear-list", {
     out.afterCancel = (await cleanedList(ctx.W)).length;
     await openDropdown(ctx.W); await openFly(ctx.W, "Recently Cleaned"); await clickOn(ctx.W, flyRow("Clear list"));
     await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
-    await clickOn(ctx.W, menuRow(out.ask[1])); await sleep(700);
+    await sleep(600); await clickOn(ctx.W, menuRow(out.ask[1])); await sleep(700);
     out.afterClear = (await cleanedList(ctx.W)).length;
     await openDropdown(ctx.W); out.rowAfter = (await rowsOf(ctx.W, NT_MENU + " > div")).find((x) => x.startsWith("Recently Cleaned"));
     await escapeAll(ctx.W);
@@ -1474,6 +1474,160 @@ cuCase("CU.daily-due-decision", {
     return out;
   },
   expect: (s, b, r) => [r.toggled === "ok" && r.heard === true ? null : `toggle: ${J([r.toggled, r.heard])}`, r.at23h === "not due" ? null : `23 h after: ${J(r.at23h)}`, r.at24h === 7 ? null : `24 h after: ${J(r.at24h)}, want 7 tabs`],
+});
+
+// ---------- Task 8n data-safety fixes ----------
+// A confirm menu pushed so that its red row sits under the pointer: a double-click (second click at the same spot, within
+// 400 ms) still does not confirm. The menu is moved on purpose (what the window-bottom clamp does) so the test does not
+// depend on the window size.
+const dangerUnderPointer = async (win, p) => h.ev(`(() => { const m = document.querySelector(${J(NT_MENU)}); const d = m.querySelector(".vm-menu-item.danger"); const dy = d.getBoundingClientRect(); const my = m.getBoundingClientRect();
+  m.style.top = (parseFloat(m.style.top) + (${p.y} - (dy.top + dy.height / 2))) + "px"; m.style.left = (parseFloat(m.style.left) + (${p.x} - (dy.left + 20))) + "px";
+  const e = document.elementFromPoint(${p.x}, ${p.y}); return !!e && !!e.closest(".vm-menu-item.danger"); })()`, win);
+ntCase("N.close-all-doubleclick-bottom", {
+  setup: SET_CLOSEALL,
+  act: async () => {
+    if (!(await openDropdown(ctx.W))) return { error: "no dropdown" };
+    const p = await hoverOn(ctx.W, menuRow("Close All Tabs")); if (!p) return { error: "no row" };
+    const count = () => h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
+    const before = await count();
+    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y);
+    await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
+    const under = await dangerUnderPointer(ctx.W, p);
+    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y);
+    await sleep(900);
+    const stillOpen = await hasEl(ctx.W, ".vm-menu");
+    // after the guard time, the same click confirms
+    await sleep(500);
+    const p2 = await hoverOn(ctx.W, `document.querySelector(".vm-menu .vm-menu-item.danger")`);
+    await mouse(ctx.W, "mousePressed", p2.x, p2.y); await mouse(ctx.W, "mouseReleased", p2.x, p2.y); await sleep(1500);
+    return { before, afterDouble: before, under, stillOpen, afterLate: await count() };
+  },
+  expect: (s, b, r) => [r.error ?? null, r.under ? null : "setup: the red row was not under the pointer, the test proves nothing", r.stillOpen ? null : "the ignored click closed the menu", r.afterLate < r.before ? null : "a later click did not confirm", ...(r.under ? [] : [])],
+});
+// The same for Clear list.
+cuCase("CU.clear-list-doubleclick-bottom", {
+  act: async () => {
+    await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => r.count)`, ctx.W); await sleep(900);
+    if (!(await openDropdown(ctx.W)) || !(await openFly(ctx.W, "Recently Cleaned"))) return { error: "no flyout" };
+    const p = await hoverOn(ctx.W, flyRow("Clear list"));
+    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y);
+    await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
+    const under = await dangerUnderPointer(ctx.W, p);
+    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y); await sleep(800);
+    return { under, listed: (await cleanedList(ctx.W)).length, stillOpen: await hasEl(ctx.W, ".vm-menu") };
+  },
+  expect: (s, b, r) => [r.error ?? null, r.under ? null : "setup: the red row was not under the pointer", r.listed === 2 ? null : `a double-click cleared the list (${r.listed} left, want 2)`, r.stillOpen ? null : "the ignored click closed the menu"],
+});
+// A run over the list's cap: only tabs whose entry is in the list close; the rest stay open.
+cuCase("CU.over-the-cap", {
+  setup: async () => {
+    await SET_CU();
+    // 205 more idle tabs in X, made in chunks (the sidebar re-renders on each; a single burst jams the window's UI)
+    for (let i = 0; i < 205; i += 25) {
+      await h.cdp(ctx.H).eval(`Promise.all(Array.from({ length: ${Math.min(25, 205 - i)} }, (_, k) => chrome.tabs.create({ windowId: ${ctx.W}, url: "data:text/html,<title>B" + (${i} + k) + "</title>B", active: false, vivExtData: JSON.stringify({ workspaceId: ${sp("X")} }) }))).then((t) => t.length)`, 60000);
+      await sleep(400);
+    }
+    await waitFor(() => h.cdp(ctx.W).eval("1", 20000), 120000, 1000);
+    await sleep(4500);
+    ctx.frozen = Date.now();
+    for (const w of [ctx.H, ctx.W, ctx.O]) await h.cdp(w).eval(`(window.__vm.cleanup.test = { idleMs: ${IDLE}, now: () => ${ctx.frozen} }, 1)`, 60000);
+    await focus(ctx.W);
+  },
+  act: async () => {
+    const r = await h.cdp(ctx.W).eval(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => ({ count: r.count, capped: r.capped, tried: r.tried, failed: r.failed }))`, 120000);
+    await sleep(3000);
+    const list = await h.cdp(ctx.W).eval(`window.__vm.cleanup.list().then((l) => l.map((e) => e.url))`, 60000);
+    const open = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.map((x) => x.url))`, ctx.H);
+    const isCand = (u) => /<title>(B\d+|X2|X3|X4)</.test(decodeURIComponent(u));
+    return { r, listLen: list.length, listedAndOpen: list.filter((u) => open.includes(u)).length, openCandidates: open.filter(isCand).length };
+  },
+  expect: (s, b, r) => [r.r.tried === 208 && r.r.count === 200 && r.r.capped === 8 ? null : `run ${J(r.r)}, want tried 208, closed 200, capped 8`, r.listLen === 200 ? null : `list holds ${r.listLen}`,
+    r.listedAndOpen === 0 ? null : `${r.listedAndOpen} listed tabs are still open`, r.openCandidates === 8 ? null : `${r.openCandidates} candidates stayed open, want 8 (every closed tab has an entry: 208 - 200)`],
+});
+// store.set resolves without writing (what 00-core does on an error): nothing closes, the toast says so.
+cuCase("CU.store-write-fails-silently", {
+  act: async () => {
+    await h.ev(`(() => { window.__realSet = window.__vm.store.set; window.__vm.store.set = (k, v) => (k === "cleaned" ? Promise.resolve() : window.__realSet(k, v)); return 1; })()`, ctx.W);
+    try { const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r }; const toast = await waitFor(() => toastNow(ctx.W), 6000, 100); await sleep(600); return { toast }; }
+    finally { await h.ev(`(window.__realSet && (window.__vm.store.set = window.__realSet), 1)`, ctx.W); }
+  },
+  expect: (s, b, r) => [r.toast === "Could not clean up the tabs" ? null : `toast ${J(r.toast)}`, unchanged(b, s)],
+});
+// store.set never settles: the run gives up after its timeout, closes nothing, and later list changes still work.
+cuCase("CU.store-write-hangs", {
+  act: async () => {
+    await h.ev(`(() => { window.__realSet = window.__vm.store.set; window.__vm.store.set = (k, v) => (k === "cleaned" ? new Promise(() => {}) : window.__realSet(k, v)); return 1; })()`, ctx.W);
+    const t0 = Date.now(); let first;
+    try { first = await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => ({ count: r.count, failed: r.failed }))`, ctx.W); }
+    finally { await h.ev(`(window.__realSet && (window.__vm.store.set = window.__realSet), 1)`, ctx.W); }
+    const took = Date.now() - t0;
+    const second = await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => ({ count: r.count, failed: r.failed }))`, ctx.W);
+    await sleep(800);
+    return { first, took, second, list: (await cleanedList(ctx.W)).length };
+  },
+  expect: (s, b, r) => [r.first?.count === 0 && r.first?.failed ? null : `hung write: ${J(r.first)}`, r.took >= 4500 && r.took < 9000 ? null : `gave up after ${r.took} ms`, r.second?.count === 2 ? null : `the run after it: ${J(r.second)} (the queue stayed jammed?)`, r.list === 2 ? null : `list ${r.list}`, ...gone(s, "X2", "X3")],
+});
+// A tab that became active between the write and the close stays, and its entry is taken back out.
+cuCase("CU.tab-changed-in-the-gap", {
+  act: async () => {
+    await h.ev(`(() => { window.__realSet = window.__vm.store.set; window.__vm.store.set = async (k, v) => { if (k === "cleaned" && v.length) await chrome.tabs.update(${ctx.tabs.X2}, { active: true }); return window.__realSet(k, v); }; return 1; })()`, ctx.W);
+    let r;
+    try { r = await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => r.count)`, ctx.W); }
+    finally { await h.ev(`(window.__realSet && (window.__vm.store.set = window.__realSet), 1)`, ctx.W); }
+    await sleep(1200);
+    return { r, list: (await cleanedList(ctx.W)).map((e) => e.title) };
+  },
+  expect: (s, b, r) => [r.r === 1 ? null : `closed ${r.r}, want only X3`, ...kept(s, "X2"), ...gone(s, "X3"), J(r.list) === J(["X3"]) ? null : `list ${J(r.list)}, want just X3`],
+});
+// Two windows clean at once: both runs' entries survive (list changes are serialised across windows).
+cuCase("CU.concurrent-runs", {
+  act: async () => {
+    await Promise.all([h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => r.count)`, ctx.W), h.ev(`window.__vm.cleanup.run({ win: ${ctx.O}, space: ${sp("Z")} }).then((r) => r.count)`, ctx.O)]);
+    await sleep(900);
+    return { list: (await cleanedList(ctx.H)).map((e) => e.title).sort() };
+  },
+  expect: (s, b, r) => [J(r.list) === J(["X2", "X3", "Z2"]) ? null : `list ${J(r.list)}, want X2 X3 Z2`],
+});
+// A private window's tab is never cleaned or stored, and the private window never runs the daily clean. A private window
+// is made with Vivaldi's own windowPrivate.create (chrome.windows.create returns null for it); its UI is a window.html of its
+// own, with its own store. The normal windows cannot see it, so it is checked from inside.
+cuCase("CU.private-window", {
+  act: async () => {
+    const pid = await h.ev(`new Promise((r) => vivaldi.windowPrivate.create({ incognito: true, focused: true }, (w) => r(w)))`, ctx.H);
+    if (typeof pid !== "number") return { error: `no private window: ${J(pid)}` };
+    try {
+      await h.waitForWin(pid); await sleep(2500);
+      const ev = (expr) => h.cdp(pid).eval(expr, 30000);
+      const inc = await ev(`chrome.windows.getCurrent().then((w) => w.incognito)`);
+      const a = await ev(`chrome.tabs.create({ url: "data:text/html,<title>PRIV2</title>PRIV2", active: false }).then((t) => t.id)`);
+      await sleep(3500);
+      await ev(`(window.__vm.cleanup.test = { idleMs: 2500, now: () => Date.now() }, 1)`);
+      await ev(`window.__vm.settings.set("cleanupDaily", true)`); await sleep(500);
+      const tick = await ev(`window.__vm.cleanup.tick()`);
+      const run = await ev(`window.__vm.cleanup.run({}).then((r) => ({ count: r.count, tried: r.tried }))`);
+      await sleep(800);
+      const alive = await ev(`chrome.tabs.get(${a}).then(() => true, () => false)`);
+      const stored = await ev(`window.__vm.store.get("cleaned", []).then((l) => l.length)`);
+      const normalStored = (await cleanedList(ctx.H)).map((e) => e.title);
+      return { inc, tick, run, alive, stored, normalStored };
+    } finally { await h.cdp(pid).eval(`chrome.windows.getAll().then((a) => Promise.all(a.map((w) => chrome.windows.remove(w.id).catch(() => 0))))`, 20000).catch(() => {}); await sleep(1500); await h.refresh(); }
+  },
+  expect: (s, b, r) => [r.error ?? null, r.inc === true ? null : "the window was not private", r.tick === "private" ? null : `the private window's tick said ${J(r.tick)}`,
+    r.run?.count === 0 && r.run?.tried === 0 ? null : `a manual run in the private window: ${J(r.run)}`, r.alive ? null : "the private tab was closed", r.stored === 0 ? null : `${r.stored} entries in the private store`,
+    r.normalStored?.some((t) => /PRIV/.test(t)) ? "a private tab reached the normal store" : null],
+});
+// A tab shown beside the active one in a split view is on screen: never cleaned.
+cuCase("CU.split-view-partner", {
+  act: async () => {
+    const tiling = JSON.stringify({ id: "t-sbx", layout: "row", type: "tile", index: 0 });
+    await h.ev(`Promise.all([${ctx.tabs.X1}, ${ctx.tabs.X2}].map((id, i) => chrome.tabs.get(id).then((t) => { const d = JSON.parse(t.vivExtData || "{}"); d.tiling = { id: "t-sbx", layout: "row", type: "tile", index: i }; return chrome.tabs.update(id, { vivExtData: JSON.stringify(d) }); }))).then(() => 1)`, ctx.H);
+    await sleep(600);
+    const kept = await h.ev(`chrome.tabs.get(${ctx.tabs.X2}).then((t) => JSON.parse(t.vivExtData || "{}").tiling?.id || null)`, ctx.H);
+    const n = await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => r.count)`, ctx.W);
+    await sleep(900);
+    return { kept, n };
+  },
+  expect: (s, b, r) => [r.kept === "t-sbx" ? null : `setup: Vivaldi dropped the tiling (${J(r.kept)}), the case proves nothing`, ...kept(s, "X1", "X2"), ...gone(s, "X3"), r.n === 1 ? null : `closed ${r.n}, want only X3`],
 });
 
 // Part 3 decisions that are the same check as a row above.

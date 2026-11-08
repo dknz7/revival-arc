@@ -1265,6 +1265,16 @@
   // ---- the New Tab row's dropdown (Task 8k) ----
   const say = (detail) => window.dispatchEvent(new CustomEvent("vm-toast", { detail }));
   const tidy = (items) => items.filter((item, i, all) => !(Array.isArray(item) && !item.length && (!i || (Array.isArray(all[i - 1]) && !all[i - 1].length) || i === all.length - 1)));
+  // A confirm menu opens at the pointer, but near the window's bottom it is pushed up and its red row can land under the
+  // pointer, where a double-click would confirm. So whatever the placement, a click on the red row in the first 400 ms
+  // after the menu opens is ignored (the menu stays); Cancel is still first.
+  const guardDanger = (made, ms = 400) => {
+    const at = Date.now();
+    for (const row of made?.querySelectorAll(".vm-menu-item.danger") ?? []) {
+      row.addEventListener("click", (e) => { if (Date.now() - at < ms) { e.stopImmediatePropagation(); e.preventDefault(); } }, true);
+    }
+    return made;
+  };
   // Clean Up (Task 8n; the work is in 13-cleanup.js, window.__vm.cleanup). cleaned: the "Recently Cleaned ›" row, a
   // flyout, disabled while the list is empty (cleanedNow: read when the menu opens). cleanUp: the rows for Clean Up Tabs
   // and the ✓ Clean Up Daily toggle (none without the module; the dividers around no rows collapse, see tidy).
@@ -1272,8 +1282,8 @@
   const cleanerOf = () => window.__vm.cleanup ?? null;
   // Asks first. The confirm menu opens with the pointer on its first row, so that row is Cancel: a double-click on the
   // row that opened it cannot confirm.
-  const confirmClearCleaned = (event, count) => showMenu(event, [["Cancel", () => {}],
-    [`Clear ${count} cleaned tab${count === 1 ? "" : "s"}`, () => cleanerOf()?.clearAll().catch((error) => { console.warn("[vivarc] clear cleaned:", error); say("Could not clear the list"); }), true]]);
+  const confirmClearCleaned = (event, count) => guardDanger(showMenu(event, [["Cancel", () => {}],
+    [`Clear ${count} cleaned tab${count === 1 ? "" : "s"}`, () => cleanerOf()?.clearAll().catch((error) => { console.warn("[vivarc] clear cleaned:", error); say("Could not clear the list"); }), true]]));
   const cleanedFlyout = async () => {
     const cleaner = cleanerOf();
     const entries = cleaner ? await cleaner.list() : [];
@@ -1329,10 +1339,10 @@
     const { listed, loose } = clearSet();
     const label = spacesOf.closeAllLabel(loose.length, listed.length - loose.length);
     // Cancel first: the menu opens with the pointer on its first row, and a double-click must not confirm
-    showMenu(event, [["Cancel", () => {}], [label, async () => {
+    guardDanger(showMenu(event, [["Cancel", () => {}], [label, async () => {
       const now = clearSet(); // as Clear does, from what is listed now
       try { await closeLoose(now.loose, now.blank); } catch (error) { console.warn("[vivarc] close all:", error); say("Could not close the tabs"); }
-    }, true]]);
+    }, true]]));
   };
   // Every tab is tried; one that cannot be (un)muted does not fail the rest, and the toast says how many did not.
   const muteAll = async (tabs) => {

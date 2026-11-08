@@ -440,14 +440,36 @@
   // when it was last used MORE than this long ago (exactly this long ago is kept); space and window: the scope, each
   // left out for "all" (the daily run leaves both out; the menu's passes this window and the space on screen, where the
   // default space is 0). Never cleaned, whatever their age: pinned tabs, tabs bound to a Vivarc pin or favorite
-  // (vivarcPin in vivExtData), the tab on screen in ANY window (active), tabs playing sound (audible), and a tab whose
-  // last use is unknown. Tabs inside folders are cleaned like any other.
+  // (vivarcPin in vivExtData), the tab on screen in ANY window (active) and the tabs shown with it in a split view
+  // (the same tiling id, same window), tabs playing sound (audible), private tabs (incognito: their addresses must never
+  // reach the store), a tab with no address (it would close with no entry), a tab whose last use is unknown (missing, 0,
+  // or before the year 2000), and a tab whose vivExtData cannot be read (fails closed). Tabs inside folders are cleaned
+  // like any other.
+  const CLEAN_EARLIEST = 946684800000; // 2000-01-01: a lastAccessed before this is a placeholder, not a use
   const cleanupSet = ({ tabs, now, space, window, idleMs = CLEAN_IDLE_MS } = {}) => {
     if (!Array.isArray(tabs) || !Number.isFinite(now)) return [];
-    const bound = (t) => { try { return !!JSON.parse(t.vivExtData || "{}").vivarcPin; } catch (_) { return false; } };
-    return tabs.filter((t) => Number.isFinite(t.lastAccessed) && now - t.lastAccessed > idleMs
-      && !t.pinned && !t.active && !t.audible && !bound(t)
-      && (window == null || t.windowId === window) && (space == null || of(t) === space)).map((t) => t.id);
+    // null: unreadable -> the tab is kept
+    const extOf = (t) => { try { const d = JSON.parse(t.vivExtData || "{}"); return d && typeof d === "object" && !Array.isArray(d) ? d : null; } catch (_) { return null; } };
+    const shown = new Set(); // "window:tiling id" of what is on screen
+    for (const t of tabs) if (t.active) { const id = extOf(t)?.tiling?.id; if (id) shown.add(`${t.windowId}:${id}`); }
+    return tabs.filter((t) => {
+      const ext = extOf(t);
+      if (!ext || ext.vivarcPin) return false;
+      if (ext.tiling?.id && shown.has(`${t.windowId}:${ext.tiling.id}`)) return false;
+      return Number.isFinite(t.lastAccessed) && t.lastAccessed > CLEAN_EARLIEST && now - t.lastAccessed > idleMs
+        && !t.pinned && !t.active && !t.audible && !t.incognito && !!(t.pendingUrl || t.url)
+        && (window == null || t.windowId === window) && (space == null || of(t) === space);
+    }).map((t) => t.id);
+  };
+  // The one window that runs the daily clean: the lowest normal window that is not private (a private window never runs
+  // it, and is never the one the others wait for). null when there is none.
+  const cleanupLeader = (windows) => leaderOf((windows || []).filter((w) => !w.incognito));
+  const sameEntry = (a, b) => !!a && !!b && a.url === b.url && a.space === b.space && a.cleanedAt === b.cleanedAt && a.title === b.title;
+  // For each of `entries` (the ones a run is about to close for), whether it is really in `list`, as read back from the
+  // store: identical entries use up one match each. A tab may only close when its entry is confirmed.
+  const confirmedEntries = (list, entries) => {
+    const left = Array.isArray(list) ? [...list] : [];
+    return (entries || []).map((e) => { const i = left.findIndex((x) => sameEntry(x, e)); if (i < 0) return false; left.splice(i, 1); return true; });
   };
   // What a cleaned tab is remembered by.
   const cleanedEntry = (tab, now) => ({ url: tab.pendingUrl || tab.url || "", title: tab.title || "", favIconUrl: tab.favIconUrl || "", space: of(tab), cleanedAt: now });
@@ -540,5 +562,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

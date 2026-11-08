@@ -28,53 +28,92 @@
   const plural = (n) => `${n} tab${n === 1 ? "" : "s"}`;
 
   // ---- the Recently Cleaned store (per profile) ----
-  // Changes to it go one after another in this window, each from a fresh read.
-  let queue = Promise.resolve();
+  // store.set (00-core.js) resolves even when the write fails and has no timeout, so nothing here trusts it: a write is
+  // raced against a timeout, and a run reads the list back before it closes anything. Changes to the list run one after
+  // another across ALL windows of the profile: a promise chain on the background page (which every window shares, like
+  // the repair busy mark), each link waiting at most LOCK_MS for the one before, so a window that closed mid-change
+  // cannot jam the rest. Without the background page the chain is this window's own.
+  const STORE_MS = 5000;
+  const LOCK_MS = 8000;
+  const QUEUE = "__vivarcCleanupQueue";
+  const local = {};
+  const page = () => { try { return chrome.extension.getBackgroundPage?.() || local; } catch (_) { return local; } };
+  const within = (promise, ms, what) => new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${what} timed out`)), ms);
+    Promise.resolve(promise).then((v) => { clearTimeout(timer); resolve(v); }, (e) => { clearTimeout(timer); reject(e); });
+  });
+  const locked = (fn) => {
+    const shared = page();
+    const wait = Promise.race([shared[QUEUE] || Promise.resolve(), new Promise((resolve) => setTimeout(resolve, LOCK_MS))]);
+    const mine = wait.then(fn);
+    shared[QUEUE] = mine.catch(() => {});
+    return mine;
+  };
   const load = async () => {
-    const raw = await store.get(LIST, []);
+    const raw = await within(store.get(LIST, []), STORE_MS, "reading the list");
     return spacesOf.keepCleaned(Array.isArray(raw) ? raw : [], [], now());
   };
   const list = () => load().catch((error) => { warn("read the list", error); return []; });
-  const mutate = (change) => {
-    const run = queue.then(async () => { const next = change(await load()); await store.set(LIST, next); return next; });
-    queue = run.catch(() => {});
-    return run;
-  };
-  const same = (a, b) => a.url === b.url && a.space === b.space && a.cleanedAt === b.cleanedAt && a.title === b.title;
+  const mutate = (change) => locked(async () => {
+    const next = change(await load());
+    await within(store.set(LIST, next), STORE_MS, "writing the list");
+    return next;
+  });
   // `list` without one entry for each of `gone` (two identical entries lose two, not both of one)
   const without = (entries, gone) => {
     const left = [...gone];
-    return entries.filter((e) => { const i = left.findIndex((g) => same(e, g)); if (i < 0) return true; left.splice(i, 1); return false; });
+    return entries.filter((e) => { const i = left.findIndex((g) => spacesOf.sameEntry(e, g)); if (i < 0) return true; left.splice(i, 1); return false; });
   };
   const forget = (gone) => mutate((entries) => without(entries, gone));
   const clearAll = () => mutate(() => []);
 
   // ---- cleaning ----
   // Closes the tabs cleanupSet picks (win / space: the scope, both left out for every space of every window), under the
-  // repair busy mark. The entries are written BEFORE the tabs close, so a crash between the two loses nothing; if closing
-  // fails, the entries of the tabs still open are taken back out. -> { count, entries } of what really closed.
+  // repair busy mark. A tab closes only when it is certain to be recoverable:
+  //  1. the entries are written BEFORE any tab closes (a failed or timed-out write closes nothing);
+  //  2. the list is READ BACK, and only tabs whose entry is really in it close (the list holds 200: a bigger run closes
+  //     only as many as fit, the rest stay open);
+  //  3. just before closing, the tabs are looked at again and cleanupSet re-run on them, so a tab that became active,
+  //     audible or private in the gap stays, and its entry is taken back out;
+  //  4. if closing fails, the entries of the tabs still open are taken back out.
+  // -> { count, entries (of what closed), tried, capped (stayed because the list was full), failed }
   const run = async ({ win, space } = {}) => {
     const end = window.__vm.spaceRepair?.gesture() ?? null;
     try {
       const tabs = await chrome.tabs.query({ windowType: "normal" });
       const at = now();
+      const pick = (all) => spacesOf.cleanupSet({ tabs: all, now: at, space, window: win, idleMs: idleMs() });
       // in window order, so the entries (and Undo) keep the order the tabs had
-      const ids = spacesOf.cleanupSet({ tabs, now: at, space, window: win, idleMs: idleMs() });
       const order = new Map(tabs.map((t) => [t.id, [t.windowId, t.index]]));
-      ids.sort((a, b) => order.get(a)[0] - order.get(b)[0] || order.get(a)[1] - order.get(b)[1]);
-      if (!ids.length) return { count: 0, entries: [], tried: 0 };
+      const ids = pick(tabs).sort((a, b) => order.get(a)[0] - order.get(b)[0] || order.get(a)[1] - order.get(b)[1]);
+      if (!ids.length) return { count: 0, entries: [], tried: 0, capped: 0, failed: false };
       const byId = new Map(tabs.map((t) => [t.id, t]));
       const entries = ids.map((id) => spacesOf.cleanedEntry(byId.get(id), at));
-      await mutate((kept) => spacesOf.keepCleaned(kept, entries, at));
-      let closed = ids;
-      try { await chrome.tabs.remove(ids); } catch (error) {
-        warn("close", error);
-        const open = new Set((await chrome.tabs.query({ windowType: "normal" })).map((t) => t.id));
-        closed = ids.filter((id) => !open.has(id));
-        const still = entries.filter((_, i) => open.has(ids[i]));
-        if (still.length) await forget(still);
+      const none = { count: 0, entries: [], tried: ids.length, capped: 0, failed: true };
+      try { await mutate((kept) => spacesOf.keepCleaned(kept, entries, at)); } catch (error) { warn("store the list; nothing was closed", error); return none; }
+      let ok;
+      try { ok = spacesOf.confirmedEntries(await load(), entries); } catch (error) { warn("read the list back; nothing was closed", error); return none; }
+      const capped = ok.filter((x) => !x).length;
+      // nothing of it in the list: the write did not take (store.set resolves even when it fails)
+      if (!ok.some(Boolean)) { warn("the list did not take the entries; nothing was closed", ""); return none; }
+      if (capped) console.warn(`[vivarc] cleanup: ${capped} tabs stayed open: the Recently Cleaned list holds ${spacesOf.CLEAN_KEEP_MAX}`);
+      const eligible = new Set(pick(await chrome.tabs.query({ windowType: "normal" })));
+      const closing = ids.filter((id, i) => ok[i] && eligible.has(id));
+      const spared = entries.filter((_, i) => ok[i] && !eligible.has(ids[i]));
+      if (spared.length) await forget(spared).catch((error) => warn("update the list", error));
+      let failed = false;
+      let closed = closing;
+      if (closing.length) {
+        try { await chrome.tabs.remove(closing); } catch (error) {
+          warn("close", error);
+          failed = true;
+          const open = new Set((await chrome.tabs.query({ windowType: "normal" })).map((t) => t.id));
+          closed = closing.filter((id) => !open.has(id));
+          const still = entries.filter((_, i) => closing.includes(ids[i]) && open.has(ids[i]));
+          if (still.length) await forget(still).catch((e) => warn("update the list", e));
+        }
       }
-      return { count: closed.length, entries: entries.filter((_, i) => closed.includes(ids[i])), tried: ids.length };
+      return { count: closed.length, entries: entries.filter((_, i) => closed.includes(ids[i])), tried: ids.length, capped, failed };
     } finally { end?.(); }
   };
 
@@ -141,8 +180,8 @@
     try {
       const win = await hereId();
       const done = await run({ win, space: await shownIn(win) });
-      if (!done.count) { toast(done.tried ? "Could not clean up the tabs" : "Nothing to clean"); return done; }
-      toast(`Cleaned ${plural(done.count)}`, { label: "Undo", run: () => undo(done.entries) }, TOAST_MS);
+      if (!done.count) { toast(done.failed ? "Could not clean up the tabs" : "Nothing to clean"); return done; }
+      toast(`Cleaned ${plural(done.count)}${done.capped ? `; ${plural(done.capped)} stayed (the list is full)` : ""}`, { label: "Undo", run: () => undo(done.entries) }, TOAST_MS);
       return done;
     } catch (error) {
       warn("clean up", error);
@@ -153,6 +192,7 @@
 
   // ---- the daily run ----
   let ownWindow = null;
+  let ownPrivate = false;
   let looking = false;
   // One look: -> what it did ("off", "not leader", "busy", "not due", or the number of tabs cleaned). Two looks at once
   // (start-up and the timer landing together) would both find it due before either records it: the second stands down.
@@ -161,8 +201,9 @@
     looking = true;
     try {
       if (!window.__vm.settings?.get("cleanupDaily")) return "off";
-      if (ownWindow == null) ownWindow = await hereId();
-      if (spacesOf.leaderOf(await chrome.windows.getAll()) !== ownWindow) return "not leader";
+      if (ownWindow == null) { const here = await chrome.windows.getCurrent(); ownWindow = here.id; ownPrivate = !!here.incognito; }
+      if (ownPrivate) return "private"; // a private window never runs it
+      if (spacesOf.cleanupLeader(await chrome.windows.getAll()) !== ownWindow) return "not leader";
       if (window.__vm.spaceRepair?.busy()) return "busy"; // a gesture is moving tabs: the next look will do
       const at = now();
       if (!spacesOf.cleanupDue(await store.get(LAST, 0), at)) return "not due";
