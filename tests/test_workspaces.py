@@ -337,5 +337,66 @@ class NewWindowClick(unittest.TestCase):
             self.assertFalse(self.wants(windows, metaKey=True))
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class ReturnFocus(unittest.TestCase):
+    """Vivaldi re-focuses the address field of a tab that was left with the cursor in it, which floats the collapsed
+    field open over the sidebar on a plain tab switch. Focus goes back to the page only when nobody asked for the field."""
+
+    def give_back(self, **over):
+        state = {"msSinceActivation": 20, "userAsked": False, "edited": False, "popupOpen": False, **over}
+        return js("workspaces.returnFocus(state)", state=state)
+
+    def test_a_focus_just_after_a_tab_switch_nobody_asked_for_goes_back_to_the_page(self):
+        self.assertTrue(self.give_back())
+        self.assertTrue(self.give_back(msSinceActivation=0))
+
+    def test_the_window_closes_at_150_ms(self):
+        self.assertTrue(self.give_back(msSinceActivation=150))
+        self.assertFalse(self.give_back(msSinceActivation=151))
+        self.assertFalse(self.give_back(msSinceActivation=5000))
+
+    def test_a_focus_before_any_activation_or_with_no_timing_is_left_alone(self):
+        self.assertFalse(self.give_back(msSinceActivation=-1))
+        self.assertFalse(self.give_back(msSinceActivation=None))
+        self.assertFalse(js("workspaces.returnFocus()"))
+
+    def test_ctrl_l_f6_or_a_click_on_the_field_is_left_alone(self):
+        self.assertFalse(self.give_back(userAsked=True))
+
+    def test_typed_text_is_left_alone(self):
+        self.assertFalse(self.give_back(edited=True))
+
+    def test_a_permission_popup_in_the_field_is_left_alone(self):
+        self.assertFalse(self.give_back(popupOpen=True))
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class ShowsPage(unittest.TestCase):
+    """The address field holds no edits when it shows the tab's own address, as Vivaldi writes it."""
+
+    def shows(self, value, url, pending=None):
+        return js("workspaces.showsPage(value, tab)", value=value, tab={"url": url, "pendingUrl": pending})
+
+    def test_the_address_as_it_is(self):
+        self.assertTrue(self.shows("https://example.com/a/b?q=1#x", "https://example.com/a/b?q=1#x"))
+        self.assertTrue(self.shows("data:text/html,<title>Z</title>Z", "data:text/html,<title>Z</title>Z"))
+
+    def test_vivaldi_drops_a_lone_trailing_slash_and_writes_internal_pages_with_one_colon(self):
+        self.assertTrue(self.shows("https://example.com", "https://example.com/"))
+        self.assertTrue(self.shows("vivaldi:settings", "vivaldi://settings/"))
+
+    def test_a_page_still_loading_shows_its_pending_address(self):
+        self.assertTrue(self.shows("https://example.com/next", "https://example.com/old", "https://example.com/next"))
+
+    def test_anything_else_counts_as_typed(self):
+        self.assertFalse(self.shows("exam", "https://example.com/"))
+        self.assertFalse(self.shows("", "https://example.com/"))
+        self.assertFalse(self.shows("https://example.com/other", "https://example.com/"))
+        self.assertFalse(self.shows("https://example.com", None))
+
+    def test_a_tab_that_cannot_be_read_counts_as_typed(self):
+        self.assertFalse(js("workspaces.showsPage('x', null)"))
+
+
 if __name__ == "__main__":
     unittest.main()

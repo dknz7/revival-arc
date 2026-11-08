@@ -576,6 +576,7 @@
   window.addEventListener("vm-open-command-bar", () => open(null));
   // The sidebar's URL field: edit the current page's address in the bar, as Arc's Cmd+L does.
   window.addEventListener("vm-edit-url", async () => {
+    asked(); // the user asked to edit the address: no tab switch just before it may send the cursor to the page
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
     if (!active) return open(null);
     open(active.id, active.windowId, true, isBlank(active) ? null : active.pendingUrl || active.url || "");
@@ -619,12 +620,26 @@
     if (own.every(isBlank)) open(tabId, windowId, true);
   };
 
+  // The address field must not pop open on a tab switch (the handler is at the end of this file). Its state: Vivaldi
+  // focuses the field of a tab left with the cursor there, a few ms after that tab is activated in this window.
+  let myWindow = null;
+  chrome.windows.getCurrent().then((win) => { myWindow = win.id; }, () => {});
+  let activation = { at: -Infinity, tabId: null, tab: null, handled: false };
+  let askedAt = -Infinity;
+  const asked = () => { askedAt = Date.now(); }; // Ctrl+L, Cmd+L, F6, a click on the field, the edit-URL action
+  const noteActivation = (tabId, windowId) => { // the newest activation in this window, its tab already on the way
+    try {
+      if (myWindow == null || windowId !== myWindow) return;
+      activation = { at: Date.now(), tabId, tab: Promise.resolve(chrome.tabs.get(tabId)).catch(() => null), handled: false };
+    } catch (_) {}
+  };
   const activeHistory = [];
   const lastActive = new Map(); // window id -> its active tab, seeded so the first switch after start counts
   chrome.tabs.query({ active: true }).then((tabs) => {
     for (const t of tabs) if (!lastActive.has(t.windowId)) lastActive.set(t.windowId, t.id);
   }, () => {});
   chrome.tabs.onActivated.addListener(({ tabId, windowId }) => {
+    noteActivation(tabId, windowId);
     activeHistory.push(tabId);
     if (activeHistory.length > 6) activeHistory.shift();
     const previous = lastActive.get(windowId);
@@ -663,5 +678,45 @@
       }, 120);
     }
   });
+  // A tab switch must not pop the collapsed address field open. Vivaldi remembers per tab where the cursor was; a tab
+  // left with it in the address field (any switch made while the field had focus) puts it back there on every return,
+  // and the field floats open over the sidebar. When the field gains focus just after a tab activation in this window
+  // and nobody asked for it, the active page gets the focus instead (webview.focus(), which is how the page gets it
+  // when Vivaldi has no such memory; Vivaldi then records "page" for the tab, so the next switch is quiet). A new tab
+  // is left alone: Vivaldi putting the cursor in the field is what hands the tab to the command bar.
+  const ASKED_MS = 1500; // a Ctrl+L, F6 or click on the field this recently is the user asking for it
+  // (State: myWindow, activation, asked and noteActivation, above the tab events, which feed them.)
+  const ASK_KEYS = new Set(["ctrl+l", "l+meta", "f6", "alt+d"].map((k) => window.__vm.normalise(k)));
+  window.__vm.onShortcut((key) => { if (ASK_KEYS.has(key)) asked(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "F6" || ((e.ctrlKey || e.metaKey) && e.key?.toLowerCase() === "l") || (e.altKey && e.key?.toLowerCase() === "d")) asked();
+  }, true);
+  document.addEventListener("pointerdown", (e) => { if (e.target?.closest?.(".UrlBar-AddressField")) asked(); }, true);
+  document.addEventListener("focusin", async (e) => {
+    try {
+      const field = e.target;
+      if (field?.id !== "urlFieldInput" || !field.closest?.(".UrlBar-AddressField")) return;
+      const sinceActivation = Date.now() - activation.at;
+      const current = activation;
+      const give = window.__vm.workspaces?.returnFocus;
+      if (!give || current.handled || sinceActivation > window.__vm.workspaces.RETURN_FOCUS_MS || launching || bar) return;
+      if (!document.querySelector("#browser.vm-on")) return;
+      const tab = await current.tab;
+      if (current !== activation || !tab || tab.active === false || isBlank(tab) || document.activeElement !== field) return;
+      const verdict = give({
+        msSinceActivation: sinceActivation,
+        userAsked: Date.now() - askedAt < ASKED_MS,
+        edited: !window.__vm.workspaces.showsPage(field.value, tab),
+        popupOpen: !!document.querySelector(".addressfield-popup-container"),
+      });
+      if (!verdict) return;
+      const view = document.getElementById(String(tab.id));
+      if (view?.tagName !== "WEBVIEW") return;
+      current.handled = true;
+      view.focus();
+    } catch (error) {
+      console.warn("[vivarc] return focus to the page:", error);
+    }
+  }, true);
   console.log("[vivarc] command bar started");
 })();

@@ -1874,6 +1874,84 @@ cuCase("CU.read-fails-keeps-the-list", {
     J(r.after) === J(["X2", "X3"]) ? null : `the list after failed reads: ${J(r.after)} (earlier entries lost?)`],
 });
 
+// Task 8o: a tab switch must not pop Vivaldi's hidden address field open. Vivaldi remembers per tab where the cursor was; a
+// tab left with it in the address field re-focuses the field on every return, which Vivarc keeps collapsed. The tab is
+// made to remember "addressfield" the way Vivaldi's own Ctrl+L does it: the field takes focus on it, and the tab is
+// switched away from. Both layouts.
+const afState = (win) => h.ev(`(() => { const f = document.querySelector(".toolbar-mainbar #urlFieldInput") || document.getElementById("urlFieldInput");
+  const af = document.querySelector(".UrlBar-AddressField"); const r = af && af.getBoundingClientRect(); const a = document.activeElement;
+  return { fieldFocused: !!f && a === f, value: f ? f.value : null, afH: r ? Math.round(r.height) : null, active: a ? a.tagName : null, bar: !!document.getElementById("vm-cmd"),
+    barFocused: !!a && !!document.querySelector("#vm-cmd input") && a === document.querySelector("#vm-cmd input") }; })()`, win);
+const afFocusField = (win) => h.ev(`((document.querySelector(".toolbar-mainbar #urlFieldInput") || document.getElementById("urlFieldInput")).focus(), 1)`, win);
+const afSetup = async () => {
+  await mkWin("W", { width: 1100 });
+  await tab(ctx.W, "AFA", null, { active: true }); await tab(ctx.W, "AFB", null);
+  await sleep(1200); await focus(ctx.W); await sleep(600);
+};
+const afLeaveAfield = async () => { // AFA remembers "addressfield", AFB is on screen
+  await activate(ctx.tabs.AFA); await sleep(600);
+  await afFocusField(ctx.W); await sleep(300);
+  await activate(ctx.tabs.AFB); await sleep(700);
+};
+const afQuiet = (r, what) => [r.fieldFocused ? `${what}: the field has the cursor` : null, r.afH === 0 ? null : `${what}: the field is ${r.afH}px tall (floated open)`, r.active === "WEBVIEW" ? null : `${what}: focus is on ${r.active}, not the page`];
+for (const layout of ["dia", "arc"]) {
+  def(`AF.tab-switch-keeps-field-collapsed-${layout}`, {
+    layout, setup: afSetup,
+    act: async () => {
+      await afLeaveAfield();
+      await activate(ctx.tabs.AFA); await sleep(600);
+      const first = await afState(ctx.W);
+      await activate(ctx.tabs.AFB); await sleep(600); await activate(ctx.tabs.AFA); await sleep(600);
+      return { first, second: await afState(ctx.W) };
+    },
+    expect: (s, b, r) => [...afQuiet(r.first, "switching back to the tab that remembered the field"), ...afQuiet(r.second, "switching away and back again")],
+  });
+  def(`AF.ctrl-l-floats-and-takes-typing-${layout}`, {
+    layout, setup: afSetup,
+    act: async () => {
+      await activate(ctx.tabs.AFA); await sleep(800); // a quiet tab: no switch within 150 ms of the focus
+      await afFocusField(ctx.W); await sleep(300);
+      const floated = await afState(ctx.W);
+      await h.cdp(ctx.W).send("Input.insertText", { text: "typed-after-ctrl-l" }); await sleep(200);
+      return { floated, typed: await afState(ctx.W) };
+    },
+    expect: (s, b, r) => [r.floated.fieldFocused && r.floated.afH > 0 ? null : `the field did not float on focus: ${J(r.floated)}`, String(r.typed.value).includes("typed-after-ctrl-l") ? null : `typing did not reach the field: ${J(r.typed.value)}`],
+  });
+  def(`AF.typed-text-survives-a-switch-${layout}`, {
+    layout, setup: afSetup,
+    act: async () => {
+      await activate(ctx.tabs.AFA); await sleep(600);
+      await afFocusField(ctx.W); await sleep(300);
+      await h.cdp(ctx.W).send("Input.insertText", { text: "my-typed-draft" }); await sleep(250);
+      await activate(ctx.tabs.AFB); await sleep(700); await activate(ctx.tabs.AFA); await sleep(600);
+      return afState(ctx.W);
+    },
+    expect: (s, b, r) => [String(r.value).includes("my-typed-draft") ? null : `the typed text is gone: ${J(r.value)}`, r.fieldFocused ? null : "Vivaldi's behaviour was not left alone: the field no longer has the cursor"],
+  });
+  def(`AF.popup-in-the-field-is-left-alone-${layout}`, {
+    layout, setup: afSetup,
+    act: async () => {
+      await afLeaveAfield();
+      await h.ev(`(() => { const d = document.createElement("div"); d.className = "addressfield-popup-container"; d.id = "af-fake-popup"; document.querySelector(".UrlBar-AddressField").append(d); return 1; })()`, ctx.W);
+      await activate(ctx.tabs.AFA); await sleep(600);
+      const r = await afState(ctx.W);
+      await h.ev(`(document.getElementById("af-fake-popup")?.remove(), 1)`, ctx.W);
+      return r;
+    },
+    expect: (s, b, r) => [r.fieldFocused && r.afH > 0 ? null : `a popup in the field did not keep it: ${J(r)}`],
+  });
+  def(`AF.a-new-tab-still-opens-the-command-bar-${layout}`, {
+    layout, setup: afSetup,
+    act: async () => {
+      await waitFor(() => h.ev(`performance.now() > 6000`, ctx.W), 12000); // the bar ignores new tabs in a window's first 5 s
+      await h.ev(`chrome.tabs.create({ windowId: ${ctx.W} }).then((t) => t.id)`, ctx.H);
+      await sleep(900);
+      return afState(ctx.W);
+    },
+    expect: (s, b, r) => [r.bar && r.barFocused ? null : `the command bar did not open with the cursor: ${J(r)}`, r.afH === 0 && !r.fieldFocused ? null : `Vivaldi's field floated over the bar: ${J(r)}`],
+  });
+}
+
 // Part 3 decisions that are the same check as a row above.
 const ALIASES = { "P3.1": ["T.parked-other.click"], "P3.2": ["R.D8", "R.D2"] };
 

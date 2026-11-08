@@ -70,7 +70,7 @@ async function loadBar(context, settingsOpen = false) {
     remove() {} focus() {} select() { this.selected = true; } scrollIntoView() {} querySelector() { return null; }
   }
   const browser = new Element('body');
-  context.document = { body: browser, querySelector: () => browser, createElement: tag => { const node = new Element(tag); nodes.push(node); return node; } };
+  context.document = { body: browser, addEventListener() {}, querySelector: () => browser, createElement: tag => { const node = new Element(tag); nodes.push(node); return node; } };
   context.setTimeout = () => {};
   context.CustomEvent = class {};
   const events = context.events = {};

@@ -565,5 +565,26 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  // Vivaldi remembers per tab where the cursor was, and a tab left with it in the address field puts it back there on
+  // every switch to that tab. Vivarc keeps that field collapsed, so the field would float open over the sidebar on a
+  // plain tab click. Within RETURN_FOCUS_MS of a tab activation, a focus nobody asked for (no Ctrl+L, Cmd+L, F6 or click
+  // on the field; no typed text; no permission popup in it) goes back to the page instead.
+  const RETURN_FOCUS_MS = 150;
+  const returnFocus = ({ msSinceActivation, userAsked, edited, popupOpen } = {}) =>
+    typeof msSinceActivation === "number" && msSinceActivation >= 0 && msSinceActivation <= RETURN_FOCUS_MS &&
+    !userAsked && !edited && !popupOpen;
+
+  // Whether the address field shows the tab's own address and nothing typed. Vivaldi writes the address without a lone
+  // trailing slash and an internal page as vivaldi:settings (measured on 8.2); anything else counts as typed.
+  const showsPage = (value, tab) => {
+    const plain = (text) => {
+      let s = String(text ?? "").trim();
+      try { s = decodeURI(s); } catch (_) {}
+      return s.replace(/^vivaldi:\/\//i, "vivaldi:").replace(/\/+$/, "").toLowerCase();
+    };
+    const shown = plain(value);
+    return !!shown && [tab?.url, tab?.pendingUrl].some((url) => url && plain(url) === shown);
+  };
+
+  window.__vm.workspaces = { returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();
