@@ -22,6 +22,12 @@
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M3 7.5A2.5 2.5 0 0 1 5.5 5h4l2 2.5h7A2.5 2.5 0 0 1 21 10v7.5a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></svg>';
   const ICON_OPEN =
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M3 17.5V7.5A2.5 2.5 0 0 1 5.5 5h4l2 2.5h7A2.5 2.5 0 0 1 21 10v1.5"/><path d="M3.3 18.6 5.2 12a2 2 0 0 1 1.9-1.5H21a1 1 0 0 1 1 1.3l-1.8 6.4A2 2 0 0 1 18.3 20H5.5a2.2 2.2 0 0 1-2.2-1.4z"/></svg>';
+  // Sound (Task 8l): a speaker for a tab making sound, the same speaker crossed out for a muted one.
+  const SPEAKER = '<path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z"/>';
+  const ICON_SOUND =
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${SPEAKER}<path d="M15.5 9a4 4 0 0 1 0 6"/><path d="M18 6.5a8 8 0 0 1 0 11"/></svg>`;
+  const ICON_MUTED =
+    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${SPEAKER}<path d="m16 9.5 5 5"/><path d="m21 9.5-5 5"/></svg>`;
 
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
@@ -555,6 +561,28 @@
     return b;
   };
 
+  // One tab at a time; a failure says so. The row follows from the tab's own update event, so nothing is re-rendered here.
+  const setMuted = (tab, muted) => Promise.resolve().then(() => chrome.tabs.update(tab.id, { muted })).catch((error) => {
+    console.warn("[vivarc] mute tab:", error);
+    window.dispatchEvent(new CustomEvent("vm-toast", { detail: `Could not ${muted ? "mute" : "unmute"} the tab` }));
+  });
+  const muteItem = (tab) => [spacesOf.muteTabLabel(tab), () => setMuted(tab, !tab.mutedInfo?.muted)];
+  // The speaker of a tab making sound (just before its name: the close button that shows on hover takes room at the
+  // row's right, so a speaker after the name would slide away from the pointer and the click would land on the ×), or the crossed-out one of a muted tab (in place of its favicon).
+  // Either click toggles the mute and stops there, so the row is not also activated.
+  const audioIcon = (tab, state) => {
+    const muted = state === "muted";
+    const b = el("span", muted ? "vm-ico vm-ico-muted" : "vm-audio");
+    b.innerHTML = muted ? ICON_MUTED : ICON_SOUND;
+    b.title = muted ? "Unmute tab" : "Mute tab";
+    b.addEventListener("click", (e) => { e.stopPropagation(); setMuted(tab, !muted); });
+    b.addEventListener("dblclick", (e) => e.stopPropagation());
+    return b;
+  };
+  // The row's icon (a muted tab shows its speaker instead of the favicon) and, for a tab making sound, its speaker.
+  const tabIcon = (tab, url, live) => (spacesOf.audioState(tab) === "muted" ? audioIcon(tab, "muted") : iconEl(url, live));
+  const playingIcon = (tab) => (spacesOf.audioState(tab) === "playing" ? [audioIcon(tab, "playing")] : []);
+
   // `save` stores a changed name: a bookmark's by default, a tab folder's for its tabs.
   let renameField = null; // the name being typed: the sidebar holds its re-renders until it is done
   // Only while the field is on screen and has the cursor: one that never got it (the sidebar was hidden) holds nothing up.
@@ -615,7 +643,7 @@
         const target = isFav ? state.pinned : await ensureFolder("Favorites");
         if (target) chrome.bookmarks.move(node.id, { parentId: target.id });
       }],
-      ...(tab ? [["Close Tab", () => chrome.tabs.remove(tab.id)]] : []),
+      ...(tab ? [muteItem(tab), ["Close Tab", () => chrome.tabs.remove(tab.id)]] : []),
       [],
       [isFav ? "Remove from Favorites" : "Remove from Pinned", () => discard(node), true],
     ]);
@@ -629,10 +657,10 @@
     row.title = away ? `${node.title || node.url}\n${tab.url}` : node.url;
     if (tab?.active) row.classList.add("active");
     if (away) row.classList.add("away");
-    row.append(iconEl(node.url, away ? undefined : tab?.favIconUrl));
+    row.append(tabIcon(tab, node.url, away ? undefined : tab?.favIconUrl));
     if (away) row.append(el("span", "vm-away-mark", "/"));
     const title = el("span", "vm-title", away ? (tab.title || tab.url) : (node.title || node.url));
-    row.append(title);
+    row.append(...playingIcon(tab), title);
     if (away) row.append(actionButton("↩", "Back to pinned page", () => backToPin(tab, node)));
     if (!tab) row.append(actionButton("×", "Remove from Pinned", () => discard(node)));
     else if (away) row.append(actionButton("–", "Separate From Pinned Tab", () => separate(tab, node)));
@@ -719,6 +747,13 @@
     if (tab?.active) tile.classList.add("active");
     if (away) tile.classList.add("away");
     tile.append(iconEl(node.url, away ? undefined : tab?.favIconUrl));
+    // A tile only has its icon: a muted tab's speaker sits over its corner (a tile playing sound shows nothing extra).
+    if (spacesOf.audioState(tab) === "muted") {
+      const badge = el("span", "vm-fav-muted");
+      badge.innerHTML = ICON_MUTED;
+      badge.title = "Muted";
+      tile.append(badge);
+    }
     tile.addEventListener("click", () => focusOrOpen(node));
     tile.addEventListener("contextmenu", bookmarkMenu(node, true));
     wireDrag(tile, { type: "bm", node, url: node.url });
@@ -858,7 +893,7 @@
     if (tab.active) row.classList.add("active");
     if (tab.discarded) row.classList.add("discarded");
     row.title = tab.url;
-    row.append(iconEl(tab.url, tab.favIconUrl), el("span", "vm-title", tab.title || tab.url));
+    row.append(tabIcon(tab, tab.url, tab.favIconUrl), ...playingIcon(tab), el("span", "vm-title", tab.title || tab.url));
     if (window.__vm.tilingOf(tab)) row.append(el("span", "vm-split-mark", "◫"));
     row.append(actionButton("×", "Close tab", () => chrome.tabs.remove(tab.id)));
     row.addEventListener("click", () => chrome.tabs.update(tab.id, { active: true }));
@@ -890,6 +925,7 @@
       ...moveTargets().flatMap((target, i, all) => [[`Move to ${target.name}`, () => moveTabToSpace(tab, target)], ...(i === all.length - 1 ? [[]] : [])]),
       ["Duplicate Tab", () => chrome.tabs.duplicate(tab.id)],
       ["Copy Link", () => copy(tab.url)],
+      muteItem(tab),
       [],
       ["Close Tab", () => chrome.tabs.remove(tab.id)],
       ["Close Other Tabs", () => {
@@ -1735,6 +1771,8 @@
     const SPACE_EVENTS = new Set(["onActivated", "onAttached", "onDetached", "onRemoved"]);
     for (const ev of ["onCreated", "onRemoved", "onUpdated", "onMoved", "onActivated", "onAttached", "onDetached", "onReplaced"]) {
       chrome.tabs[ev]?.addListener((...args) => {
+        // A muted tab shows the same whether or not it is making sound: its audible flapping (video) re-renders nothing.
+        if (ev === "onUpdated" && Object.keys(args[1] || {}).every((k) => k === "audible") && state.allTabs.some((t) => t.id === args[0] && t.mutedInfo?.muted)) return;
         const id = spacesOf.eventWindow(ev, args);
         if (id == null || ownWindow == null || id === ownWindow) refresh(false);
         else if (SPACE_EVENTS.has(ev)) checkDots();

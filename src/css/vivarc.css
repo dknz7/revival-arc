@@ -218,6 +218,37 @@
 }
 #vm-panel .vm-row:hover .vm-act { display: flex; }
 #vm-panel .vm-act:hover { opacity: 1; background-color: color-mix(in srgb, var(--colorFg) 18%, transparent); }
+/* Sound (Task 8l): the speaker of a tab making sound sits by its name, always shown, the size and hover of .vm-act;
+   a muted tab's crossed-out speaker takes the place of its favicon. */
+#browser.vm-on #vm-panel .vm-audio {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  opacity: 0.75;
+}
+#browser.vm-on #vm-panel .vm-audio svg { width: 15px; height: 15px; }
+#browser.vm-on #vm-panel .vm-audio:hover { opacity: 1; background-color: color-mix(in srgb, var(--colorFg) 18%, transparent); }
+#browser.vm-on #vm-panel .vm-ico-muted { opacity: 0.75; }
+#browser.vm-on #vm-panel .vm-ico-muted svg { width: 17px; height: 17px; }
+#browser.vm-on #vm-panel .vm-ico-muted:hover { opacity: 1; background-color: color-mix(in srgb, var(--colorFg) 18%, transparent); }
+#browser.vm-on #vm-panel .vm-fav-muted {
+  position: absolute;
+  right: 5px;
+  bottom: 4px;
+  display: flex;
+  width: 14px;
+  height: 14px;
+  padding: 1px;
+  border-radius: 50%;
+  pointer-events: none;
+  color: var(--colorFg);
+  background-color: var(--colorBg);
+}
+#browser.vm-on #vm-panel .vm-fav-muted svg { width: 100%; height: 100%; }
 
 #vm-panel .vm-divider {
   display: flex;

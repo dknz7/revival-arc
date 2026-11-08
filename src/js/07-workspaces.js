@@ -408,6 +408,9 @@
   };
   // "Mute All Tabs" flips to "Unmute All Tabs" once every listed tab is muted.
   const muteAllLabel = (tabs) => ((tabs || []).length && tabs.every((t) => t.mutedInfo?.muted) ? "Unmute All Tabs" : "Mute All Tabs");
+  // What a tab row says about sound: "muted" (whether or not it is making any), "playing", or nothing.
+  const audioState = (tab) => (tab?.mutedInfo?.muted ? "muted" : tab?.audible ? "playing" : null);
+  const muteTabLabel = (tab) => (tab?.mutedInfo?.muted ? "Unmute Tab" : "Mute Tab");
   // chrome.sessions.getRecentlyClosed -> the entries the dropdown lists, newest first (the API's order), each with a
   // sessionId (restorable). A closed tab shows its title, else its address.
   const closedTabs = (sessions, max = 10) => (sessions || []).filter((s) => s.tab?.sessionId)
@@ -562,5 +565,5 @@
     onRemoved: second?.windowId, onMoved: second?.windowId, onAttached: second?.newWindowId, onDetached: second?.oldWindowId,
   })[ev];
 
-  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

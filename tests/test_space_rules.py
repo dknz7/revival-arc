@@ -935,6 +935,25 @@ class NewTabMenu(unittest.TestCase):
         self.assertEqual(js("workspaces.muteAllLabel([{}, {mutedInfo: {muted: true}}])"), "Mute All Tabs")
         self.assertEqual(js("workspaces.muteAllLabel([])"), "Mute All Tabs")
 
+    def test_a_tab_row_shows_muted_or_playing_or_nothing(self):
+        def state(**tab):
+            return js("workspaces.audioState(tab)", tab=tab)
+        self.assertEqual(state(audible=True), "playing")
+        self.assertEqual(state(audible=True, mutedInfo={"muted": False}), "playing")
+        self.assertEqual(state(audible=False), None)
+        self.assertEqual(state(), None)
+        # a muted tab shows muted whether or not it is making sound (Chrome keeps audible true under a mute)
+        self.assertEqual(state(audible=True, mutedInfo={"muted": True}), "muted")
+        self.assertEqual(state(audible=False, mutedInfo={"muted": True}), "muted")
+        self.assertEqual(js("workspaces.audioState(null)"), None)
+        self.assertEqual(js("workspaces.audioState(undefined)"), None)
+
+    def test_the_tab_menu_says_mute_or_unmute(self):
+        self.assertEqual(js("workspaces.muteTabLabel({})"), "Mute Tab")
+        self.assertEqual(js("workspaces.muteTabLabel({mutedInfo: {muted: false}})"), "Mute Tab")
+        self.assertEqual(js("workspaces.muteTabLabel({mutedInfo: {muted: true}})"), "Unmute Tab")
+        self.assertEqual(js("workspaces.muteTabLabel(null)"), "Mute Tab")
+
     @staticmethod
     def sessions():
         def win(sid, *titles):

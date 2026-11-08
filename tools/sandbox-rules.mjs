@@ -15,7 +15,7 @@
 // a state the repairs would fix at once (a split), it raises the shared busy mark tile gestures use, so repairs wait.
 import http from "node:http";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { Harness, sleep, tabUrl } from "./sandbox-lib.mjs";
+import { Harness, Cdp, targets, sleep, tabUrl } from "./sandbox-lib.mjs";
 
 const J = JSON.stringify;
 const args = process.argv.slice(2);
@@ -23,6 +23,8 @@ const opt = (name, fallback) => { const i = args.indexOf(name); return i >= 0 &&
 const LAYOUT = opt("--layout", "both");
 const ONLY = (opt("--only", "") || "").split(",").map((s) => s.trim()).filter(Boolean);
 const LOGDIR = opt("--log", null);
+const SHOTS = opt("--shots", null); // a folder: the sound cases (SND.) save screenshots there
+if (SHOTS) mkdirSync(SHOTS, { recursive: true });
 const EXTRA = args.includes("--extra");
 if (LOGDIR) mkdirSync(LOGDIR, { recursive: true });
 
@@ -48,7 +50,18 @@ const waitFor = async (fn, ms = 8000, every = 200) => {
 
 let server = null, origin = null;
 const startServer = async () => {
-  server = http.createServer((req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end(`<title>page${req.url}</title>page ${req.url}`); });
+  server = http.createServer((req, res) => {
+    res.writeHead(200, { "content-type": "text/html" });
+    // /snd-<label>: a page that, once told to (window.play(), from a CDP evaluate with a user gesture), plays a very quiet
+    // WebAudio tone; window.stop() ends it. Chrome then reports the tab as audible.
+    if (req.url.startsWith("/snd-")) {
+      res.end(`<title>SND-${req.url.slice(5)}</title>sound ${req.url}<script>let c, o;
+        window.play = async () => { c = new AudioContext(); await c.resume(); o = c.createOscillator(); const g = c.createGain(); g.gain.value = 0.002; o.connect(g).connect(c.destination); o.start(); return c.state; };
+        window.stop = () => { try { o.stop(); } catch (_) {} return 1; };</script>`);
+      return;
+    }
+    res.end(`<title>page${req.url}</title>page ${req.url}`);
+  });
   await new Promise((r) => server.listen(0, "127.0.0.1", r));
   origin = `http://127.0.0.1:${server.address().port}`;
 };
@@ -1050,6 +1063,209 @@ ntCase("N.mute-all", {
   expect: (s, b, r) => [r.first === "Mute All Tabs" ? null : `first label ${r.first}`, r.after.X1 && r.after.X2 && r.after.Y1 ? null : `not all of W's tabs muted: ${J(r.after)}`, r.after.Z1 ? "another window's tab was muted" : null,
     r.second === "Unmute All Tabs" ? null : `second label ${r.second} (dropdown reopened: ${r.reopened})`, Object.values(r.undone).some(Boolean) ? `Unmute left tabs muted: ${J(r.undone)}` : null, unchanged(b, s)],
 });
+
+// ---------- Task 8l: mute a tab, and see which tabs make sound ----------
+const sndUrl = (label) => `${origin}/snd-${label}`;
+// Evaluate in the tab's own page, as a user gesture (a page may not play sound without one).
+async function inPage(url, expr) {
+  const tg = await waitFor(async () => (await targets()).find((t) => t.type === "page" && t.url === url), 6000, 200);
+  if (!tg) throw new Error(`no page target for ${url}`);
+  const c = await Cdp.open(tg.webSocketDebuggerUrl);
+  try { return await c.send("Runtime.evaluate", { expression: expr, awaitPromise: true, userGesture: true }); } finally { c.close(); }
+}
+const tabState = (label) => h.ev(`chrome.tabs.get(${ctx.tabs[label]}).then((t) => ({ audible: !!t.audible, muted: !!t.mutedInfo?.muted, active: t.active }))`, ctx.H);
+const activeLabel = async (win) => { const s = await h.snap(ctx.H); const a = activeOf(s, win); return a ? labelOf(a) : null; };
+const TROW = (text) => `[...document.querySelectorAll("#vm-panel .vm-tab, #vm-panel .vm-link")].find((r) => r.textContent.includes(${J(text)}))`;
+const rowInfo = (win, text) => h.ev(`(() => { const r = ${TROW(text)}; if (!r) return null;
+  const q = (s) => r.querySelector(s), box = (n) => { if (!n) return null; const b = n.getBoundingClientRect(); return [Math.round(b.width), Math.round(b.height)]; };
+  const first = r.firstElementChild;
+  return { speaker: !!q(".vm-audio"), speakerTitle: q(".vm-audio")?.title ?? null, speakerBox: box(q(".vm-audio")), speakerSvg: box(q(".vm-audio svg")),
+    muted: !!q(".vm-ico-muted"), mutedTitle: q(".vm-ico-muted")?.title ?? null, mutedBox: box(q(".vm-ico-muted")), favicon: !!q(".vm-ico:not(.vm-ico-muted)"),
+    firstIsMuted: !!first?.classList.contains("vm-ico-muted"), speakerBeforeTitle: !!q(".vm-audio") && q(".vm-audio").nextElementSibling === q(".vm-title"),
+    actBox: box(q(".vm-act")), stroke: q(".vm-audio svg, .vm-ico-muted svg") ? getComputedStyle(q(".vm-audio svg, .vm-ico-muted svg")).stroke : null }; })()`, win);
+const shot = async (win, name) => {
+  if (!SHOTS) return;
+  const layout = await h.ev(`document.querySelector("#browser")?.classList.contains("vm-dia") ? "dia" : "arc"`, win);
+  const { data } = await h.cdp(win).send("Page.captureScreenshot", { format: "png" });
+  writeFileSync(`${SHOTS}/${layout}-${name}.png`, Buffer.from(data, "base64"));
+};
+const SET_SND = async () => {
+  await mkWin("W", { width: 900 });
+  await tab(ctx.W, "X1", sp("X"), { active: true });
+  ctx.snd = sndUrl(`X2-${Date.now()}`); // a fresh address per case: a closed case's page may linger in the target list
+  const id = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(ctx.snd)}, active: false, vivExtData: ${J(J({ workspaceId: sp("X") }))} }).then((t) => t.id)`, ctx.H);
+  ctx.tabs.SND = id;
+  await tab(ctx.W, "Y1", sp("Y"));
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W);
+  await waitFor(() => h.ev(`chrome.tabs.get(${id}).then((t) => t.status === "complete")`, ctx.H), 8000);
+};
+const sndCase = (id, c) => def(id, { gesture: true, ready: async () => (await waitFor(() => rowInfo(ctx.W, "SND-X2"), 8000)) && (await waitTile(ctx.W, "X")), setup: SET_SND, ...c });
+const want = (cond, msg) => (cond ? null : msg);
+
+// A tab playing sound shows a speaker by its name (same box as the row's other action buttons); clicking it mutes the tab
+// and swaps to the crossed-out speaker in place of the favicon, without activating the row; clicking that unmutes. The
+// row's own click still activates; the menu says Mute Tab / Unmute Tab and does the same, for a silent tab too.
+sndCase("SND.speaker-and-menu", {
+  act: async () => {
+    const r = {};
+    r.silent = await rowInfo(ctx.W, "SND-X2");
+    await inPage(ctx.snd, "play()");
+    r.playingOk = !!(await waitFor(async () => (await tabState("SND")).audible && (await rowInfo(ctx.W, "SND-X2")).speaker, 8000, 150));
+    r.playing = await rowInfo(ctx.W, "SND-X2");
+    r.x1Silent = await rowInfo(ctx.W, "X1");
+    await shot(ctx.W, "1-playing");
+    // the speaker click: mutes, must not activate X2
+    await clickOn(ctx.W, `${TROW("SND-X2")}.querySelector(".vm-audio")`);
+    r.muteOk = !!(await waitFor(async () => (await tabState("SND")).muted && (await rowInfo(ctx.W, "SND-X2")).muted, 6000, 150));
+    r.muted = await rowInfo(ctx.W, "SND-X2");
+    r.afterMute = { ...(await tabState("SND")), activeTab: await activeLabel(ctx.W) };
+    await shot(ctx.W, "2-muted");
+    // the row's own click still activates
+    await clickOn(ctx.W, `${TROW("SND-X2")}.querySelector(".vm-title")`);
+    r.rowClickActivated = !!(await waitFor(async () => (await tabState("SND")).active, 4000, 150));
+    // the muted icon unmutes (and does not activate: put X1 back in front first)
+    await activate(ctx.tabs.X1); await sleep(500);
+    await clickOn(ctx.W, `${TROW("SND-X2")}.querySelector(".vm-ico-muted")`);
+    r.unmuteOk = !!(await waitFor(async () => !(await tabState("SND")).muted && (await rowInfo(ctx.W, "SND-X2")).speaker, 6000, 150));
+    r.unmuted = await rowInfo(ctx.W, "SND-X2");
+    r.afterUnmute = { ...(await tabState("SND")), activeTab: await activeLabel(ctx.W) };
+    // the menu, both ways
+    r.menuMute = await tabMenu(ctx.W, "SND-X2", "Mute Tab");
+    r.menuMuted = !!(await waitFor(async () => (await tabState("SND")).muted, 4000, 150));
+    await sleep(300);
+    r.menuUnmute = await tabMenu(ctx.W, "SND-X2", "Unmute Tab");
+    r.menuUnmuted = !!(await waitFor(async () => !(await tabState("SND")).muted, 4000, 150));
+    // a silent tab can be muted from the menu too, and then shows the crossed-out speaker
+    r.silentMenu = await tabMenu(ctx.W, "X1", "Mute Tab");
+    r.silentMuted = !!(await waitFor(async () => (await tabState("X1")).muted && (await rowInfo(ctx.W, "X1")).muted, 4000, 150));
+    r.silentRow = await rowInfo(ctx.W, "X1");
+    await tabMenu(ctx.W, "X1", "Unmute Tab");
+    r.silentUnmuted = !!(await waitFor(async () => !(await tabState("X1")).muted && !(await rowInfo(ctx.W, "X1")).muted, 4000, 150));
+    // the menu, open, for a screenshot
+    await h.ev(`(() => { const r = ${TROW("SND-X2")}; const b = r.getBoundingClientRect(); r.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 8 })); return 1; })()`, ctx.W);
+    await sleep(400); await shot(ctx.W, "3-menu"); await escapeAll(ctx.W);
+    await inPage(ctx.snd, "stop()");
+    return r;
+  },
+  expect: (s, b, r) => [
+    want(!r.silent.speaker && !r.silent.muted, `a silent tab shows an audio icon: ${J(r.silent)}`),
+    want(r.playingOk, "the speaker did not appear on the playing tab"),
+    want(r.playing?.speaker && !r.playing.muted && r.playing.favicon, `playing row: ${J(r.playing)}`),
+    want(r.playing?.speakerTitle === "Mute tab", `speaker tooltip ${r.playing?.speakerTitle}`),
+    want(r.playing?.speakerBeforeTitle, "the speaker is not right before the tab's name"),
+    want(J(r.playing?.speakerBox) === J(r.playing?.actBox ?? [20, 20]) || J(r.playing?.speakerBox) === "[20,20]", `speaker box ${J(r.playing?.speakerBox)} is not the action button size`),
+    want(!r.x1Silent?.speaker, "the silent tab X1 shows a speaker"),
+    want(r.muteOk, "clicking the speaker did not mute the tab and swap the icon"),
+    want(r.muted?.firstIsMuted && !r.muted.favicon && !r.muted.speaker, `muted row: ${J(r.muted)}`),
+    want(r.muted?.mutedTitle === "Unmute tab", `muted icon tooltip ${r.muted?.mutedTitle}`),
+    want(r.afterMute?.activeTab === "X1" && !r.afterMute.active, `the speaker click activated the row: ${J(r.afterMute)}`),
+    want(r.rowClickActivated, "the row's own click no longer activates the tab"),
+    want(r.unmuteOk, "clicking the muted icon did not unmute"),
+    want(r.unmuted?.speaker && r.unmuted.favicon && !r.unmuted.muted, `unmuted row: ${J(r.unmuted)}`),
+    want(r.afterUnmute?.activeTab === "X1", `the muted icon click activated the row: ${J(r.afterUnmute)}`),
+    want(r.menuMute?.menu?.includes("Mute Tab") && !r.menuMute.error, `menu before: ${J(r.menuMute)}`),
+    want(r.menuMuted, "the menu's Mute Tab did not mute"),
+    want(r.menuUnmute?.menu?.includes("Unmute Tab") && !r.menuUnmute.error, `menu after: ${J(r.menuUnmute)}`),
+    want(r.menuUnmuted, "the menu's Unmute Tab did not unmute"),
+    want(r.silentMuted && r.silentRow?.firstIsMuted, `a silent tab muted from the menu: ${J(r.silentRow)}`),
+    want(r.silentUnmuted, "the silent tab did not unmute from the menu"),
+  ],
+});
+
+// Mute All Tabs (the dropdown): every row of the window then shows the crossed-out speaker, Unmute All Tabs clears them.
+sndCase("SND.mute-all-rows", {
+  act: async () => {
+    await inPage(ctx.snd, "play()");
+    await waitFor(async () => (await tabState("SND")).audible && (await rowInfo(ctx.W, "SND-X2")).speaker, 8000, 150);
+    const r = { before: await rowInfo(ctx.W, "SND-X2") };
+    await dropdownItem(ctx.W, "Mute All Tabs");
+    r.all = !!(await waitFor(async () => (await rowInfo(ctx.W, "SND-X2")).muted && (await rowInfo(ctx.W, "X1")).muted, 6000, 150));
+    r.rows = { SND: await rowInfo(ctx.W, "SND-X2"), X1: await rowInfo(ctx.W, "X1") };
+    await dropdownItem(ctx.W, "Unmute All Tabs");
+    r.cleared = !!(await waitFor(async () => !(await rowInfo(ctx.W, "SND-X2")).muted && !(await rowInfo(ctx.W, "X1")).muted, 6000, 150));
+    r.after = { SND: await rowInfo(ctx.W, "SND-X2"), X1: await rowInfo(ctx.W, "X1") };
+    await inPage(ctx.snd, "stop()");
+    return r;
+  },
+  expect: (s, b, r) => [want(r.before?.speaker, `no speaker before: ${J(r.before)}`), want(r.all, `Mute All did not show on the rows: ${J(r.rows)}`),
+    want(r.cleared, `Unmute All did not clear the rows: ${J(r.after)}`), want(r.after?.SND?.speaker, "the still-playing tab lost its speaker after Unmute All")],
+});
+
+// Audible flaps while a video plays: count the tab events this window gets and the times its panel is rebuilt. Unmuted, a
+// flap is one (debounced) rebuild; muted, the same flaps rebuild nothing.
+sndCase("SND.audible-flapping", {
+  act: async () => {
+    await h.ev(`(() => { window.__flap = { upd: 0, aud: 0, renders: 0 };
+      chrome.tabs.onUpdated.addListener((id, ch) => { window.__flap.upd++; if ("audible" in ch) window.__flap.aud++; });
+      new MutationObserver(() => { window.__flap.renders++; }).observe(document.querySelector("#vm-panel"), { childList: true, subtree: true }); return 1; })()`, ctx.W);
+    const flap = async (n) => {
+      await h.ev(`(window.__flap.upd = window.__flap.aud = window.__flap.renders = 0, 1)`, ctx.W);
+      for (let i = 0; i < n; i++) { await inPage(ctx.snd, "play()"); await sleep(1200); await inPage(ctx.snd, "stop()"); await sleep(3200); }
+      await sleep(600);
+      return h.ev(`({ ...window.__flap })`, ctx.W);
+    };
+    const r = {};
+    r.unmuted = await flap(3);
+    await h.ev(`chrome.tabs.update(${ctx.tabs.SND}, { muted: true }).then(() => 1)`, ctx.H); await sleep(1500);
+    r.muted = await flap(3);
+    return r;
+  },
+  expect: (s, b, r) => [want(r.unmuted.aud >= 4, `audible barely flapped while unmuted (${J(r.unmuted)})`), want(r.unmuted.renders >= 1 && r.unmuted.renders <= r.unmuted.upd, `unmuted rebuilds ${J(r.unmuted)}`),
+    want(r.muted.aud >= 4, `audible barely flapped while muted (${J(r.muted)})`), want(r.muted.renders === 0, `a muted tab's audible flap rebuilt the panel ${r.muted.renders} times (${J(r.muted)})`)],
+});
+
+// Pinned rows and favorite tiles: a pinned row is a tab row (speaker by its name, crossed-out speaker for its icon); a tile
+// only has its icon, so a muted tab's crossed-out speaker sits over its corner. The right-click menus of both offer Mute Tab.
+def("SND.pinned-and-favorite", {
+  gesture: true,
+  ready: async () => (await waitFor(() => hasEl(ctx.W, "#vm-panel .vm-fav"), 8000)) || true,
+  setup: async () => {
+    await mkWin("W", { width: 900 });
+    await tab(ctx.W, "X1", sp("X"), { active: true });
+    await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W);
+    const f = await waitFor(async () => { const all = await folders(); return all.X?.pinned ? all : null; });
+    if (!f) throw new Error("no Pinned folder for X");
+    ctx.pinUrl = sndUrl(`PIN-${Date.now()}`); ctx.favUrl = sndUrl(`FAV-${Date.now()}`);
+    await bookmark(f.X.pinned, "PINSND", ctx.pinUrl);
+    await bookmark(await favoritesFolder(), "FAVSND", ctx.favUrl);
+    if (!(await clickPin(ctx.W, ctx.pinUrl, "PINSND"))) throw new Error("the pin is not in W's sidebar");
+    if (!(await clickFav(ctx.W, "FAVSND"))) throw new Error("the favorite is not in W's sidebar");
+    await waitFor(async () => (await h.snap(ctx.H)).wins.some((w) => w.tabs.some((t) => t.url === ctx.favUrl)) && (await h.snap(ctx.H)).wins.some((w) => w.tabs.some((t) => t.url === ctx.pinUrl)), 8000);
+    await sleep(1200); await activate(ctx.tabs.X1); await focus(ctx.W);
+  },
+  act: async () => {
+    const r = {};
+    await inPage(ctx.pinUrl, "play()"); await inPage(ctx.favUrl, "play()");
+    await waitFor(async () => (await rowInfo(ctx.W, "PINSND"))?.speaker, 8000, 150);
+    r.pinPlaying = await rowInfo(ctx.W, "PINSND");
+    // pinned row: right-click, Mute Tab
+    const menuOn = (expr, label) => h.ev(`(async () => { const n = ${expr}; if (!n) return { error: "no node" }; const b = n.getBoundingClientRect();
+      n.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 20, clientY: b.top + 8 }));
+      await new Promise((r) => setTimeout(r, 250));
+      const menu = [...document.querySelectorAll(".vm-menu-item")].map((d) => d.textContent); const i = [...document.querySelectorAll(".vm-menu-item")].find((d) => d.textContent === ${J(label)});
+      if (!i) return { error: "no " + ${J(label)}, menu }; i.click(); return { menu }; })()`, ctx.W);
+    r.pinMenu = await menuOn(TROW("PINSND"), "Mute Tab");
+    r.pinMuted = !!(await waitFor(async () => (await rowInfo(ctx.W, "PINSND")).muted, 5000, 150));
+    r.pinRow = await rowInfo(ctx.W, "PINSND");
+    const TILE = `[...document.querySelectorAll("#vm-panel .vm-fav")].find((t) => t.title === "FAVSND")`;
+    r.tileBefore = await h.ev(`!!${TILE}.querySelector(".vm-fav-muted")`, ctx.W);
+    r.favMenu = await menuOn(TILE, "Mute Tab");
+    r.tileMuted = !!(await waitFor(() => h.ev(`!!${TILE}.querySelector(".vm-fav-muted")`, ctx.W), 5000, 150));
+    r.tileKeepsIcon = await h.ev(`!!${TILE}.querySelector(".vm-ico")`, ctx.W);
+    await shot(ctx.W, "4-pinned-and-favorite");
+    r.pinUnmenu = await menuOn(TROW("PINSND"), "Unmute Tab");
+    r.favUnmenu = await menuOn(TILE, "Unmute Tab");
+    r.cleared = !!(await waitFor(async () => !(await rowInfo(ctx.W, "PINSND")).muted && !(await h.ev(`!!${TILE}.querySelector(".vm-fav-muted")`, ctx.W)), 5000, 150));
+    await inPage(ctx.pinUrl, "stop()"); await inPage(ctx.favUrl, "stop()");
+    return r;
+  },
+  expect: (s, b, r) => [want(r.pinPlaying?.speaker, `pinned row playing: ${J(r.pinPlaying)}`), want(r.pinMenu?.menu?.includes("Mute Tab") && !r.pinMenu.error, `pinned menu ${J(r.pinMenu)}`),
+    want(r.pinMuted && r.pinRow?.firstIsMuted && !r.pinRow.speaker, `pinned row muted: ${J(r.pinRow)}`),
+    want(r.tileBefore === false, "a tile showed the muted badge before it was muted"), want(r.favMenu?.menu?.includes("Mute Tab") && !r.favMenu.error, `favorite menu ${J(r.favMenu)}`),
+    want(r.tileMuted && r.tileKeepsIcon, `tile muted badge ${r.tileMuted}, favicon kept ${r.tileKeepsIcon}`),
+    want(r.pinUnmenu?.menu?.includes("Unmute Tab") && r.favUnmenu?.menu?.includes("Unmute Tab"), `unmute menus ${J([r.pinUnmenu, r.favUnmenu])}`), want(r.cleared, "unmuting did not clear the pinned row and the tile")],
+});
+
 // Close All Tabs asks first, saying how many (folders stay); Cancel closes nothing; confirming closes what Clear does.
 const SET_CLOSEALL = async () => {
   await mkWin("W", { width: 900 });
@@ -1133,7 +1349,7 @@ ntCase("N.flat-menus-unchanged", {
   },
   expect: (s, b, r) => {
     const g = (parts) => `<div class="vm-menu">${parts.map((p) => (p === "-" ? '<div class="vm-menu-sep"></div>' : `<div class="vm-menu-item">${p}</div>`)).join("")}</div>`;
-    const want = g(["Pin Tab", "Add to Favorites", "-", "Move to Vivarc", "Move to Y", "Move to Z", "-", "Duplicate Tab", "Copy Link", "-", "Close Tab", "Close Other Tabs"]);
+    const want = g(["Pin Tab", "Add to Favorites", "-", "Move to Vivarc", "Move to Y", "Move to Z", "-", "Duplicate Tab", "Copy Link", "Mute Tab", "-", "Close Tab", "Close Other Tabs"]);
     return [r.tabHtml === want ? null : `the tab menu changed:\n        ${r.tabHtml}\n        want ${want}`, r.del?.label === "Delete “Y” and close its 1 tab" ? null : `the delete confirmation changed: ${J(r.del)}`, unchanged(b, s)];
   },
 });
