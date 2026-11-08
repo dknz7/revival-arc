@@ -541,3 +541,46 @@ for (const failure of ['missing default', 'native request error', 'POST search']
     assert.equal(calls.navigation[0].url, 'https://duckduckgo.com/?q=test%20%26%20caf%C3%A9');
   });
 }
+
+// Split View from the bar: a page that leaves its old split must lose its `tiling` key. chrome.tabs.update MERGES
+// vivExtData and only a key written as null is dropped (measured on 8.2), so the fake below merges the same way.
+test("Split View clears the displaced tab's old split with null, not undefined", async () => {
+  const { context } = setup();
+  const store = {
+    1: { id: 1, windowId: 1, index: 0, url: 'https://one.test/', ext: { tiling: { id: 'old', layout: 'row', type: 'selection', index: 0 }, keep: 1 } },
+    2: { id: 2, windowId: 1, index: 1, url: 'https://two.test/', ext: { tiling: { id: 'old', layout: 'row', type: 'selection', index: 1 }, keep: 2 } },
+  };
+  const view = t => ({ ...t, vivExtData: JSON.stringify(t.ext) });
+  Object.assign(context.chrome.tabs, {
+    get: async id => view(store[id]),
+    query: async q => Object.values(store).filter(t => q.active ? t.id === 1 : true).map(view),
+    create: async o => (store[3] = { id: 3, windowId: 1, index: o.index, url: 'vivaldi://newtab', ext: {} }, view(store[3])),
+    update: async (id, o) => {
+      if (!o.vivExtData) return;
+      for (const [k, v] of Object.entries(JSON.parse(o.vivExtData))) { if (v === null) delete store[id].ext[k]; else store[id].ext[k] = v; }
+    },
+  });
+  // the shared helpers come from the real 00-core.js, run in a context that sees the same chrome
+  const core = vm.createContext({ window: {}, chrome: context.chrome, console: context.console, indexedDB: { open: () => ({}) },
+    document: { querySelector: () => null, documentElement: {} }, MutationObserver: class { observe() {} },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }), setTimeout() {}, vivaldi: {} });
+  vm.runInContext(source('00-core.js'), core);
+  const { setExtData, tilingOf, unsplit } = core.window.__vm;
+  const input = await loadBar(context);
+  Object.assign(context.window.__vm, { setExtData, tilingOf, unsplit });
+  context.crypto = { randomUUID: () => 'fresh' };
+  const made = [];
+  const make = context.document.createElement;
+  context.document.createElement = tag => { const node = make(tag); made.push(node); return node; };
+  input.value = 'side by side';
+  await input.events.input();
+  await new Promise(resolve => setImmediate(resolve));
+  const row = made.find(n => n.className === 'vm-cmd-row' && n.children.some(c => c.textContent === 'Split View: Side by Side'));
+  assert.ok(row, 'the Split View row is offered');
+  row.events.click();
+  for (let i = 0; i < 20; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(store[2].ext.tiling, undefined, 'the displaced peer has no tiling key left');
+  assert.equal(store[2].ext.keep, 2, 'its other keys stay');
+  assert.equal(store[1].ext.tiling.id, 'fresh');
+  assert.equal(store[3].ext.tiling.id, 'fresh');
+});

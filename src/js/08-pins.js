@@ -7,13 +7,18 @@
   const HOME = "vivarcHome";
 
   const read = (tab) => {
-    try { return JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) { return {}; }
+    let data = {};
+    try { data = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) {}
+    for (const k of Object.keys(data)) if (data[k] === null) delete data[k]; // a null key is a removed one
+    return data;
   };
   const pinOf = (tab) => read(tab)[PIN];
   const homeOf = (tab) => read(tab)[HOME];
 
-  // A patch value of undefined removes the key.
-  const patched = (tab, patch) => JSON.stringify({ ...read(tab), ...patch });
+  // A patch value of undefined removes the key. chrome.tabs.update MERGES vivExtData and only drops a key written as null
+  // (measured on 8.2: left out and undefined both keep it), so removed keys are written as null.
+  const patched = (tab, patch) => JSON.stringify({ ...read(tab), ...Object.fromEntries(
+    Object.entries(patch).map(([k, v]) => [k, v === undefined ? null : v])) });
   const needsWrite = (tab, patch) => {
     const current = read(tab);
     return Object.keys(patch).some((k) => (current[k] === undefined ? undefined : current[k]) !== patch[k]);

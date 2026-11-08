@@ -111,12 +111,7 @@
     if (button) press(button);
     else chrome.downloads?.showDefaultFolder?.();
   };
-  const setExtData = async (tab, patch) => {
-    const fresh = await chrome.tabs.get(tab.id);
-    let ext = {};
-    try { ext = JSON.parse(fresh.vivExtData || "{}"); } catch (_) {}
-    await chrome.tabs.update(tab.id, { vivExtData: JSON.stringify({ ...ext, ...patch }) });
-  };
+  const setExtData = (tab, patch) => window.__vm.setExtData(tab, patch); // shared with the sidebar's tear-off
   // Split view like Arc's: the page behind the bar and a new tab form a fresh Vivaldi tile group. "row" puts them
   // side by side, "column" one above the other (measured from the rendered panes in Vivaldi 8.2). If the page was
   // already in a group it leaves it. Vivaldi only honours the layout when every tile gets its data at once, so both
@@ -134,7 +129,7 @@
       setExtData(t, { tiling: { id, layout, type: "selection", index } })));
     await write();
     setTimeout(() => write().catch(() => {}), 400);
-    if (others.length === 1) await setExtData(others[0], { tiling: undefined });
+    if (others.length === 1) await setExtData(others[0], { tiling: null });
     else await Promise.all(others.map((t, index) => setExtData(t, { tiling: { ...window.__vm.tilingOf(t), index } })));
   };
   const closeSplitView = (tab) => window.__vm.unsplit(tab); // shared with the sidebar's tear-off

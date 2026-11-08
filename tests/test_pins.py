@@ -124,10 +124,17 @@ class ExtData(unittest.TestCase):
         merged = json.loads(js("pins.patched(t, { vivarcPin: 'p1' })", t=t))
         self.assertEqual(merged, {"workspaceId": 7, "tiling": {"id": "t"}, "vivarcPin": "p1"})
 
-    def test_an_undefined_patch_value_removes_the_key(self):
+    def test_an_undefined_patch_value_is_written_as_null(self):
+        # chrome.tabs.update merges vivExtData and only drops a key written as null (measured): leaving it out keeps it
         t = tab(1, "https://x.example.com/", ext={"workspaceId": 7, "vivarcPin": "p1"})
         merged = json.loads(js("pins.patched(t, { vivarcPin: undefined })", t=t))
-        self.assertEqual(merged, {"workspaceId": 7})
+        self.assertEqual(merged, {"workspaceId": 7, "vivarcPin": None})
+
+    def test_a_key_already_written_as_null_reads_as_absent(self):
+        t = tab(1, "https://x.example.com/", ext={"vivarcPin": None, "vivarcHome": None})
+        self.assertIsNone(js("pins.pinOf(t)", t=t))
+        self.assertIsNone(js("pins.homeOf(t)", t=t))
+        self.assertFalse(js("pins.needsWrite(t, { vivarcPin: undefined })", t=t))
 
     def test_a_write_is_only_needed_when_something_changes(self):
         t = tab(1, "https://x.example.com/", ext={"vivarcPin": "p1"})
