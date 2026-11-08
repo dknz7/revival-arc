@@ -931,6 +931,18 @@
   content: ""; position: absolute; top: 0; left: 0; right: 0; height: var(--vm-dia-bar);
   pointer-events: none; -webkit-app-region: drag; app-region: drag;
 }
+/* macOS with the sidebar hidden (Ctrl+S): nothing is under the traffic lights any more, so the row, which tracks the page
+   column, would start at x = 0 beneath them. It starts where Vivaldi's own row does after them: the window buttons'
+   left margin 8px + min-width 54px + right margin 18px (24px on macOS 26), from common.css, `#browser.mac:not(.fullscreen)
+   .window-buttongroup` and its `.on-mainbar` / `.macos26` variants; Vivaldi's 12px row padding then follows as usual.
+   Vivaldi has no variable for it, so it is a constant here. The strip they leave is title bar, as with the sidebar shown. */
+#browser.vm-on.vm-dia.mac:not(.fullscreen) { --vm-dia-traffic: calc(80px / var(--uiZoomLevel, 1)); }
+#browser.vm-on.vm-dia.mac.macos26:not(.fullscreen) { --vm-dia-traffic: calc(86px / var(--uiZoomLevel, 1)); }
+#browser.vm-on.vm-dia.mac.vm-sidebar-hidden:not(.fullscreen) #main > .mainbar { left: calc(var(--vm-dia-left, 0px) + var(--vm-dia-traffic)); }
+#browser.vm-on.vm-dia.mac.vm-sidebar-hidden:not(.fullscreen) #main::before {
+  content: ""; position: absolute; top: 0; left: 0; width: var(--vm-dia-traffic); height: var(--vm-dia-bar); z-index: 2;
+  pointer-events: none; -webkit-app-region: drag; app-region: drag;
+}
 
 /* Extensions hidden with "Hide Button" open from the puzzle piece in Vivaldi's drop-down (render_in_dropdown, set by
    the installer and 05-bootstrap.js): a list, icon then name, instead of Vivaldi's row of bare icons. The name is the

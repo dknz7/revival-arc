@@ -321,5 +321,25 @@ class Window(unittest.TestCase):
             self.assertEqual(out["kept"], KEPT, window)
 
 
+class MacHiddenSidebar(unittest.TestCase):
+    """On a Mac with the sidebar hidden nothing sits under the traffic lights, so the top row starts after them."""
+
+    CSS = open(os.path.join(os.path.dirname(__file__), "..", "src", "css", "vivarc.css"), encoding="utf-8").read()
+
+    def rules(self):
+        return [r for r in self.CSS.split("}") if "var(--vm-dia-traffic)" in r and "{" in r]
+
+    def test_the_row_and_its_drag_strip_are_scoped_to_mac_dia_hidden_and_windowed(self):
+        scoped = [r for r in self.rules() if "#browser.vm-on.vm-dia.mac.vm-sidebar-hidden:not(.fullscreen)" in r]
+        self.assertTrue(any("#main > .mainbar" in r and "left:" in r for r in scoped), "the row's left edge")
+        self.assertTrue(any("#main::before" in r and "app-region: drag" in r for r in scoped), "the drag strip")
+        for r in self.rules():  # every use of the inset is inside the Mac + Dia scope, never bare
+            self.assertIn(".vm-dia.mac", r)
+
+    def test_the_inset_is_vivaldis_own_window_button_room(self):
+        self.assertIn(".vm-dia.mac:not(.fullscreen) { --vm-dia-traffic: calc(80px / var(--uiZoomLevel, 1)); }", self.CSS)  # 8 + 54 + 18
+        self.assertIn(".vm-dia.mac.macos26:not(.fullscreen) { --vm-dia-traffic: calc(86px / var(--uiZoomLevel, 1)); }", self.CSS)  # 8 + 54 + 24
+
+
 if __name__ == "__main__":
     unittest.main()

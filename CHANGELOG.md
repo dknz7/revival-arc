@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Fix: on a Mac, with the Dia layout and the sidebar hidden, the top row starts after the traffic lights instead of running under them, with the room Vivaldi itself leaves for them. The strip beside them still drags the window.
 - Dia layout: a **Translate** button left of Copy link, on pages that are not in English. It translates the page into English in place with Vivaldi's own translation, which the Dia layout otherwise hides with the address bar. Once the page is translated, the button says **Show original**.
 - Ctrl+shift+click a space tile (cmd+shift+click on a Mac) to move the space to a new window of its own, the reverse of shift+click's "bring it here".
 - Drag a tab out of the sidebar, past the window's edge, to open it in a new window. The tab goes into that window's default space and leaves its space; the window you dragged from keeps showing its space. Pins, favorites and folders stay, and so does a window's only tab. A drop onto another window's page also opens the new window. Escape does not cancel a drag that has left the window, so a toast offers **Undo** for 5 seconds (it puts the tab back, in its space; a split view or folder is not restored). A tab in a split view leaves it, and so do its partners.
