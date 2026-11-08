@@ -919,6 +919,19 @@
 /* With the breadcrumb in the row, it is the row's free space (and its drag area): Copy link then sits by the window
    buttons, as in Dia. Vivaldi's spacer stays for a row without it. */
 #browser.vm-on.vm-dia .toolbar-mainbar:has(#vm-dia-crumb) > .toolbar-spacer-flexible { display: none !important; }
+/* A narrow window: Vivaldi's window buttons (minimise, maximise, close) always stay whole, last in the row, and the row's
+   own items give way to them. Measured at 744px wide, the crumb shrank to its padding but Copy link (flex: none) still
+   spilled out of it, over the buttons. Now the crumb clips what does not fit, and sizes by the row's free space alone
+   (inline-size containment: its content no longer takes part), which also lets container queries read that width.
+   In order: the title truncates with an ellipsis (above), then Copy link keeps just its icon (its tooltip still says
+   Copy link), then Translate hides, then Copy link; the row's buttons before the crumb shrink last of all. */
+#browser.vm-on.vm-dia .toolbar-mainbar > :is(button.vivaldi, #vm-dia-sidebar, .button-toolbar) { flex-shrink: 1; min-width: 0; overflow: hidden; }
+#vm-dia-crumb { container-type: inline-size; flex: 1 1 0; overflow: hidden; }
+@container (max-width: 240px) { #vm-dia-crumb .vm-dia-share span { display: none; } #vm-dia-crumb .vm-dia-share { padding: 5px 8px; } }
+@container (max-width: 340px) { #vm-dia-crumb:has(.vm-dia-translate:not([hidden])) .vm-dia-share span { display: none; }
+  #vm-dia-crumb:has(.vm-dia-translate:not([hidden])) .vm-dia-share { padding: 5px 8px; } }
+@container (max-width: 290px) { #vm-dia-crumb .vm-dia-translate { display: none; } }
+@container (max-width: 64px) { #vm-dia-crumb .vm-dia-share { display: none; } }
 /* A drag region wins over anything drawn on top of it: while one of Vivaldi's popups is open (as Vivaldi itself does
    for its own drag areas), or the toolbar is being edited, the row is not title bar. */
 #browser.vm-on.vm-dia:is(:has(.OmniDropdown, .CustomizePanelPopup, .extension-popup, .button-popup), .toolbar-edit-mode) #vm-dia-crumb {
