@@ -710,7 +710,7 @@ tearCase("D.tear-off-favorite-stays", {
 // getData); and Vivaldi's tab move. SYNTHETIC: the hand-over between the two windows (the OS would do it), and W's dragend,
 // which is ended by a drop at OUT (outside W): that gives the worst case for the interplay, a source reporting
 // dropEffect "none" beyond its edge after another window took the tab. What a real source reports then is Byron's check.
-async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishAt = OUT, settleMs = 1500, race = false } = {}) {
+async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishAt = OUT, settleMs = 1500, race = false, fresh = true, churn = false } = {}) {
   const grab = (win, finder, f) => waitFor(() => h.ev(`(() => { const r = ${finder}; if (!r) return null; r.scrollIntoView({ block: "center" }); const b = r.getBoundingClientRect(); const x = b.left + b.width / 2;
     const top = document.elementFromPoint(x, b.top + b.height / 2); return r.contains(top) ? { x, y: b.top + b.height * ${f} } : null; })()`, win), 8000);
   const from = await grab(src, srcFinder, 0.5), to = await grab(dst, dstFinder, frac);
@@ -735,8 +735,21 @@ async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishA
       await cs.send("Input.dispatchDragEvent", { type: "dragEnter", x: finishAt.x, y: finishAt.y, data: none });
       await cs.send("Input.dispatchDragEvent", { type: "drop", x: finishAt.x, y: finishAt.y, data: none });
     };
-    const at = (await grab(dst, dstFinder, frac)) ?? to; // the row may have moved since it was first measured: aim at where it is now
-    for (const type of ["dragEnter", "dragOver"]) { await cd.send("Input.dispatchDragEvent", { type, x: at.x, y: at.y, data }); await sleep(150); }
+    let at = (await grab(dst, dstFinder, frac)) ?? to; // the row may have moved since it was first measured: aim at where it is now
+    for (const type of ["dragEnter", "dragOver"]) { await cd.send("Input.dispatchDragEvent", { type, x: at.x, y: at.y, data });
+      // churn: a tab event in the target right after the dragover, as a real window gets (a title or icon arriving): its list re-renders
+      // and the drop follows as soon as that list is rebuilt (or at 2.5 s if the sidebar holds the rebuild back).
+      if (churn && type === "dragOver") {
+        await h.ev(`(window.__w8pR = 0, new MutationObserver((ms) => { for (const m of ms) if (m.removedNodes.length >= 2) window.__w8pR++; }).observe(document.querySelector("#vm-panel"), { childList: true, subtree: true }), 1)`, dst);
+        await h.ev(`chrome.tabs.create({ windowId: ${dst}, active: false, url: ${J(tabUrl("CHURN"))} }).then(() => 1)`, ctx.H);
+        await waitFor(() => h.ev(`window.__w8pR > 0`, dst), 2500, 30);
+      } else await sleep(150); }
+    // A real drag fires dragover continuously (about every 350 ms even when held still), and a drop only reaches an element that
+    // accepted the most recent one. One dragover and a 150 ms wait leave a gap in which a re-render of the target's list
+    // (any tab event, which is what made the sweeps flaky) swaps the row for a new one that has had no dragover: the drop is
+    // then refused and the source tears the tab off (Task 8p, measured). So the last dragover is sent again, at the row's
+    // position now, immediately before the drop.
+    if (fresh) { at = (await grab(dst, dstFinder, frac)) ?? at; await cd.send("Input.dispatchDragEvent", { type: "dragOver", x: at.x, y: at.y, data }); }
     // race: the target's drop and the source's dragend are sent in the same instant (no wait between them)
     const drop = cd.send("Input.dispatchDragEvent", { type: "drop", x: at.x, y: at.y, data });
     if (race && finishAt) await Promise.all([drop, finish()]); else await drop;
@@ -763,9 +776,9 @@ const SET_ACROSS = async () => {
   await tab(ctx.O, "Y1", sp("Y"), { active: true }); await tab(ctx.O, "Y2", sp("Y")); await tab(ctx.O, "Y3", sp("Y")); await show(ctx.O, sp("Y")); await activate(ctx.tabs.Y1);
   await focus(ctx.W);
 };
-const acrossCase = (id, { label = "X2", onto = "Y2", ontoFinder, frac, setup = SET_ACROSS, ready, finishAt, settleMs, race, expect }) => def(id, {
+const acrossCase = (id, { label = "X2", onto = "Y2", ontoFinder, frac, setup = SET_ACROSS, ready, finishAt, settleMs, race, fresh, churn, expect }) => def(id, {
   gesture: true, setup, ready: ready ?? (async () => (await waitFor(() => h.ev(`!!(${tabRowOf(label)})`, ctx.W), 8000)) && (await waitFor(() => h.ev(`!!(${ontoFinder ?? tabRowOf(onto)})`, ctx.O), 8000))),
-  act: () => sampled(() => dragAcross(ctx.W, tabRowOf(label), ctx.O, ontoFinder ?? tabRowOf(onto), { frac, finishAt, settleMs, race })), expect,
+  act: () => sampled(() => dragAcross(ctx.W, tabRowOf(label), ctx.O, ontoFinder ?? tabRowOf(onto), { frac, finishAt, settleMs, race, fresh, churn })), expect,
 });
 const noStranger = (s) => strangers(s).length ? `a new window was opened (warnings: ${J(ctx.warns)})` : ctx.maxWins > 3 ? `a window flashed open during the drop (${ctx.maxWins} normal windows seen, 3 expected)` : null;
 const shownStill = (s) => [recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X")), recIs(s, ctx.O, sp("Y")), showsSpace(s, ctx.O, sp("Y"))];
@@ -779,6 +792,14 @@ acrossCase("D.drag-across", {
     ...shownStill(s), noStranger(s)],
 });
 // The worst case for the interplay: W's dragend (none, outside) is sent in the same instant as O's drop, so it can win against O's move; windows are counted throughout (a tear-off that wrongly fires shows as a 4th).
+// Task 8p, the product side: the target window's list re-renders (a tab event) after the dragover and before the drop, and
+// the harness sends no second dragover (fresh: false). The rebuilt row under the pointer gets a dragenter only (Blink fires
+// no dragover on a new target), so the drop lands only if the sidebar accepts the dragenter (10-sidebar.js wireDrop).
+// Without that the drop is refused and the tab tears off into a new window (measured: 3 of 3 runs).
+acrossCase("D.drag-across-rerender-mid-drag", {
+  frac: 0.25, fresh: false, churn: true,
+  expect: (s) => [tabIs(s, "X2", { win: ctx.O, space: sp("Y"), active: true }), tabIs(s, "X1", { win: ctx.W, space: sp("X") }), ...shownStill(s), noStranger(s)],
+});
 acrossCase("D.drag-across-source-dragend-at-once", {
   frac: 0.25, settleMs: 0, race: true,
   expect: (s) => [tabIs(s, "X2", { win: ctx.O, space: sp("Y"), active: true }), tabIs(s, "X1", { win: ctx.W, space: sp("X") }), ...shownStill(s), noStranger(s)],

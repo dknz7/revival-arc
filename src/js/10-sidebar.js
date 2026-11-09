@@ -496,6 +496,19 @@
       return t < 0.5 ? "before" : "after";
     };
     const fromElsewhere = (e) => !!onAcross && !drag && myWindow() != null && !!e.dataTransfer?.types?.includes(spacesOf.DRAG_TYPE);
+    // A row that appears under a drag already in progress (this window's list was re-rendered by a tab event while a tab
+    // from another window was held over it) gets a dragenter, not a dragover, as the pointer's first contact with it. A
+    // drop only reaches an element that accepted the latest drag event, so if dragenter is not accepted the drop is
+    // refused until a dragover comes (about every 350 ms): released sooner, the source reports dropEffect "none"
+    // outside its window and the tab tears off instead of landing here (Task 8p, measured).
+    node.addEventListener("dragenter", (e) => {
+      if (!fromElsewhere(e)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      e.dataTransfer.dropEffect = "move";
+      clearDrop();
+      node.classList.add(`drop-${zoneOf(e, true)}`);
+    });
     node.addEventListener("dragover", (e) => {
       if (fromElsewhere(e)) {
         e.preventDefault();
