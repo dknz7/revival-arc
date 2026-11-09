@@ -717,7 +717,7 @@ async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishA
   if (!from) return "no row to drag";
   if (!to) return "no row to drop on";
   const cs = h.cdp(src), cd = h.cdp(dst);
-  let data = null;
+  let data = null, rebuilt = 1;
   const onMsg = (m) => { const d = JSON.parse(m.data); if (d.method === "Input.dragIntercepted") data = d.params.data; };
   cs.ws.addEventListener("message", onMsg);
   await cs.send("Input.setInterceptDrags", { enabled: true });
@@ -750,6 +750,8 @@ async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishA
     // then refused and the source tears the tab off (Task 8p, measured). So the last dragover is sent again, at the row's
     // position now, immediately before the drop.
     if (fresh) { at = (await grab(dst, dstFinder, frac)) ?? at; await cd.send("Input.dispatchDragEvent", { type: "dragOver", x: at.x, y: at.y, data }); }
+    // churn: the case only tests anything if the forced rebuild really happened before the drop, so count it now (Task 8p review)
+    rebuilt = churn ? await h.ev(`window.__w8pR`, dst).catch(() => 0) : 1;
     // race: the target's drop and the source's dragend are sent in the same instant (no wait between them)
     const drop = cd.send("Input.dispatchDragEvent", { type: "drop", x: at.x, y: at.y, data });
     if (race && finishAt) await Promise.all([drop, finish()]); else await drop;
@@ -759,7 +761,7 @@ async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishA
     ctx.warns = { dst: await h.ev(`window.__w8g`, dst).catch(() => null), src: dst !== src ? await h.ev(`window.__w8g`, src).catch(() => null) : null };
     await cs.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: from.x, y: from.y, button: "left", buttons: 0, clickCount: 1 }).catch(() => {});
   } finally { cs.ws.removeEventListener("message", onMsg); await cs.send("Input.setInterceptDrags", { enabled: false }).catch(() => {}); }
-  return "dropped";
+  return rebuilt > 0 ? "dropped" : "the forced list rebuild never happened before the drop (nothing was tested)";
 }
 // Runs the act while counting normal windows every ~30 ms, then a while after it (a tear-off that wrongly fires comes
 // ~250 ms later): the most seen is kept in ctx.maxWins, so a window that flashes open and is gone again is still caught.
