@@ -65,11 +65,21 @@
   const signature = (request) => JSON.stringify([request.prefix, request.site, request.ask, request.options.map((o) => o.label)]);
 
   // The events a real click makes; Vivaldi's icon button only answers to the whole sequence (a bare .click() does nothing).
+  // Marked as Vivarc's own (window.__vm.synthetic, 00-core.js), so Vivarc's outside-press closers (its menus and popovers) and
+  // the address-field focus guard of 20-command-bar.js do not take it for the user's; the focus Vivaldi's popup then takes
+  // is marked for a moment too.
   const press = (button) => {
-    for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-      button.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type, { bubbles: true, cancelable: true, button: 0, view: window }));
-    }
+    const vm = window.__vm;
+    vm.synthUntil = Date.now() + 1500;
+    vm.synthNow = true;
+    try {
+      for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+        button.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type, { bubbles: true, cancelable: true, button: 0, view: window }));
+      }
+    } finally { vm.synthNow = false; }
   };
+  const menuOpen = () => !!document.querySelector(".vm-menu, .vm-theme-pop, .vm-set-card");
+  const moved = () => { stackMovedAt = Date.now(); }; // something clickable has just appeared or gone where the pointer may be
 
   // Vivaldi's popup takes the cursor when it opens (its Deny button is autofocused). That would leave a hidden button
   // under the user's keys, so the cursor goes back to where it was; the popup stays open.
@@ -206,6 +216,7 @@
     const container = hostEl();
     if (!container) return;
     const card = build(popup, request);
+    moved();
     if (entry) { entry.card.replaceWith(card); entry.card = card; entry.labels = labels; return; }
     container.append(card);
     cards.set(popup, { card, labels, tab: activeTab });
@@ -220,7 +231,7 @@
     if (!entry) return;
     entry.card.remove();
     cards.delete(popup);
-    stackMovedAt = Date.now();
+    moved();
     if (byPopup && !acted.has(popup) && entry.tab != null) {
       owed.add(entry.tab);
       if (entry.tab === activeTab) reopen(entry.tab, 60);
@@ -242,11 +253,13 @@
           if (e.detail > 1 || recentMove()) return;
           dismissed.delete(activeTab);
           pill.remove();
-          reopen(activeTab, 0);
+          reopen(activeTab, 0, true);
         });
+        moved();
         host.append(pill);
         place();
       } else if (!want && pill) {
+        moved();
         pill.remove();
         pill = null;
       }
@@ -274,20 +287,27 @@
   // outside it closed it); the icon is all that stays. Press that one icon (one: a press on a second would count as a press
   // outside the first popup and close it; the next question comes once this one is answered), so the popup, and the card,
   // come back. If it will not, or keeps closing, the pill takes over.
-  const reopen = async (tab, first = 150) => {
+  // `force`: the user asked (the pill): it always opens, and does not count toward the automatic limit. Nothing re-opens
+  // while one of Vivarc's own menus is open (the press that closed the popup may be the one that opened it): the pill
+  // holds the question until the menu is gone.
+  const reopen = async (tab, first = 150, force = false) => {
     const token = ++reopenToken;
     try {
-      for (let i = 0; i < 14; i++) {
+      let tries = 0;
+      for (let i = 0; i < 80 && tries < 14; i++) {
         await wait(i === 0 ? first : 150);
         if (token !== reopenToken || activeTab !== tab) return;
         if (cards.size) { owed.delete(tab); return; }
+        if (!force && menuOpen()) { dismissed.add(tab); syncPill(); continue; }
+        tries++;
         const button = document.querySelector(ICON);
         if (!button) continue;
         owed.delete(tab);
+        dismissed.delete(tab);
         const now = Date.now();
         const recent = (reopens.get(tab) || []).filter((t) => now - t < AUTO_REOPEN_MS);
-        if (recent.length >= AUTO_REOPEN_MAX) { dismissed.add(tab); syncPill(); return; }
-        reopens.set(tab, [...recent, now]);
+        if (!force && recent.length >= AUTO_REOPEN_MAX) { dismissed.add(tab); syncPill(); return; }
+        if (!force) reopens.set(tab, [...recent, now]);
         press(button);
         await wait(500);
         if (token === reopenToken && activeTab === tab && !cards.size && !document.querySelector(POPUP)) { dismissed.add(tab); syncPill(); }

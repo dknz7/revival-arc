@@ -131,7 +131,7 @@
     (document.querySelector("#browser") || document.body).append(pop);
   };
 
-  const outside = (e) => { if (pop && !pop.contains(e.target)) close(); };
+  const outside = (e) => { if (pop && !window.__vm.synthetic?.(e) && !pop.contains(e.target)) close(); };
   document.addEventListener("mousedown", outside, true);
   document.addEventListener("focusin", outside, true);
   window.__vm.onShortcut((key) => { if (key === "esc") close(); });

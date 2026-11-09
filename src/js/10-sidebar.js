@@ -297,7 +297,7 @@
   };
   // A press inside the menu or a flyout is not outside; nor is one on the New Tab dropdown's chevron, which toggles its menu.
   const outside = (e) => {
-    if (!menu || menu.contains(e.target) || flyouts.some((pane) => pane.contains(e.target))) return;
+    if (!menu || window.__vm?.synthetic?.(e) || menu.contains(e.target) || flyouts.some((pane) => pane.contains(e.target))) return;
     if (e.target.closest?.(".vm-newtab-chev")) return;
     closeMenu();
   };

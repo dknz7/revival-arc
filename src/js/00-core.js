@@ -87,7 +87,12 @@
     await Promise.all(peers.map((t) => setExtData(t, { tiling: null })));
   };
 
-  window.__vm = { config, store, shortcut, windows, normalise, tilingOf, setExtData, unsplit, onShortcut: (fn) => subscribers.add(fn) };
+  // Vivarc's own synthetic press on a Vivaldi control (16-site-requests.js re-opens a site's question by pressing its icon) must not
+  // read as the user clicking outside a popup, or as the user asking for the address field: it raises `synthNow` while it
+  // dispatches, and `synthUntil` for the focus its popup then takes. Handlers that react to outside presses ask `synthetic(e)`.
+  const synthetic = (e) => !!window.__vm?.synthNow || (e?.type === "focusin" && Date.now() < (window.__vm?.synthUntil || 0) && !!e.target?.closest?.(".addressfield-popup-container"));
+
+  window.__vm = { config, store, shortcut, windows, normalise, tilingOf, setExtData, unsplit, synthetic, synthNow: false, synthUntil: 0, onShortcut: (fn) => subscribers.add(fn) };
 
   // Vivaldi re-renders #browser's class list, so the marker classes are re-applied whenever they go missing.
   const markListeners = new Set();

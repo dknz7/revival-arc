@@ -733,7 +733,7 @@
   document.addEventListener("keydown", (e) => {
     if (e.key === "F6" || ((e.ctrlKey || e.metaKey) && e.key?.toLowerCase() === "l") || (e.altKey && e.key?.toLowerCase() === "d")) asked();
   }, true);
-  document.addEventListener("pointerdown", (e) => { if (e.target?.closest?.(".UrlBar-AddressField")) asked(); }, true);
+  document.addEventListener("pointerdown", (e) => { if (!window.__vm.synthetic?.(e) && e.target?.closest?.(".UrlBar-AddressField")) asked(); }, true);
   document.addEventListener("focusin", async (e) => {
     try {
       const field = e.target;

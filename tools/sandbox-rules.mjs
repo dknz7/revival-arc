@@ -2274,7 +2274,7 @@ for (const layout of ["dia", "arc"]) {
       const pill = await waitFor(() => h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W), 4000);
       const hidden = await srState(ctx.W);
       await shot(ctx.W, "sr-pending-pill");
-      await sleep(700);
+      await sleep(900);
       const clicked = await srClick(ctx.W, "#vm-site-requests .vm-site-pill");
       const back = await srWait(ctx.W, (s) => s.cards.length === 1, 5000);
       await sleep(1300);
@@ -2284,6 +2284,69 @@ for (const layout of ["dia", "arc"]) {
     },
     expect: (s, b, r) => [r.pill ? null : "no pending pill after the close button", r.hidden.cards.length === 0 ? null : "the card stayed", r.hidden.afH === 0 ? null : `field floated (${r.hidden.afH}px)`,
       r.clicked === "clicked" ? null : `pill: ${r.clicked}`, r.back ? null : "the pill did not bring the card back", r.after.cards.length === 0 && r.perm === "denied" ? null : `Deny after the pill: ${r.after.cards.length} cards, permission ${r.perm}`],
+  });
+  // Fix round 2. (1) A question reopened into the slot just clicked must not be answered by a slow second click.
+  def(`SR.a-slow-second-click-never-answers-the-question-reopened-in-the-slot-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAsk(a, "geo"); await sleep(1200); await srAsk(a, "notif");
+      await srWait(ctx.W, (s) => s.cards.length === 2);
+      const b = await srTab(ctx.W, "B"); await activate(a.id); // back on A: only the first question is brought back
+      await srWait(ctx.W, (s) => s.cards.length === 1, 6000);
+      await sleep(1500);
+      const p = await h.ev(`(() => { const r = document.querySelector(${J(srOpt(1))}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, ctx.W);
+      const c = h.cdp(ctx.W);
+      const deny = await h.ev(`(() => { const r = document.querySelector(${J(srOpt(2))}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, ctx.W); // Deny is enabled at once on a reopened popup (Allow wakes after a second)
+      const click = async (q = p) => { await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: q[0], y: q[1] });
+        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: q[0], y: q[1], button: "left", clickCount: 1 });
+        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: q[0], y: q[1], button: "left", clickCount: 1 }); };
+      await click(); // answers the first question
+      const samples = [];
+      for (let i = 0; i < 14; i++) { await sleep(150); const s = await srState(ctx.W); samples.push([Date.now() % 100000, s.cards.map((x) => x.opts.join("/"))]); if (i === 4) await click(deny); } // one more click ~750 ms on, on Deny of the slot
+      await sleep(600);
+      return { samples, first: await srPerm(a, "geo"), second: await srPerm(a, "notif"), end: await srState(ctx.W) };
+    },
+    expect: (s, b, r) => [r.first === "granted" ? null : `the first click did not answer (${r.first})`, r.second === "default" ? null : `a slow click answered the question reopened in the slot: notifications ${r.second}`,
+      r.end.cards.length === 1 ? null : `${r.end.cards.length} cards at the end, want the second question waiting`],
+  });
+  // (2) Vivarc's own menus must survive the card: a press that closes Vivaldi's popup is not allowed to be followed by a
+  // synthetic press that closes the menu that press opened.
+  for (const [name, open] of [["tab-row-context-menu", "row"], ["new-tab-dropdown", "chev"]]) {
+    def(`SR.${name}-stays-open-while-a-card-shows-${layout}`, {
+      layout, setup: srSetup,
+      act: async () => {
+        const a = await srTab(ctx.W, "A");
+        await srAskAndWait(a, "notif");
+        const c = h.cdp(ctx.W);
+        const pt = await h.ev(open === "row"
+          ? `(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes("SR/A")); r?.scrollIntoView({ block: "center" }); const b = r.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`
+          : `(() => { const b = document.querySelector("#vm-panel .vm-newtab-chev").getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`, ctx.W);
+        await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: pt[0], y: pt[1] });
+        await sleep(150);
+        const btn = open === "row" ? "right" : "left";
+        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: pt[0], y: pt[1], button: btn, clickCount: 1 });
+        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: pt[0], y: pt[1], button: btn, clickCount: 1 });
+        await sleep(250);
+        const early = await h.ev(`document.querySelectorAll(".vm-menu").length`, ctx.W);
+        await sleep(1800); // past every automatic reopen
+        const late = await h.ev(`document.querySelectorAll(".vm-menu").length`, ctx.W);
+        await shot(ctx.W, `sr-${name}-with-card`);
+        return { early, late, s: await srState(ctx.W), pill: await h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W) };
+      },
+      expect: (s, b, r) => [r.early > 0 ? null : "setup: the menu did not open", r.late > 0 ? null : "the menu was closed by the card's reopen", r.s.cards.length === 1 || r.pill ? null : `${r.s.cards.length} cards and no pill (the question must still be reachable)`],
+    });
+  }
+  // (3) Vivarc's own press on Vivaldi's icon must not count as the user asking for the address field (8o's guard).
+  def(`SR.a-synthetic-press-does-not-switch-the-8o-guard-off-${layout}`, {
+    layout, setup: afSetup,
+    act: async () => {
+      await afLeaveAfield();
+      await h.ev(`(() => { window.__vm.synthNow = true; try { document.querySelector(".UrlBar-AddressField").dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); } finally { window.__vm.synthNow = false; } return 1; })()`, ctx.W);
+      await activate(ctx.tabs.AFA); await sleep(600);
+      return afState(ctx.W);
+    },
+    expect: (s, b, r) => afQuiet(r, "after a press of Vivarc's own on the field"),
   });
   // What Vivarc cannot read is left to Vivaldi's own popup, floating the field as before: the decided panel Vivaldi shows
   // when the user opens an answered permission's icon, and a popup of a kind Vivarc has not seen.
