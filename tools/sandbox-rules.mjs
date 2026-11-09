@@ -2009,7 +2009,7 @@ const srVal = async (t, expr) => (await t.page.send("Runtime.evaluate", { expres
 const srPerm = (t, kind) => srVal(t, kind === "notif" ? `Notification.permission` : `navigator.permissions.query({ name: ${J({ geo: "geolocation", cam: "camera", mic: "microphone" }[kind])} }).then((p) => p.state)`);
 const srState = (win) => h.ev(`(() => {
   const host = document.getElementById("vm-site-requests"), cards = host ? [...host.querySelectorAll(".vm-site-card")] : [];
-  const af = document.querySelector(".UrlBar-AddressField"), a = document.activeElement, r = cards[0]?.getBoundingClientRect(), wb = document.querySelector(".window-buttongroup")?.getBoundingClientRect();
+  const af = document.querySelector(".UrlBar-AddressField"), a = document.activeElement, r = cards[0]?.getBoundingClientRect(), wb = [...document.querySelectorAll(".window-buttongroup")].map((g) => g.getBoundingClientRect()).find((g) => g.width && g.bottom > 0);
   const real = [...document.querySelectorAll(".addressfield-popup-container .permission-buttons input")].map((i) => i.value + (i.disabled ? "(disabled)" : ""));
   return { cards: cards.map((c) => ({ site: c.querySelector(".vm-site-name")?.textContent ?? "", ask: c.querySelector(".vm-site-ask")?.textContent ?? "",
       opts: [...c.querySelectorAll(".vm-site-opt")].map((b) => b.textContent + (b.disabled ? "(disabled)" : "")) })),
@@ -2202,6 +2202,89 @@ for (const layout of ["dia", "arc"]) {
     },
     expect: (s, b, r) => [r.both.cards.length === 2 ? null : `${r.both.cards.length} cards, want 2`, r.both.afH === 0 ? null : `field floated (${r.both.afH}px)`, ...srQuiet(r.both, "two cards")],
   });
+  // Review fixes: a double-click must never answer the request that moves up under the pointer; a question must not be lost
+  // to a click elsewhere in the window (the popup closes on any press outside it) or to the card's own close button.
+  def(`SR.a-double-click-on-stacked-cards-never-grants-the-next-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAsk(a, "geo"); await sleep(1200); await srAsk(a, "notif");
+      await srWait(ctx.W, (s) => s.cards.length === 2);
+      await sleep(1500); // both Allow buttons awake, so a stray click on the second WOULD grant it
+      const before = await srState(ctx.W);
+      const p = await h.ev(`(() => { const r = document.querySelector(${J(srOpt(1))}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, ctx.W);
+      const c = h.cdp(ctx.W);
+      await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] });
+      for (const n of [1, 2]) { // a real double-click: the second press lands where the first card was
+        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: p[0], y: p[1], button: "left", clickCount: n });
+        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p[0], y: p[1], button: "left", clickCount: n });
+        await sleep(40);
+      }
+      await sleep(900);
+      return { before, after: await srState(ctx.W), geo: await srPerm(a, "geo"), notif: await srPerm(a, "notif") };
+    },
+    expect: (s, b, r) => [r.before.cards.length === 2 ? null : `setup: ${r.before.cards.length} cards`, r.geo === "granted" ? null : `the first click did not answer the first card (${r.geo})`,
+      r.notif === "default" ? null : `the double-click's second click answered the next request: notifications ${r.notif}`, r.after.cards.length === 1 ? null : `${r.after.cards.length} cards left, want the second one`],
+  });
+  def(`SR.a-click-elsewhere-in-the-window-does-not-lose-the-question-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "notif");
+      const gutter = await h.ev(`(() => { const r = document.querySelector("#vm-panel").getBoundingClientRect(); return [r.left + 3, r.top + r.height * 0.6]; })()`, ctx.W); // the sidebar's own gutter: a real press on empty window, which Vivaldi closes the popup on
+      const cx = h.cdp(ctx.W); await cx.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: gutter[0], y: gutter[1] }); await cx.send("Input.dispatchMouseEvent", { type: "mousePressed", x: gutter[0], y: gutter[1], button: "left", clickCount: 1 }); await cx.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: gutter[0], y: gutter[1], button: "left", clickCount: 1 });
+      await sleep(300);
+      const back = await srWait(ctx.W, (s) => s.cards.length === 1, 5000);
+      return { back: !!back, s: await srState(ctx.W), perm: await srPerm(a, "notif") };
+    },
+    expect: (s, b, r) => [r.back ? null : "the card was lost to a click elsewhere", r.s.afH === 0 ? null : `field floated (${r.s.afH}px)`, r.perm === "default" ? null : `permission ${r.perm}`],
+  });
+  def(`SR.clicking-another-tab-row-and-back-brings-the-question-back-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "notif");
+      const b2 = await srTab(ctx.W, "B"); // the new tab is on screen; go back to A by a real click on its row
+      await sleep(600);
+      const clickRow = async (text) => {
+        await h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes(${J(text)})); r?.scrollIntoView({ block: "center" }); return 1; })()`, ctx.W); await sleep(250);
+        const p = await h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes(${J(text)})); if (!r) return null; const b = r.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2; return r.contains(document.elementFromPoint(x, y)) ? [x, y] : null; })()`, ctx.W);
+        if (!p) return "no row";
+        const c = h.cdp(ctx.W);
+        await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] });
+        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: p[0], y: p[1], button: "left", clickCount: 1 });
+        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p[0], y: p[1], button: "left", clickCount: 1 });
+        return "clicked";
+      };
+      const away = await srState(ctx.W);
+      const clicked = await clickRow("SR/A");
+      const back = await srWait(ctx.W, (s) => s.cards.length === 1, 6000);
+      await sleep(1300);
+      return { away, clicked, back: !!back, s: await srState(ctx.W), perm: await srPerm(a, "notif"), host: a.host };
+    },
+    expect: (s, b, r) => [r.away.cards.length === 0 ? null : "the card showed on the other tab", r.clicked === "clicked" ? null : `row: ${r.clicked}`, r.back ? null : "the question did not come back after a real click on its tab's row",
+      r.s.cards[0]?.site === "http://" + r.host ? null : `came back as ${J(r.s.cards[0])}`, r.perm === "default" ? null : `permission ${r.perm}`],
+  });
+  def(`SR.close-button-leaves-a-pill-that-brings-the-question-back-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "notif");
+      await srClick(ctx.W, "#vm-site-requests .vm-site-x");
+      const pill = await waitFor(() => h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W), 4000);
+      const hidden = await srState(ctx.W);
+      await shot(ctx.W, "sr-pending-pill");
+      await sleep(700);
+      const clicked = await srClick(ctx.W, "#vm-site-requests .vm-site-pill");
+      const back = await srWait(ctx.W, (s) => s.cards.length === 1, 5000);
+      await sleep(1300);
+      const click = await srClick(ctx.W, srOpt(2));
+      await sleep(800);
+      return { pill: !!pill, hidden, clicked, back: !!back, after: await srState(ctx.W), perm: await srPerm(a, "notif") };
+    },
+    expect: (s, b, r) => [r.pill ? null : "no pending pill after the close button", r.hidden.cards.length === 0 ? null : "the card stayed", r.hidden.afH === 0 ? null : `field floated (${r.hidden.afH}px)`,
+      r.clicked === "clicked" ? null : `pill: ${r.clicked}`, r.back ? null : "the pill did not bring the card back", r.after.cards.length === 0 && r.perm === "denied" ? null : `Deny after the pill: ${r.after.cards.length} cards, permission ${r.perm}`],
+  });
   // What Vivarc cannot read is left to Vivaldi's own popup, floating the field as before: the decided panel Vivaldi shows
   // when the user opens an answered permission's icon, and a popup of a kind Vivarc has not seen.
   def(`SR.a-decided-permission-panel-still-floats-the-field-${layout}`, {
@@ -2231,6 +2314,25 @@ for (const layout of ["dia", "arc"]) {
     },
     expect: (s, b, r) => [r.cards.length === 0 ? null : "a card for a popup Vivarc cannot read", r.carded === 0 ? null : "marked as carded", r.afH > 0 ? null : "the field did not float for an unrecognised popup"],
   });
+  def(`SR.a-question-with-a-control-the-card-cannot-show-floats-the-field-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const fake = (extra) => `(() => { const d = document.createElement("div"); d.className = "addressfield-popup-container"; d.id = "sr-fake-extra"; d.setAttribute("aria-labelledby", "popup-label-permissionprompt");
+        d.innerHTML = '<section class="addressfield-popup"><header><span class="permission-icon is-undecided"></span><h1 id="popup-label-permissionprompt">Website \\u201chttp://fake.test/\\u201d would like to test.</h1></header><section class="dialog-footer"><div class="permission-query-container"><div class="permission-buttons"><input type="submit" value="Allow"><input type="button" value="Deny"></div>${extra}</div></section></section>';
+        document.querySelector(".UrlBar-AddressField").append(d); return 1; })()`;
+      await h.ev(fake(`<button type="button">More</button>`), ctx.W);
+      await sleep(500);
+      const withExtra = await srState(ctx.W);
+      await h.ev(`(document.getElementById("sr-fake-extra")?.remove(), 1)`, ctx.W); await sleep(400);
+      await h.ev(fake(""), ctx.W);
+      await sleep(500);
+      const plain = await srState(ctx.W);
+      await h.ev(`(document.getElementById("sr-fake-extra")?.remove(), 1)`, ctx.W);
+      return { withExtra, plain };
+    },
+    expect: (s, b, r) => [r.plain.cards.length === 1 && r.plain.afH === 0 ? null : `setup: the plain stand-in question did not card (${r.plain.cards.length} cards, field ${r.plain.afH}px)`,
+      r.withExtra.cards.length === 0 && r.withExtra.afH > 0 ? null : `a question with a control the card cannot show was carded: ${r.withExtra.cards.length} cards, field ${r.withExtra.afH}px`],
+  });
   def(`SR.the-site-info-panel-is-not-a-card-${layout}`, {
     layout, setup: srSetup,
     act: async () => {
@@ -2243,21 +2345,21 @@ for (const layout of ["dia", "arc"]) {
     },
     expect: (s, b, r) => [r.cards.length === 0 ? null : "a card for the site-info panel", r.afH > 0 ? null : "the field did not float for the site-info panel the user opened"],
   });
-  def(`SR.the-card-sits-clear-of-the-window-buttons-${layout}`, {
+  def(`SR.the-card-sits-clear-of-the-window-buttons-synthetic-${layout}`, {
     layout, setup: srSetup,
     act: async () => {
       const a = await srTab(ctx.W, "A");
       await srAskAndWait(a, "notif");
       // The sandbox window has a native frame (no buttons in the page); lay Vivaldi's own button group where Windows
       // draws it with a custom frame, at the window's top right, and let the window say it resized.
-      await h.ev(`(() => { const g = document.querySelector(".window-buttongroup"); g.style.cssText = "position:fixed!important;top:0!important;right:0!important;left:auto!important;width:138px;height:30px;display:flex!important"; window.dispatchEvent(new Event("resize")); return 1; })()`, ctx.W);
+      await h.ev(`(() => { const g = document.createElement("span"); g.className = "window-buttongroup"; g.id = "sr-fake-wb"; g.style.cssText = "position:fixed;top:0;right:0;width:138px;height:30px;display:flex;z-index:1"; document.querySelector("#browser").append(g); window.dispatchEvent(new Event("resize")); return 1; })()`, ctx.W);
       await sleep(400);
       const s = await srState(ctx.W);
       await shot(ctx.W, "sr-clear-of-window-buttons");
-      await h.ev(`(document.querySelector(".window-buttongroup").removeAttribute("style"), window.dispatchEvent(new Event("resize")), 1)`, ctx.W);
+      await h.ev(`(document.getElementById("sr-fake-wb")?.remove(), window.dispatchEvent(new Event("resize")), 1)`, ctx.W);
       return s;
     },
-    expect: (s, b, r) => [r.wb && r.rect ? null : `setup: wb ${J(r.wb)} card ${J(r.rect)}`, r.rect && r.wb && r.rect[1] >= r.wb[3] ? null : `the card (${J(r.rect)}) overlaps the window buttons (${J(r.wb)})`, srTopRight(r)],
+    expect: (s, b, r) => [r.wb && r.wb[1] >= 0 && r.rect ? null : `setup: the button group is not on screen (wb ${J(r.wb)}, card ${J(r.rect)}): the case proves nothing`, r.rect && r.wb && r.rect[1] >= r.wb[3] ? null : `the card (${J(r.rect)}) overlaps the window buttons (${J(r.wb)})`, srTopRight(r)],
   });
   // Task 8o's guard stands down only for a popup Vivarc left floating: with a carded popup in the field a stuck tab's
   // refocus of the collapsed field still goes back to the page.

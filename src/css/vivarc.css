@@ -507,6 +507,17 @@
 }
 @keyframes vm-site-in { from { opacity: 0; transform: translateY(-6px); } }
 @media (prefers-reduced-motion: reduce) { #browser.vm-on .vm-site-card { animation: none; } }
+#vm-site-requests { app-region: no-drag; -webkit-app-region: no-drag; }
+#browser.vm-on .vm-site-card { app-region: no-drag; -webkit-app-region: no-drag; }
+/* The pill that stays where the card was while a question the user closed is still pending. */
+#browser.vm-on .vm-site-pill {
+  pointer-events: auto; align-self: flex-end; max-width: 100%;
+  padding: 6px 14px; border: 1px solid color-mix(in srgb, var(--vm-text) 10%, transparent); border-radius: 999px;
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--vm-text); background: var(--vm-surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4); cursor: pointer; app-region: no-drag; -webkit-app-region: no-drag;
+}
+#browser.vm-on .vm-site-pill:hover { background: color-mix(in srgb, var(--vm-text) 14%, var(--vm-surface)); }
+#browser.vm-on .vm-site-pill:focus-visible { outline: 2px solid color-mix(in srgb, var(--vm-text) 55%, transparent); outline-offset: 1px; }
 #browser.vm-on .vm-site-head { display: flex; align-items: flex-start; gap: 10px; }
 #browser.vm-on .vm-site-icon {
   display: flex; flex: none; align-items: center; justify-content: center;
@@ -1059,7 +1070,7 @@
 @container (max-width: 31px) { #vm-dia-crumb .vm-dia-share { display: none; } }
 /* A drag region wins over anything drawn on top of it: while one of Vivaldi's popups is open (as Vivaldi itself does
    for its own drag areas), or the toolbar is being edited, the row is not title bar. */
-#browser.vm-on.vm-dia:is(:has(.OmniDropdown, .CustomizePanelPopup, .extension-popup, .button-popup), .toolbar-edit-mode) #vm-dia-crumb {
+#browser.vm-on.vm-dia:is(:has(.OmniDropdown, .CustomizePanelPopup, .extension-popup, .button-popup:not(.vm-site-carded)), .toolbar-edit-mode) #vm-dia-crumb {
   -webkit-app-region: no-drag; app-region: no-drag;
 }
 /* macOS, like Dia: the sidebar's top strip, beside the traffic lights, is title bar too. Drawn after the panel's

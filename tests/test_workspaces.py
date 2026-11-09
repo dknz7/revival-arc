@@ -504,6 +504,21 @@ class SiteRequest(unittest.TestCase):
         got = self.read(message="Something unquoted wants a thing")
         self.assertEqual((got["site"], got["ask"]), ("", "Something unquoted wants a thing"))
 
+    def test_the_words_before_the_site_are_kept(self):
+        got = self.read()
+        self.assertEqual(got["prefix"], "Website")
+        got = self.read(message="Allow “https://a.example” to keep the screen awake?")
+        self.assertEqual((got["prefix"], got["site"], got["ask"]), ("Allow", "https://a.example", "to keep the screen awake?"))
+        got = self.read(message="Seite «https://exemple.fr/» möchte Ihren Standort")
+        self.assertEqual(got["prefix"], "Seite")
+        got = self.read(message="Something unquoted wants a thing")
+        self.assertEqual(got["prefix"], "")
+
+    def test_a_question_that_quotes_two_things_is_not_a_card(self):
+        # Vivaldi's protocol-handler question ("Allow “site” to open all “mailto” links?"): closing its popup DENIES it, so
+        # the card's close button could not be honest about it. It floats the field as before.
+        self.assertIsNone(self.read(message="Allow “https://a.example” to open all “mailto” links?"))
+
     def test_the_site_is_text_not_markup(self):
         got = self.read(message="Website “<img src=x onerror=alert(1)>” would like to show notifications.")
         self.assertEqual(got["site"], "<img src=x onerror=alert(1)>")

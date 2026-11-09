@@ -5,30 +5,40 @@
 // exactly as if its own prompt had been clicked. A popup that is not an undecided Allow/Deny question (the site-info panel,
 // a decided permission, a device list, anything unseen) is not carded: the field keeps floating for it (vivarc.css).
 //
-// Measured on Vivaldi 8.2: the popup opens by itself with the focus on its Deny button; Escape or the icon in the field
-// closes it, and the request stays pending (the icon stays "undecided"); switching tabs closes it and it does NOT come
-// back on return (only the icon is left in the collapsed field), so the card re-opens it then, by pressing that icon;
-// navigating or closing the tab ends the request; the Allow button is disabled for the first second.
+// Measured on Vivaldi 8.2: the popup opens by itself with the focus on its Deny button; Escape, the icon in the field, or a
+// press anywhere outside the popup closes it, and the request stays pending (the icon stays "undecided"); switching tabs
+// closes it and it does NOT come back on return (only the icon is left in the collapsed field), so the card re-opens it by
+// pressing that icon; navigating or closing the tab ends the request; the Allow button is disabled for the first second.
+//
+// A question is never lost to the user: when its popup goes without the user answering or dismissing it, it is re-opened
+// (at once on the same tab, on return to another); when the user dismisses the card, a small "Site request pending" pill
+// stays in its place and brings it back.
 (() => {
   const W = window.__vm?.workspaces;
   if (!W?.siteRequest) return;
   const POPUP = ".addressfield-popup-container";
   const CARDED = "vm-site-carded"; // on a popup shown as a card: the CSS then leaves the field collapsed
   const HOST = "vm-site-requests";
-  const ICON = ".UrlBar-AddressField .button-addressfield.permission-popup.is-undecided:not(.is-dialog-open) button.ToolbarButton-Button";
-  const SWITCH_MS = 1500; // a popup that goes within this long of a tab switch went because of the switch
-  const cards = new Map(); // popup element -> { card, sig, labels }
+  const ICON_ANY = ".UrlBar-AddressField .button-addressfield.permission-popup.is-undecided";
+  const ICON = `${ICON_ANY}:not(.is-dialog-open) button.ToolbarButton-Button`;
+  const MOVE_MS = 600; // a click this soon after a card left the stack answers nothing: the card below has moved under the pointer
+  const AUTO_REOPEN_MAX = 3; // automatic re-opens within AUTO_REOPEN_MS; past that the pill takes over
+  const AUTO_REOPEN_MS = 8000;
+  const cards = new Map(); // popup element -> { card, labels, tab }
   const acted = new WeakSet(); // popups the user answered or dismissed on the card
-  const owed = new Set(); // tabs whose card was showing when the user left them: it comes back on return
+  const owed = new Set(); // tabs whose popup went without an answer: it comes back (at once, or on return)
+  const dismissed = new Set(); // tabs whose card the user closed: the pill stays while the request is pending
+  const reopens = new Map(); // tab -> times of automatic re-opens
   let host = null;
+  let pill = null;
   let myWindow = null;
   let activeTab = null;
-  let switchedAt = 0;
-  let switchedFrom = null;
+  let stackMovedAt = 0;
   let lastOutside = null; // where the cursor was before a popup took it
   let reopenToken = 0;
 
   const warn = (what, error) => console.warn(`[vivarc] site request ${what}:`, error);
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
     if (cls) e.className = cls;
@@ -36,19 +46,23 @@
     return e;
   };
 
-  const realButtons = (popup) => [...popup.querySelectorAll(".permission-buttons input")];
+  // The buttons a card can stand for (the same list the options are read from, at read time and at click time).
+  const buttonsOf = (popup) => [...popup.querySelectorAll(".permission-buttons input")].filter((b) => b.type === "submit" || b.type === "button");
   const snapshot = (popup) => {
-    const real = realButtons(popup);
-    const buttons = real.filter((b) => b.type === "submit" || b.type === "button");
-    const others = [...popup.querySelectorAll("input, select, textarea, .device-list-container")].filter((e) => !buttons.includes(e));
+    const buttons = buttonsOf(popup);
+    // Anything else the popup offers (a device list's checkboxes, another button or link; the geolocation notice's link
+    // is known and left out) is something the card cannot show, so the popup is not read and floats.
+    const others = new Set([...popup.querySelectorAll("input, select, textarea, .device-list-container")].filter((e) => !buttons.includes(e)));
+    for (const e of popup.querySelectorAll(".dialog-footer button, .dialog-footer a[href], .dialog-footer [role=button]")) if (!e.closest(".geo-notice")) others.add(e);
     return {
       labelledBy: popup.getAttribute("aria-labelledby"),
       message: popup.querySelector("h1")?.textContent ?? "",
       undecided: !!popup.querySelector(".permission-icon.is-undecided"),
-      extras: others.length,
+      extras: others.size,
       buttons: buttons.map((b) => ({ label: b.value, type: b.type, disabled: b.disabled })),
     };
   };
+  const signature = (request) => JSON.stringify([request.prefix, request.site, request.ask, request.options.map((o) => o.label)]);
 
   // The events a real click makes; Vivaldi's icon button only answers to the whole sequence (a bare .click() does nothing).
   const press = (button) => {
@@ -71,25 +85,43 @@
     } catch (error) { warn("focus", error); }
   };
 
-  const answer = (popup, index) => {
+  const recentMove = () => Date.now() - stackMovedAt < MOVE_MS;
+
+  // Answers with Vivaldi's own button, if the card still stands for it: the popup still says what the card says, and the
+  // button at that place still has the label the card shows. Nothing answers within MOVE_MS of a card leaving the stack.
+  const answer = (popup, index, label) => {
     try {
-      const button = realButtons(popup)[index];
-      if (!button || button.disabled) return;
+      const entry = cards.get(popup);
+      if (!entry || acted.has(popup) || !popup.isConnected || recentMove()) return;
+      const request = W.siteRequest(snapshot(popup));
+      if (!request || signature(request) !== entry.labels) return;
+      const button = buttonsOf(popup)[index];
+      if (!button || button.disabled || button.value.trim() !== label) return;
       acted.add(popup);
-      owed.delete(activeTab);
+      owed.delete(entry.tab);
       button.click();
+      setTimeout(() => nextQuestion(entry.tab), 600);
     } catch (error) { warn("answer", error); }
   };
 
-  // What Vivaldi does to dismiss: close the popup (Escape, or the icon again). The request stays pending.
+  // Another question of the same tab may still be pending (Vivaldi opens a popup per request; one answered leaves the rest).
+  const nextQuestion = (tab) => {
+    try { if (activeTab === tab && !cards.size && !dismissed.has(tab) && document.querySelector(ICON)) reopen(tab, 0); } catch (error) { warn("next", error); }
+  };
+
+  // What Vivaldi does to dismiss: close the popup (Escape, or the icon again). The request stays pending, and the pill stays.
   const dismiss = (popup) => {
     try {
+      const entry = cards.get(popup);
+      if (!entry || recentMove()) return;
       acted.add(popup);
-      owed.delete(activeTab);
+      owed.delete(entry.tab);
+      dismissed.add(entry.tab);
       drop(popup, false);
       const toggle = popup.closest(".button-addressfield")?.querySelector("button.ToolbarButton-Button");
       if (toggle) press(toggle);
       else popup.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true }));
+      syncPill();
     } catch (error) { warn("dismiss", error); }
   };
 
@@ -117,9 +149,12 @@
         top = Math.max(12, Math.round(view.top) + 12);
         right = Math.max(14, Math.round(window.innerWidth - view.right) + 14);
       }
-      const buttons = document.querySelector(".window-buttongroup")?.getBoundingClientRect();
-      if (buttons && buttons.width > 0 && buttons.height > 0 && buttons.right > window.innerWidth / 2 && buttons.bottom + 8 > top &&
-          buttons.left < window.innerWidth - right) top = Math.round(buttons.bottom) + 8;
+      // Every button group there is (the Dia layout has two), the ones on screen at the right of the window.
+      for (const group of document.querySelectorAll(".window-buttongroup")) {
+        const buttons = group.getBoundingClientRect();
+        if (buttons.width > 0 && buttons.height > 0 && buttons.bottom > 0 && buttons.right > window.innerWidth / 2 && buttons.bottom + 8 > top &&
+            buttons.left < window.innerWidth - right) top = Math.round(buttons.bottom) + 8;
+      }
       host.style.setProperty("--vm-sr-top", `${top}px`);
       host.style.setProperty("--vm-sr-right", `${right}px`);
     } catch (error) { warn("place", error); }
@@ -133,21 +168,24 @@
     const icon = el("span", "vm-site-icon");
     const svg = popup.querySelector(".permission-icon svg");
     if (svg) icon.append(svg.cloneNode(true));
+    // What Vivaldi says, in its order: the words before the site, the site (bold), what it asks. Text only.
     const text = el("div", "vm-site-text");
+    if (request.prefix) text.append(el("span", "vm-site-pre", request.prefix), " ");
     if (request.site) text.append(el("strong", "vm-site-name", request.site), " ");
     text.append(el("span", "vm-site-ask", request.ask));
     const close = el("button", "vm-site-x", "×");
     close.type = "button";
     close.title = "Dismiss (Esc)";
     close.setAttribute("aria-label", "Dismiss");
-    close.addEventListener("click", () => dismiss(popup));
+    close.addEventListener("click", (e) => { if (e.detail <= 1) dismiss(popup); });
     head.append(icon, text, close);
     const actions = el("div", "vm-site-actions");
     request.options.forEach((option, i) => {
       const b = el("button", "vm-site-opt", option.label);
       b.type = "button";
       b.disabled = option.disabled;
-      b.addEventListener("click", () => answer(popup, i));
+      // A double-click's second click is never an answer: it lands wherever the stack has moved to.
+      b.addEventListener("click", (e) => { if (e.detail <= 1) answer(popup, i, option.label); });
       actions.append(b);
     });
     card.append(head, actions);
@@ -157,7 +195,7 @@
 
   const show = (popup, request) => {
     const entry = cards.get(popup);
-    const labels = JSON.stringify([request.site, request.ask, request.options.map((o) => o.label)]);
+    const labels = signature(request);
     if (entry && entry.labels === labels) {
       // Only the buttons' enabled state moved (Allow wakes up a second after the popup opens). Written only when it
       // differs: setting `disabled` to the value it has still queues a mutation record, and the observer watches that
@@ -170,24 +208,55 @@
     const card = build(popup, request);
     if (entry) { entry.card.replaceWith(card); entry.card = card; entry.labels = labels; return; }
     container.append(card);
-    cards.set(popup, { card, labels });
+    cards.set(popup, { card, labels, tab: activeTab });
+    dismissed.delete(activeTab);
     place();
     giveBackFocus(popup);
   };
 
-  // `byPopup`: the popup went away by itself (so a tab switch may be why).
+  // `byPopup`: the popup went away by itself, not by the user's answer or dismissal on the card: the question is owed back.
   const drop = (popup, byPopup = true) => {
     const entry = cards.get(popup);
     if (!entry) return;
     entry.card.remove();
     cards.delete(popup);
-    if (byPopup && !acted.has(popup) && switchedFrom != null && Date.now() - switchedAt < SWITCH_MS) owed.add(switchedFrom);
+    stackMovedAt = Date.now();
+    if (byPopup && !acted.has(popup) && entry.tab != null) {
+      owed.add(entry.tab);
+      if (entry.tab === activeTab) reopen(entry.tab, 60);
+    }
+  };
+
+  // The pill: the question is still pending (the user closed its card, or it could not be brought back) and the field that
+  // holds Vivaldi's icon is collapsed, so this is the way back. Shown for the active tab only, while its icon is there.
+  const syncPill = () => {
+    try {
+      const tab = activeTab;
+      if (tab != null && dismissed.has(tab) && !document.querySelector(ICON_ANY)) dismissed.delete(tab); // the request is over
+      const want = tab != null && dismissed.has(tab) && !cards.size && !!document.querySelector(ICON) && !!hostEl();
+      if (want && !pill?.isConnected) {
+        pill = el("button", "vm-site-pill", "Site request pending");
+        pill.type = "button";
+        pill.title = "Show the site's question";
+        pill.addEventListener("click", (e) => {
+          if (e.detail > 1 || recentMove()) return;
+          dismissed.delete(activeTab);
+          pill.remove();
+          reopen(activeTab, 0);
+        });
+        host.append(pill);
+        place();
+      } else if (!want && pill) {
+        pill.remove();
+        pill = null;
+      }
+    } catch (error) { warn("pill", error); }
   };
 
   const scan = () => {
     try {
       const present = document.querySelector(POPUP);
-      if (!present && !cards.size) return;
+      if (!present && !cards.size && !pill && !dismissed.size) return;
       const on = window.__vm.cssLoaded && !!document.querySelector("#browser.vm-on");
       const popups = on ? [...document.querySelectorAll(POPUP)] : [];
       for (const popup of [...cards.keys()]) if (!popups.includes(popup)) drop(popup);
@@ -197,21 +266,31 @@
         popup.classList.add(CARDED);
         if (!acted.has(popup)) show(popup, request);
       }
+      syncPill();
     } catch (error) { warn("scan", error); }
   };
 
-  // Vivaldi does not bring the popup back when the user returns to a tab with a question left on it; the icon is all that
-  // stays. Press it, so the popup (and so the card) comes back.
-  const reopen = async (tab) => {
+  // Vivaldi does not bring the popup back when the user returns to a tab with a question left on it (nor after a press
+  // outside it closed it); the icon is all that stays. Press that one icon (one: a press on a second would count as a press
+  // outside the first popup and close it; the next question comes once this one is answered), so the popup, and the card,
+  // come back. If it will not, or keeps closing, the pill takes over.
+  const reopen = async (tab, first = 150) => {
     const token = ++reopenToken;
     try {
       for (let i = 0; i < 14; i++) {
-        await new Promise((r) => setTimeout(r, 150));
-        if (token !== reopenToken || activeTab !== tab || !owed.has(tab)) return;
-        const buttons = [...document.querySelectorAll(ICON)];
-        if (!buttons.length) continue;
+        await wait(i === 0 ? first : 150);
+        if (token !== reopenToken || activeTab !== tab) return;
+        if (cards.size) { owed.delete(tab); return; }
+        const button = document.querySelector(ICON);
+        if (!button) continue;
         owed.delete(tab);
-        buttons.forEach(press);
+        const now = Date.now();
+        const recent = (reopens.get(tab) || []).filter((t) => now - t < AUTO_REOPEN_MS);
+        if (recent.length >= AUTO_REOPEN_MAX) { dismissed.add(tab); syncPill(); return; }
+        reopens.set(tab, [...recent, now]);
+        press(button);
+        await wait(500);
+        if (token === reopenToken && activeTab === tab && !cards.size && !document.querySelector(POPUP)) { dismissed.add(tab); syncPill(); }
         return;
       }
       owed.delete(tab);
@@ -221,14 +300,9 @@
   const onActivated = (info) => {
     try {
       if (myWindow == null || info?.windowId !== myWindow) return;
-      const from = activeTab;
-      if (from != null && from !== info.tabId) {
-        if (cards.size) owed.add(from);
-        switchedFrom = from;
-        switchedAt = Date.now();
-      }
       activeTab = info.tabId;
       if (owed.has(info.tabId)) reopen(info.tabId);
+      syncPill();
     } catch (error) { warn("tab switch", error); }
   };
 
@@ -238,7 +312,7 @@
       return chrome.tabs.query({ active: true, windowId: myWindow });
     }).then((tabs) => { if (activeTab == null) activeTab = tabs?.[0]?.id ?? null; }, () => {});
     chrome.tabs.onActivated?.addListener(onActivated);
-    chrome.tabs.onRemoved?.addListener((id) => { owed.delete(id); });
+    chrome.tabs.onRemoved?.addListener((id) => { owed.delete(id); dismissed.delete(id); reopens.delete(id); });
     document.addEventListener("focusin", (e) => {
       const t = e.target;
       if (t && t.nodeType === 1 && !t.closest?.(`${POPUP}, #${HOST}`)) lastOutside = t;

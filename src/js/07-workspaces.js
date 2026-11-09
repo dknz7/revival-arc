@@ -631,9 +631,13 @@
     if (!message || !Array.isArray(buttons) || !buttons.length || buttons.length > REQUEST_MAX_OPTIONS) return null;
     if (!buttons.every((b) => b && typeof b.label === "string" && b.label.trim())) return null;
     const quoted = /[“„‟"«]([^“”"»]+)[”“"»]/.exec(message);
+    // A second quoted thing means a question of another kind (the protocol-handler one: "Allow “site” to open all “mailto”
+    // links?", which Vivaldi DENIES when its popup is closed): not read, so it floats and its dismissal stays Vivaldi's own.
+    if (quoted && /[“„‟"«]([^“”"»]+)[”“"»]/.test(message.slice(quoted.index + quoted[0].length))) return null;
     const site = quoted ? quoted[1].trim().replace(/\/+$/, "") : "";
+    const prefix = quoted ? message.slice(0, quoted.index).trim() : "";
     const ask = (quoted ? message.slice(quoted.index + quoted[0].length) : message).trim() || message;
-    return { site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
+    return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
   };
 
   window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
