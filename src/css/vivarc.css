@@ -26,10 +26,11 @@
 }
 
 /* URL bar: collapsed until focused (Cmd+L), then floats over the sidebar. It also floats while one of its
-   popups is open: Vivaldi puts site permission requests (camera, microphone...) there, and they would be invisible.
-   While a window starts (vm-launching, 20-command-bar.js) it stays collapsed even when Vivaldi focuses it on a new
+   popups is open: anything Vivaldi puts there would be invisible. The exception is a site permission request that
+   js/16-site-requests.js recognised and shows as a card (it marks the popup vm-site-carded): the field stays collapsed
+   for those and floats for every other popup. While a window starts (vm-launching, 20-command-bar.js) it stays collapsed even when Vivaldi focuses it on a new
    tab: the command bar opens there instead. */
-#browser.vm-on #tabs-tabbar-container .UrlBar-AddressField:not(:focus-within, :has(.addressfield-popup-container)),
+#browser.vm-on #tabs-tabbar-container .UrlBar-AddressField:not(:focus-within, :has(.addressfield-popup-container:not(.vm-site-carded))),
 #browser.vm-on.vm-launching #tabs-tabbar-container .UrlBar-AddressField {
   height: 0 !important;
   min-height: 0 !important;
@@ -40,7 +41,7 @@
   opacity: 0;
   pointer-events: none;
 }
-#browser.vm-on:not(.vm-launching) #tabs-tabbar-container .UrlBar-AddressField:is(:focus-within, :has(.addressfield-popup-container)) {
+#browser.vm-on:not(.vm-launching) #tabs-tabbar-container .UrlBar-AddressField:is(:focus-within, :has(.addressfield-popup-container:not(.vm-site-carded))) {
   position: absolute;
   z-index: 100;
   top: 8px;
@@ -480,6 +481,58 @@
 }
 #vm-copied .vm-copied-icon svg { width: 18px; height: 18px; }
 
+/* A site's permission question (js/16-site-requests.js): cards stacked at the top right of the page column. The script
+   sets --vm-sr-top / --vm-sr-right so the stack sits inside the page column and clear of the window's own buttons. */
+#vm-site-requests {
+  position: fixed;
+  z-index: 100002;
+  top: var(--vm-sr-top, 12px);
+  right: var(--vm-sr-right, 14px);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: min(360px, calc(100vw - 28px));
+  pointer-events: none;
+}
+#browser.vm-on .vm-site-card {
+  pointer-events: auto;
+  padding: 12px 12px 12px 14px;
+  border-radius: 14px;
+  font-size: 14px;
+  color: var(--vm-text);
+  background: var(--vm-surface);
+  border: 1px solid color-mix(in srgb, var(--vm-text) 10%, transparent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  animation: vm-site-in 180ms ease-out;
+}
+@keyframes vm-site-in { from { opacity: 0; transform: translateY(-6px); } }
+@media (prefers-reduced-motion: reduce) { #browser.vm-on .vm-site-card { animation: none; } }
+#browser.vm-on .vm-site-head { display: flex; align-items: flex-start; gap: 10px; }
+#browser.vm-on .vm-site-icon {
+  display: flex; flex: none; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px;
+  background: color-mix(in srgb, var(--vm-text) 10%, transparent);
+}
+#browser.vm-on .vm-site-icon svg { width: 16px; height: 16px; }
+#browser.vm-on .vm-site-icon :is(svg, path, g) { fill: currentColor; }
+#browser.vm-on .vm-site-text { flex: 1 1 auto; min-width: 0; padding-top: 5px; line-height: 1.35; overflow-wrap: anywhere; }
+#browser.vm-on .vm-site-name { font-weight: 600; }
+#browser.vm-on .vm-site-x {
+  flex: none; width: 26px; height: 26px; margin: -2px -2px 0 0; padding: 0;
+  border: 0; border-radius: 7px; font: inherit; font-size: 18px; line-height: 1;
+  color: inherit; background: transparent; opacity: 0.6; cursor: pointer;
+}
+#browser.vm-on .vm-site-x:hover { opacity: 1; background: color-mix(in srgb, var(--vm-text) 14%, transparent); }
+#browser.vm-on .vm-site-actions { display: flex; gap: 8px; margin-top: 10px; padding-left: 40px; }
+#browser.vm-on .vm-site-opt {
+  flex: 1 1 0; min-width: 0; padding: 6px 10px; border: 0; border-radius: 8px;
+  font: inherit; font-weight: 600; color: var(--vm-text);
+  background: color-mix(in srgb, var(--vm-text) 14%, transparent); cursor: pointer;
+}
+#browser.vm-on .vm-site-opt:hover:not(:disabled) { background: color-mix(in srgb, var(--vm-text) 24%, transparent); }
+#browser.vm-on .vm-site-opt:disabled { opacity: 0.45; cursor: default; }
+#browser.vm-on :is(.vm-site-opt, .vm-site-x):focus-visible { outline: 2px solid color-mix(in srgb, var(--vm-text) 55%, transparent); outline-offset: 1px; }
+
 /* Drag and drop */
 #vm-panel .dragging { opacity: 0.4; }
 #vm-panel .drop-before { box-shadow: inset 0 2px 0 0 var(--colorHighlightBg, #7b8cff); }
@@ -515,7 +568,7 @@
 #browser.vm-on.vm-themed:not(.vm-glass) { background-color: var(--vm-tint) !important; background-image: none !important; }
 /* isolation makes the bar its own stacking context, painted under the page: lift it while the address bar or
    one of its popups (site permission requests) is open, or they are cut off at the sidebar's edge */
-#browser.vm-themed #tabs-tabbar-container:is(:focus-within, :has(.addressfield-popup-container)) { z-index: 1; }
+#browser.vm-themed #tabs-tabbar-container:is(:focus-within, :has(.addressfield-popup-container:not(.vm-site-carded))) { z-index: 1; }
 #browser.vm-themed #tabs-tabbar-container::after {
   content: "";
   position: absolute;
@@ -713,7 +766,7 @@
   --vm-lozenge-rim: inset 0 1px 0 rgba(255, 255, 255, 0.38), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
   --vm-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
-#browser.vm-on.vm-glass :is(.vm-menu, #vm-cmd .vm-cmd-box, .vm-theme-pop, .vm-set-card, #vm-copied) {
+#browser.vm-on.vm-glass :is(.vm-menu, #vm-cmd .vm-cmd-box, .vm-theme-pop, .vm-set-card, #vm-copied, .vm-site-card) {
   background: var(--vm-glass-sheen), var(--vm-glass-fill);
   backdrop-filter: var(--vm-glass-blur);
   border-color: transparent;
@@ -751,7 +804,7 @@
 
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
   #browser.vm-on.vm-glass #tabs-tabbar-container { background-image: none; }
-  #browser.vm-on.vm-glass :is(.vm-menu, #vm-cmd .vm-cmd-box, .vm-theme-pop, .vm-set-card, #vm-copied) {
+  #browser.vm-on.vm-glass :is(.vm-menu, #vm-cmd .vm-cmd-box, .vm-theme-pop, .vm-set-card, #vm-copied, .vm-site-card) {
     background: var(--vm-surface);
     backdrop-filter: none;
   }
@@ -759,8 +812,8 @@
   #browser.vm-on.vm-glass.vm-themed #tabs-tabbar-container { background-color: var(--vm-tint) !important; }
 }
 @media (prefers-reduced-motion: reduce) {
-  #browser.vm-on.vm-glass :is(#vm-panel, #vm-cmd, .vm-menu, .vm-theme-pop, .vm-set-card, #vm-copied),
-  #browser.vm-on.vm-glass :is(#vm-panel, #vm-cmd, .vm-menu, .vm-theme-pop, .vm-set-card, #vm-copied) * { transition: none !important; }
+  #browser.vm-on.vm-glass :is(#vm-panel, #vm-cmd, .vm-menu, .vm-theme-pop, .vm-set-card, #vm-copied, .vm-site-card),
+  #browser.vm-on.vm-glass :is(#vm-panel, #vm-cmd, .vm-menu, .vm-theme-pop, .vm-set-card, #vm-copied, .vm-site-card) * { transition: none !important; }
   #browser.vm-on.vm-glass #vm-panel :is(.vm-fav, .vm-space-pill):hover { transform: none; }
 }
 
@@ -931,7 +984,7 @@
 /* The sidebar keeps its tiles, folders and tabs. Its own row of buttons moves up to the top row; its address field
    stays, collapsed, for Ctrl+L. The URL field gives way to the breadcrumb. */
 #browser.vm-on.vm-dia #tabs-tabbar-container .toolbar-tabbar-before > :not(.UrlBar-AddressField) { display: none !important; }
-#browser.vm-on.vm-dia #tabs-tabbar-container .toolbar-tabbar-before:not(:focus-within, :has(.addressfield-popup-container)) {
+#browser.vm-on.vm-dia #tabs-tabbar-container .toolbar-tabbar-before:not(:focus-within, :has(.addressfield-popup-container:not(.vm-site-carded))) {
   height: 0 !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; border: 0 !important; overflow: hidden;
 }
 #browser.vm-on.vm-dia #vm-panel .vm-current-url { display: none; }

@@ -1977,6 +1977,310 @@ for (const layout of ["dia", "arc"]) {
   });
 }
 
+// Task 8r: a site's permission question shows as a card at the top right of the page (16-site-requests.js), not as Vivaldi's
+// address field floating open over the sidebar. Vivaldi asks in a popup of that field; the card is drawn from it and a
+// click on the card clicks Vivaldi's own button. Each request needs a real origin (a prompt does not show for data:) and a
+// fresh one per request (an answer is stored per origin), so every tab gets its own local server. The request is made from
+// the page with a user gesture (Runtime.evaluate userGesture), the click on the card is a real mouse click.
+const srServers = [];
+const srOrigin = async () => {
+  const s = http.createServer((q, r) => { r.writeHead(200, { "content-type": "text/html" }); r.end(`<title>SR${q.url}</title>site request page`); });
+  await new Promise((r) => s.listen(0, "127.0.0.1", r));
+  srServers.push(s);
+  return `http://127.0.0.1:${s.address().port}`;
+};
+const srTab = async (win, label) => {
+  const o = await srOrigin();
+  const id = await h.ev(`chrome.tabs.create(${J({ windowId: win, url: `${o}/${label}`, active: true })}).then((t) => t.id)`, ctx.H);
+  ctx.tabs[label] = id;
+  await sleep(1800);
+  const t = (await targets()).find((x) => x.type === "page" && x.url.startsWith(o));
+  return { id, origin: o, host: o.replace("http://", ""), page: t ? await Cdp.open(t.webSocketDebuggerUrl) : null };
+};
+const SR_ASK = {
+  notif: `Notification.requestPermission().then((p) => window.__r = p)`,
+  geo: `navigator.geolocation.getCurrentPosition(() => window.__r = "ok", (e) => window.__r = "err" + e.code)`,
+  cam: `navigator.mediaDevices.getUserMedia({ video: true }).then(() => window.__r = "ok", (e) => window.__r = e.name)`,
+  mic: `navigator.mediaDevices.getUserMedia({ audio: true }).then(() => window.__r = "ok", (e) => window.__r = e.name)`,
+};
+const srAsk = (t, kind) => t.page.send("Runtime.evaluate", { expression: SR_ASK[kind], userGesture: true });
+const srVal = async (t, expr) => (await t.page.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true })).result.value;
+// What the page's permission is now, by Vivaldi's own state (read in the page).
+const srPerm = (t, kind) => srVal(t, kind === "notif" ? `Notification.permission` : `navigator.permissions.query({ name: ${J({ geo: "geolocation", cam: "camera", mic: "microphone" }[kind])} }).then((p) => p.state)`);
+const srState = (win) => h.ev(`(() => {
+  const host = document.getElementById("vm-site-requests"), cards = host ? [...host.querySelectorAll(".vm-site-card")] : [];
+  const af = document.querySelector(".UrlBar-AddressField"), a = document.activeElement, r = cards[0]?.getBoundingClientRect(), wb = document.querySelector(".window-buttongroup")?.getBoundingClientRect();
+  const real = [...document.querySelectorAll(".addressfield-popup-container .permission-buttons input")].map((i) => i.value + (i.disabled ? "(disabled)" : ""));
+  return { cards: cards.map((c) => ({ site: c.querySelector(".vm-site-name")?.textContent ?? "", ask: c.querySelector(".vm-site-ask")?.textContent ?? "",
+      opts: [...c.querySelectorAll(".vm-site-opt")].map((b) => b.textContent + (b.disabled ? "(disabled)" : "")) })),
+    real, popups: document.querySelectorAll(".addressfield-popup-container").length, carded: document.querySelectorAll(".addressfield-popup-container.vm-site-carded").length,
+    afH: af ? Math.round(af.getBoundingClientRect().height) : null, active: a ? a.tagName : null, fieldFocused: a?.id === "urlFieldInput",
+    pending: document.querySelectorAll(".UrlBar-AddressField .button-addressfield.permission-popup.is-undecided").length,
+    rect: r ? [r.left, r.top, r.right, r.bottom].map(Math.round) : null, win: [innerWidth, innerHeight], wb: wb && wb.width ? [wb.left, wb.top, wb.right, wb.bottom].map(Math.round) : null }; })()`, win);
+const srWait = (win, pred, ms = 6000) => waitFor(async () => { const s = await srState(win); return pred(s) ? s : null; }, ms, 150);
+const srClick = async (win, sel) => {
+  const p = await h.ev(`(() => { const e = document.querySelector(${J(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, win);
+  if (!p) return "no such button";
+  const c = h.cdp(win);
+  await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] });
+  await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: p[0], y: p[1], button: "left", clickCount: 1 });
+  await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p[0], y: p[1], button: "left", clickCount: 1 });
+  return "clicked";
+};
+const srOpt = (n) => `#vm-site-requests .vm-site-card:nth-child(1) .vm-site-actions .vm-site-opt:nth-child(${n})`;
+const srSetup = async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(900); };
+const srTopRight = (s) => !s.rect ? "no card" : s.rect[2] <= s.win[0] && s.rect[0] > s.win[0] / 2 && s.rect[1] < 120 ? null : `the card is at ${J(s.rect)} in a ${J(s.win)} window, not at the top right`;
+const srQuiet = (s, what) => [s.afH === 0 ? null : `${what}: the address field is ${s.afH}px tall (floated open)`, s.fieldFocused ? `${what}: the address field has the cursor` : null, s.active === "WEBVIEW" ? null : `${what}: focus is on ${s.active}, not the page`];
+const srPlain = (list) => list.map((o) => o.replace("(disabled)", ""));
+// Asks for `kind`, waits for the card, waits for Allow to wake (Vivaldi enables it a second after the popup opens).
+const srAskAndWait = async (t, kind) => {
+  await srAsk(t, kind);
+  const first = await srWait(ctx.W, (s) => s.cards.length >= 1);
+  const ready = await srWait(ctx.W, (s) => s.cards.length >= 1 && !s.cards[0].opts.some((o) => o.endsWith("(disabled)")), 4000);
+  return { first, ready: ready || (await srState(ctx.W)) };
+};
+for (const layout of ["dia", "arc"]) {
+  for (const [kind, word, perm] of [["notif", "notifications", "granted"], ["geo", "location", "granted"]]) {
+    def(`SR.${kind}-card-allow-${layout}`, {
+      layout, setup: srSetup,
+      act: async () => {
+        const t = await srTab(ctx.W, "A");
+        const { first, ready } = await srAskAndWait(t, kind);
+        await shot(ctx.W, `sr-${kind}-card`);
+        const click = await srClick(ctx.W, srOpt(1));
+        const after = await srWait(ctx.W, (s) => s.cards.length === 0 && s.popups === 0);
+        return { host: t.host, first, ready, click, after, perm: await srPerm(t, kind), label: ready.cards[0]?.opts };
+      },
+      expect: (s, b, r) => [r.first ? null : "no card appeared", r.first && r.first.cards.length === 1 ? null : `${r.first?.cards.length} cards`,
+        r.ready.cards[0]?.site === "http://" + r.host ? null : `the card names ${J(r.ready.cards[0]?.site)}, want ${r.host}`,
+        r.ready.cards[0]?.ask.includes(word) ? null : `the card says ${J(r.ready.cards[0]?.ask)}, want ${word}`,
+        J(r.ready.cards[0]?.opts) === J(["Allow", "Deny"]) ? null : `options ${J(r.ready.cards[0]?.opts)} (want Vivaldi's Allow, Deny)`,
+        r.ready.popups >= 1 && r.ready.carded === r.ready.popups ? null : `Vivaldi's popup is ${r.ready.popups}, carded ${r.ready.carded}`,
+        ...srQuiet(r.ready, "while the card shows"), srTopRight(r.ready),
+        r.click === "clicked" ? null : `click: ${r.click}`, r.after ? null : "the card did not go after Allow", r.perm === "granted" ? null : `the page's permission is ${r.perm}, want granted`],
+    });
+    def(`SR.${kind}-card-deny-${layout}`, {
+      layout, setup: srSetup,
+      act: async () => {
+        const t = await srTab(ctx.W, "A");
+        const { ready } = await srAskAndWait(t, kind);
+        const click = await srClick(ctx.W, srOpt(2));
+        const after = await srWait(ctx.W, (s) => s.cards.length === 0 && s.popups === 0);
+        await sleep(300);
+        return { ready, click, after, perm: await srPerm(t, kind), result: await srVal(t, "String(window.__r)") };
+      },
+      expect: (s, b, r) => [r.ready.cards.length === 1 ? null : "no card", r.click === "clicked" ? null : `click: ${r.click}`, r.after ? null : "the card did not go after Deny",
+        r.perm === "denied" ? null : `the page's permission is ${r.perm}, want denied`, kind === "geo" && r.result !== "err1" ? `geolocation answered ${r.result}, want err1 (denied)` : null],
+    });
+  }
+  // Camera and microphone: the sandbox has no devices, so Vivaldi's own Allow stays disabled for the camera; the card
+  // mirrors that and the card's Deny works.
+  for (const [kind, word] of [["cam", "camera"], ["mic", "microphone"]]) {
+    def(`SR.${kind}-card-mirrors-vivaldis-buttons-${layout}`, {
+      layout, setup: srSetup,
+      act: async () => {
+        const t = await srTab(ctx.W, "A");
+        await srAsk(t, kind);
+        await srWait(ctx.W, (s) => s.cards.length >= 1);
+        await sleep(1500); // past Allow's first-second wait
+        const s = await srState(ctx.W);
+        await shot(ctx.W, `sr-${kind}-card`);
+        const click = await srClick(ctx.W, srOpt(2));
+        await sleep(900);
+        return { s, click, after: await srState(ctx.W), perm: await srPerm(t, kind), result: await srVal(t, "String(window.__r)") };
+      },
+      expect: (s, b, r) => [r.s.cards.length === 1 ? null : `${r.s.cards.length} cards`, r.s.cards[0]?.ask.includes(word) ? null : `the card says ${J(r.s.cards[0]?.ask)}, want ${word}`,
+        J(r.s.cards[0]?.opts) === J(r.s.real) ? null : `the card's buttons ${J(r.s.cards[0]?.opts)} differ from Vivaldi's ${J(r.s.real)}`,
+        ...srQuiet(r.s, "camera/mic card"), r.after.cards.length === 0 ? null : "the card stayed after Deny", r.perm === "denied" ? null : `permission ${r.perm}, want denied`,
+        r.result === "NotAllowedError" ? null : `getUserMedia gave ${r.result}`],
+    });
+  }
+  def(`SR.close-button-dismisses-and-the-request-stays-pending-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "A");
+      const { ready } = await srAskAndWait(t, "notif");
+      const click = await srClick(ctx.W, "#vm-site-requests .vm-site-x");
+      await sleep(900);
+      const after = await srState(ctx.W);
+      return { ready, click, after, perm: await srPerm(t, "notif") };
+    },
+    expect: (s, b, r) => [r.ready.cards.length === 1 ? null : "no card", r.click === "clicked" ? null : `click: ${r.click}`, r.after.cards.length === 0 ? null : "the card stayed",
+      r.after.popups === 0 ? null : "Vivaldi's popup stayed open (a dismiss closes it)", r.after.afH === 0 ? null : `the field floated (${r.after.afH}px)`,
+      r.after.pending === 1 ? null : `the request is not pending any more (${r.after.pending} undecided icons)`, r.perm === "default" ? null : `the permission is ${r.perm}, want default (unanswered)`],
+  });
+  def(`SR.escape-on-the-card-dismisses-only-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "A");
+      const { ready } = await srAskAndWait(t, "notif");
+      await h.ev(`(document.querySelector(${J(srOpt(1))}).focus(), 1)`, ctx.W);
+      const c = h.cdp(ctx.W);
+      await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await sleep(900);
+      return { ready, after: await srState(ctx.W), perm: await srPerm(t, "notif") };
+    },
+    expect: (s, b, r) => [r.ready.cards.length === 1 ? null : "no card", r.after.cards.length === 0 && r.after.popups === 0 ? null : `Escape did not dismiss: ${r.after.cards.length} cards, ${r.after.popups} popups`,
+      r.after.pending === 1 && r.perm === "default" ? null : `Escape answered the request (permission ${r.perm}, pending ${r.after.pending})`],
+  });
+  def(`SR.focus-is-left-on-the-page-so-enter-and-space-answer-nothing-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "A");
+      const { ready } = await srAskAndWait(t, "notif");
+      await sleep(300);
+      const c = h.cdp(ctx.W);
+      for (const [key, code, vk] of [["Enter", "Enter", 13], [" ", "Space", 32]]) { // keys sent to the page, where the cursor is
+        await c.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk });
+        await c.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk });
+      }
+      await sleep(700);
+      return { ready, after: await srState(ctx.W), perm: await srPerm(t, "notif") };
+    },
+    expect: (s, b, r) => [r.ready.cards.length === 1 ? null : "no card", r.after.cards.length === 1 && r.perm === "default" ? null : `a key answered it: ${r.after.cards.length} cards, permission ${r.perm}`],
+  });
+  def(`SR.tab-switch-hides-the-card-and-return-brings-it-back-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      const { ready } = await srAskAndWait(a, "notif");
+      const b = await srTab(ctx.W, "B");
+      await sleep(800);
+      const away = await srState(ctx.W);
+      await activate(a.id);
+      const back = await srWait(ctx.W, (s) => s.cards.length === 1, 6000);
+      await sleep(1300);
+      const ready2 = await srState(ctx.W);
+      await shot(ctx.W, "sr-card-back-on-return");
+      const click = await srClick(ctx.W, srOpt(2));
+      await sleep(800);
+      return { host: a.host, ready, away, back, ready2, click, after: await srState(ctx.W), perm: await srPerm(a, "notif") };
+    },
+    expect: (s, b, r) => [r.ready.cards.length === 1 ? null : "no card at first", r.away.cards.length === 0 ? null : "the card stayed on the other tab", r.away.afH === 0 ? null : `the field floated on the other tab (${r.away.afH}px)`,
+      r.back ? null : "the card did not come back on return", r.back?.cards[0]?.site === "http://" + r.host ? null : `it came back as ${J(r.back?.cards[0])}`,
+      ...srQuiet(r.ready2, "after the return"), J(r.ready2.cards[0]?.opts) === J(["Allow", "Deny"]) ? null : `options after return ${J(r.ready2.cards[0]?.opts)}`,
+      r.after.cards.length === 0 && r.perm === "denied" ? null : `Deny after the return: ${r.after.cards.length} cards, permission ${r.perm}`],
+  });
+  def(`SR.a-dismissed-card-does-not-come-back-on-return-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "notif");
+      await srClick(ctx.W, "#vm-site-requests .vm-site-x"); await sleep(700);
+      await srTab(ctx.W, "B");
+      await activate(a.id); await sleep(2800);
+      return { after: await srState(ctx.W), perm: await srPerm(a, "notif") };
+    },
+    expect: (s, b, r) => [r.after.cards.length === 0 && r.after.popups === 0 ? null : "a dismissed card came back", r.after.afH === 0 ? null : `field floated (${r.after.afH}px)`, r.perm === "default" ? null : `permission ${r.perm}`],
+  });
+  def(`SR.navigating-or-closing-the-tab-ends-the-card-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "geo");
+      await a.page.send("Runtime.evaluate", { expression: `location.href = ${J(a.origin + "/next")}` });
+      const nav = await srWait(ctx.W, (s) => s.cards.length === 0, 6000);
+      const afterNav = await srState(ctx.W);
+      const c = await srTab(ctx.W, "C");
+      await srAskAndWait(c, "geo");
+      await h.ev(`chrome.tabs.remove(${c.id}).then(() => 1)`, ctx.H);
+      const closed = await srWait(ctx.W, (s) => s.cards.length === 0, 6000);
+      return { nav, afterNav, closed: closed || (await srState(ctx.W)) };
+    },
+    expect: (s, b, r) => [r.nav ? null : "the card stayed after the page navigated", r.afterNav.afH === 0 ? null : `field floated after navigating (${r.afterNav.afH}px)`,
+      r.closed.cards.length === 0 ? null : "the card stayed after its tab closed", r.closed.afH === 0 ? null : `field floated after the tab closed (${r.closed.afH}px)`],
+  });
+  def(`SR.two-requests-two-cards-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAsk(a, "geo"); await sleep(1500); await srAsk(a, "notif");
+      const both = await srWait(ctx.W, (s) => s.cards.length === 2, 6000);
+      await shot(ctx.W, "sr-two-cards");
+      return { both: both || (await srState(ctx.W)) };
+    },
+    expect: (s, b, r) => [r.both.cards.length === 2 ? null : `${r.both.cards.length} cards, want 2`, r.both.afH === 0 ? null : `field floated (${r.both.afH}px)`, ...srQuiet(r.both, "two cards")],
+  });
+  // What Vivarc cannot read is left to Vivaldi's own popup, floating the field as before: the decided panel Vivaldi shows
+  // when the user opens an answered permission's icon, and a popup of a kind Vivarc has not seen.
+  def(`SR.a-decided-permission-panel-still-floats-the-field-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "notif");
+      await srClick(ctx.W, srOpt(1)); await srWait(ctx.W, (s) => s.cards.length === 0 && s.popups === 0);
+      await h.ev(`(() => { const b = document.querySelector(".UrlBar-AddressField .button-addressfield.permission-popup button.ToolbarButton-Button"); for (const t of ["pointerdown","mousedown","pointerup","mouseup","click"]) b.dispatchEvent(new (t.startsWith("pointer") ? PointerEvent : MouseEvent)(t, { bubbles: true, cancelable: true, button: 0, view: window })); return 1; })()`, ctx.W);
+      const open = await srWait(ctx.W, (s) => s.popups === 1, 4000);
+      await sleep(400);
+      const s = await srState(ctx.W);
+      await shot(ctx.W, "sr-decided-panel-floats");
+      return { open: !!open, s };
+    },
+    expect: (s, b, r) => [r.open ? null : "setup: the decided panel did not open", r.s.cards.length === 0 ? null : "a card was drawn for a decided panel", r.s.carded === 0 ? null : "the panel was marked as carded",
+      r.s.afH > 0 ? null : "the field did not float for the decided panel (a question Vivarc cannot read must stay visible)"],
+  });
+  def(`SR.an-unrecognised-popup-floats-the-field-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      await h.ev(`(() => { const d = document.createElement("div"); d.className = "addressfield-popup-container"; d.id = "sr-fake"; d.innerHTML = "<section><h1>Something else asks</h1><div class=permission-buttons><input type=button value=Fine></div></section>"; document.querySelector(".UrlBar-AddressField").append(d); return 1; })()`, ctx.W);
+      await sleep(600);
+      const s = await srState(ctx.W);
+      await h.ev(`(document.getElementById("sr-fake")?.remove(), 1)`, ctx.W);
+      return s;
+    },
+    expect: (s, b, r) => [r.cards.length === 0 ? null : "a card for a popup Vivarc cannot read", r.carded === 0 ? null : "marked as carded", r.afH > 0 ? null : "the field did not float for an unrecognised popup"],
+  });
+  def(`SR.the-site-info-panel-is-not-a-card-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      await srTab(ctx.W, "A");
+      await h.ev(`(() => { const b = document.querySelector(".UrlBar-AddressField .SiteInfoButton button"); for (const t of ["pointerdown","mousedown","pointerup","mouseup","click"]) b.dispatchEvent(new (t.startsWith("pointer") ? PointerEvent : MouseEvent)(t, { bubbles: true, cancelable: true, button: 0, view: window })); return 1; })()`, ctx.W);
+      await sleep(900);
+      const open = await srState(ctx.W);
+      await shot(ctx.W, "sr-site-info-floats");
+      return open;
+    },
+    expect: (s, b, r) => [r.cards.length === 0 ? null : "a card for the site-info panel", r.afH > 0 ? null : "the field did not float for the site-info panel the user opened"],
+  });
+  def(`SR.the-card-sits-clear-of-the-window-buttons-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "notif");
+      // The sandbox window has a native frame (no buttons in the page); lay Vivaldi's own button group where Windows
+      // draws it with a custom frame, at the window's top right, and let the window say it resized.
+      await h.ev(`(() => { const g = document.querySelector(".window-buttongroup"); g.style.cssText = "position:fixed!important;top:0!important;right:0!important;left:auto!important;width:138px;height:30px;display:flex!important"; window.dispatchEvent(new Event("resize")); return 1; })()`, ctx.W);
+      await sleep(400);
+      const s = await srState(ctx.W);
+      await shot(ctx.W, "sr-clear-of-window-buttons");
+      await h.ev(`(document.querySelector(".window-buttongroup").removeAttribute("style"), window.dispatchEvent(new Event("resize")), 1)`, ctx.W);
+      return s;
+    },
+    expect: (s, b, r) => [r.wb && r.rect ? null : `setup: wb ${J(r.wb)} card ${J(r.rect)}`, r.rect && r.wb && r.rect[1] >= r.wb[3] ? null : `the card (${J(r.rect)}) overlaps the window buttons (${J(r.wb)})`, srTopRight(r)],
+  });
+  // Task 8o's guard stands down only for a popup Vivarc left floating: with a carded popup in the field a stuck tab's
+  // refocus of the collapsed field still goes back to the page.
+  def(`SR.8o-guard-still-acts-with-a-carded-popup-${layout}`, {
+    layout, setup: afSetup,
+    act: async () => {
+      await afLeaveAfield();
+      // A popup shaped like Vivaldi's undecided question (the script cards it and marks it; it unmarks one it cannot read).
+      await h.ev(`(() => { const d = document.createElement("div"); d.className = "addressfield-popup-container"; d.id = "sr-fake-carded"; d.setAttribute("aria-labelledby", "popup-label-permissionprompt");
+        d.innerHTML = '<section class="addressfield-popup"><header><span class="permission-icon is-undecided"></span><h1 id="popup-label-permissionprompt">Website \\u201chttp://fake.test/\\u201d would like to test.</h1></header><section><div class="permission-query-container"><div class="permission-buttons"><input type="submit" value="Allow"><input type="button" value="Deny"></div></div></section></section>';
+        document.querySelector(".UrlBar-AddressField").append(d); return 1; })()`, ctx.W);
+      await sleep(300);
+      const marked = await h.ev(`document.getElementById("sr-fake-carded").classList.contains("vm-site-carded")`, ctx.W);
+      if (!marked) return { setup: "the script did not card the stand-in question" };
+      await activate(ctx.tabs.AFA); await sleep(600);
+      const r = await afState(ctx.W);
+      await h.ev(`(document.getElementById("sr-fake-carded")?.remove(), 1)`, ctx.W);
+      return r;
+    },
+    expect: (s, b, r) => r.setup ? [r.setup] : afQuiet(r, "a carded popup in the field"),
+  });
+}
+
 // Task 8m: Vivaldi's panel, on the right and auto-hidden, reveals when the pointer pauses in the window's right-edge gap
 // (14-panel-edge.js), whichever monitor the window is on. Vivaldi's own edge test is native and never sees CDP's mouse; these cases see Vivarc's: a move onto
 // the right edge's background sends Vivaldi's edge event once and the panel comes; never over the page's scrollbar, a
@@ -2370,6 +2674,7 @@ await reset().catch(() => {});
 await setLayout(false).catch(() => {});
 h.close();
 server.close();
+srServers.forEach((s) => s.close());
 // Success needs at least one case run and every one passed: a skipped layout or an --only that matched nothing fails.
 const ran = results.filter((r) => !r.alias && r.id !== "layout").length;
 if (!ran) console.log("FAIL no case ran");

@@ -568,7 +568,7 @@
   // Vivaldi remembers per tab where the cursor was, and a tab left with it in the address field puts it back there on
   // every switch to that tab. Vivarc keeps that field collapsed, so the field would float open over the sidebar on a
   // plain tab click. Within RETURN_FOCUS_MS of a tab activation, a focus nobody asked for (no Ctrl+L, Cmd+L, F6 or click
-  // on the field; no typed text; no permission popup in it) goes back to the page instead.
+  // on the field; no typed text; no popup left floating in it: a permission question shown as a card does not count) goes back to the page instead.
   const RETURN_FOCUS_MS = 150;
   const returnFocus = ({ msSinceActivation, userAsked, edited, popupOpen } = {}) =>
     typeof msSinceActivation === "number" && msSinceActivation >= 0 && msSinceActivation <= RETURN_FOCUS_MS &&
@@ -615,5 +615,26 @@
   // Whether a url is still inside the start page's family, so a mark on its tab stays.
   const inStartFamily = (url) => BLANK.test(url || "");
 
-  window.__vm.workspaces = { START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  // A site's permission question, read from what Vivaldi's address-field popup holds (measured on 8.2: the popup is labelled
+  // popup-label-permissionprompt, its header says "Website “origin” would like to ...", an is-undecided icon marks a question
+  // not yet answered, and the buttons are inputs, Allow (submit) and Deny, in Vivaldi's language). `snap` is that, as plain
+  // data: { labelledBy, message, undecided, extras (controls other than the buttons: a device list's checkboxes), buttons:
+  // [{ label, type, disabled }] }. Returns { site, ask, options: [{ label, disabled }] }, or null for anything it cannot
+  // read whole (a decided panel, the blocked-popups panel, a device list, a layout it has not seen): the caller then leaves
+  // Vivaldi's popup floating, so a question is never hidden. No option is marked as the default: a key must not answer.
+  const REQUEST_LABEL = "popup-label-permissionprompt";
+  const REQUEST_MAX_OPTIONS = 4;
+  const siteRequest = (snap) => {
+    if (!snap || snap.labelledBy !== REQUEST_LABEL || snap.undecided !== true || snap.extras !== 0) return null;
+    const message = typeof snap.message === "string" ? snap.message.trim() : "";
+    const buttons = snap.buttons;
+    if (!message || !Array.isArray(buttons) || !buttons.length || buttons.length > REQUEST_MAX_OPTIONS) return null;
+    if (!buttons.every((b) => b && typeof b.label === "string" && b.label.trim())) return null;
+    const quoted = /[“„‟"«]([^“”"»]+)[”“"»]/.exec(message);
+    const site = quoted ? quoted[1].trim().replace(/\/+$/, "") : "";
+    const ask = (quoted ? message.slice(quoted.index + quoted[0].length) : message).trim() || message;
+    return { site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
+  };
+
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

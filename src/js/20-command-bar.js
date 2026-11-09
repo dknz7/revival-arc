@@ -749,7 +749,7 @@
         msSinceActivation: sinceActivation,
         userAsked: Date.now() - askedAt < ASKED_MS,
         edited: !window.__vm.workspaces.showsPage(field.value, tab),
-        popupOpen: !!document.querySelector(".addressfield-popup-container"),
+        popupOpen: !!document.querySelector(".addressfield-popup-container:not(.vm-site-carded)"),
       });
       if (!verdict) return;
       const view = document.getElementById(String(tab.id));

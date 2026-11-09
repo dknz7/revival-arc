@@ -465,5 +465,63 @@ class BlankTab(unittest.TestCase):
             self.assertFalse(family(url), str(url))
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class SiteRequest(unittest.TestCase):
+    """Vivaldi asks for a site's permission in a popup of its address field. Vivarc turns an undecided Allow/Deny question
+    into a card; anything it cannot read whole (a decided panel, a device list, another popup) is not a request, so the
+    field keeps floating for it."""
+
+    NOTIF = "Website “http://127.0.0.1:1300/” would like to show notifications."
+
+    def snap(self, **over):
+        base = {"labelledBy": "popup-label-permissionprompt", "message": self.NOTIF, "undecided": True, "extras": 0,
+                "buttons": [{"label": "Allow", "type": "submit", "disabled": False}, {"label": "Deny", "type": "button", "disabled": False}]}
+        return {**base, **over}
+
+    def read(self, **over):
+        return js("workspaces.siteRequest(snap)", snap=self.snap(**over))
+
+    def test_an_undecided_allow_deny_question_is_read_into_site_ask_and_options(self):
+        got = self.read()
+        self.assertEqual(got["site"], "http://127.0.0.1:1300")
+        self.assertEqual(got["ask"], "would like to show notifications.")
+        self.assertEqual([(o["label"], o["disabled"]) for o in got["options"]], [("Allow", False), ("Deny", False)])
+
+    def test_the_options_keep_vivaldis_labels_order_and_disabled_state(self):
+        got = self.read(buttons=[{"label": "Allow", "type": "submit", "disabled": True}, {"label": "Block", "type": "button", "disabled": False}])
+        self.assertEqual([(o["label"], o["disabled"]) for o in got["options"]], [("Allow", True), ("Block", False)])
+
+    def test_no_option_is_marked_as_the_one_a_key_answers(self):
+        for option in self.read()["options"]:
+            self.assertNotIn("primary", option)
+            self.assertNotIn("default", option)
+
+    def test_other_quote_styles_and_a_missing_quote_still_read(self):
+        got = self.read(message="Website \"https://example.com\" would like to access your location.")
+        self.assertEqual((got["site"], got["ask"]), ("https://example.com", "would like to access your location."))
+        got = self.read(message="Seite «https://exemple.fr/» möchte Ihren Standort")
+        self.assertEqual((got["site"], got["ask"]), ("https://exemple.fr", "möchte Ihren Standort"))
+        got = self.read(message="Something unquoted wants a thing")
+        self.assertEqual((got["site"], got["ask"]), ("", "Something unquoted wants a thing"))
+
+    def test_the_site_is_text_not_markup(self):
+        got = self.read(message="Website “<img src=x onerror=alert(1)>” would like to show notifications.")
+        self.assertEqual(got["site"], "<img src=x onerror=alert(1)>")
+
+    def test_anything_vivarc_cannot_read_whole_is_not_a_request(self):
+        for over in [{"labelledBy": "popup-label-popupblocker"}, {"labelledBy": None}, {"undecided": False}, {"message": ""},
+                     {"message": "   "}, {"extras": 1}, {"buttons": []}, {"buttons": None}, {"message": None},
+                     {"buttons": [{"label": "", "type": "submit", "disabled": False}]},
+                     {"buttons": [{"label": "OK", "type": "button", "disabled": False}, {"label": "Change", "type": "button", "disabled": False}], "undecided": False}]:
+            self.assertIsNone(self.read(**over), over)
+        self.assertIsNone(js("workspaces.siteRequest()"))
+        self.assertIsNone(js("workspaces.siteRequest(null)"))
+
+    def test_more_buttons_than_a_card_can_hold_is_not_a_request(self):
+        many = [{"label": f"B{i}", "type": "button", "disabled": False} for i in range(5)]
+        self.assertIsNone(self.read(buttons=many))
+        self.assertEqual(len(self.read(buttons=many[:4])["options"]), 4)
+
+
 if __name__ == "__main__":
     unittest.main()
