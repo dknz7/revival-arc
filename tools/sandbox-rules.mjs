@@ -2062,6 +2062,30 @@ for (const layout of ["dia", "arc"]) {
     expect: (s, b, r) => [r.fling.sends === 0 && !r.fling.shown ? null : `a fling through the gap revealed the panel (${r.fling.sends} sends)`,
       r.pause.sends === 1 && r.pause.shown ? null : `a pause in the gap: ${r.pause.sends} sends, shown ${r.pause.shown}`],
   });
+  // Task 8p: the pointer pauses in the gap and then leaves the window as a mouseout with no relatedTarget (heard in the
+  // capture phase): the pause is over, no send. CDP cannot make the browser leave the window, so the mouseout is the
+  // page's own event type dispatched on the element under the pointer; a mouseout that has a relatedTarget (one element
+  // to the next inside the window) is the control and must not cancel the pause.
+  def(`PE.leave-cancels-the-pause-${layout}`, {
+    layout, setup: peSetup(true),
+    act: async () => {
+      await h.ev(PE_SPY, ctx.H);
+      const s = await peState(ctx.W);
+      const [W, H] = s.inner;
+      const out = (related) => h.ev(`(() => { const t = document.elementFromPoint(innerWidth - 1, ${Math.round(H / 2)}) || document.body;
+        t.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, cancelable: true, relatedTarget: ${related ? "document.body" : "null"} })); return 1; })()`, ctx.W);
+      await peMove(ctx.W, W / 2, H / 2); await sleep(150);
+      await peMove(ctx.W, W - 1, H / 2); await out(false);
+      await sleep(600);
+      const left = { sends: await peSends(), shown: (await peState(ctx.W)).shown };
+      await peMove(ctx.W, W / 2, H / 2); await sleep(1200);
+      await peMove(ctx.W, W - 1, H / 2 + 20); await out(true);
+      await sleep(600);
+      return { left, inside: { sends: await peSends(), shown: (await peState(ctx.W)).shown } };
+    },
+    expect: (s, b, r) => [r.left.sends === 0 && !r.left.shown ? null : `leaving the window did not end the pause (${r.left.sends} sends)`,
+      r.inside.sends === 1 && r.inside.shown ? null : `a mouseout inside the window ended the pause (${r.inside.sends} sends, shown ${r.inside.shown})`],
+  });
   def(`PE.scrollbar-still-drags-${layout}`, {
     layout, setup: peSetup(true),
     act: async () => {

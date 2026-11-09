@@ -97,5 +97,13 @@
     memo = { ...memo, inside: false };
     cancel();
   }, { passive: true });
+  // The same, heard another way: a mouseout with nowhere to go (relatedTarget null) is the pointer leaving the window from
+  // whatever element it was over, and the capture phase hears it whatever that element does with the event. It makes the
+  // pause end even where the document's own mouseleave is not delivered (a fling off the edge onto the next monitor).
+  document.addEventListener("mouseout", (e) => {
+    if (e.relatedTarget !== null) return;
+    memo = { ...memo, inside: false };
+    cancel();
+  }, { capture: true, passive: true });
   console.log("[vivarc] panel edge started");
 })();
