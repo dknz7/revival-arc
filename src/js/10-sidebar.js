@@ -3,10 +3,9 @@
 // (created on first run, or produced by `vivarc import-arc`). Vivaldi's own tab strip is hidden.
 (() => {
   const cfg = window.__vm.config;
-  // Same blank-tab check as 20-command-bar.js (a test keeps the two equal).
-  const BLANK = /^(chrome|vivaldi):\/\/(newtab|vivaldi-webui\/startpage)/;
-  const SECTION = /[?&]section=(?!Speed-dials(?:[&#]|$))/i;
-  const isBlankUrl = (url) => BLANK.test(url) && !SECTION.test(url);
+  // The blank-tab decision is workspaces.isBlank (07-workspaces.js), shared with the command bar: a start page the user
+  // asked for is listed like any tab.
+  const isBlank = (tab) => window.__vm.workspaces.isBlank(tab);
 
   const store = window.__vm.store;
   const openFolders = new Set();
@@ -906,7 +905,7 @@
     if (tab.active) row.classList.add("active");
     if (tab.discarded) row.classList.add("discarded");
     row.title = tab.url;
-    row.append(tabIcon(tab, tab.url, tab.favIconUrl), ...playingIcon(tab), el("span", "vm-title", tab.title || tab.url));
+    row.append(tabIcon(tab, tab.url, tab.favIconUrl), ...playingIcon(tab), el("span", "vm-title", spacesOf.startTitle(tab) || tab.title || tab.url));
     if (window.__vm.tilingOf(tab)) row.append(el("span", "vm-split-mark", "◫"));
     row.append(actionButton("×", "Close tab", () => chrome.tabs.remove(tab.id)));
     row.addEventListener("click", () => chrome.tabs.update(tab.id, { active: true }));
@@ -1300,8 +1299,8 @@
   // grouping. blank: the space's own blank tabs (not listed, not closed).
   const clearSet = () => {
     const taken = new Set([...state.bound.values()].map((t) => t.id));
-    const blank = state.tabs.filter((t) => isBlankUrl(t.url || ""));
-    const open = state.tabs.filter((t) => !isBlankUrl(t.url || "") && !taken.has(t.id));
+    const blank = state.tabs.filter((t) => isBlank(t));
+    const open = state.tabs.filter((t) => !isBlank(t) && !taken.has(t.id));
     const listed = stacksOf.entries(open);
     return { blank, listed, loose: listed.filter((e) => e.type === "tab").map((e) => e.tab) };
   };
@@ -1375,11 +1374,11 @@
       say("Could not restore that");
     } finally { end?.(); refresh(false); }
   };
-  const tabRows = (entries, open) => entries.map((t) => ({ label: t.title || t.url, icon: iconEl(t.url, t.favIconUrl), mark: !!t.mark, action: () => open(t) }));
+  const tabRows = (entries, open) => entries.map((t) => ({ label: spacesOf.startTitle(t) || t.title || t.url, icon: iconEl(t.url, t.favIconUrl), mark: !!t.mark, action: () => open(t) }));
   const closedSessions = async () => chrome.sessions.getRecentlyClosed({ maxResults: 25 });
   const openTabsFlyout = async () => {
     const here = myWindow();
-    const tabs = (await chrome.tabs.query({ windowType: "normal" })).filter((t) => !isBlankUrl(t.pendingUrl || t.url || ""));
+    const tabs = (await chrome.tabs.query({ windowType: "normal" })).filter((t) => !isBlank(t));
     const groups = spacesOf.openTabGroups(tabs, state.workspaces, here, state.defaultSpace ? spacesOf.label(state.defaultSpace) : "Home");
     return groups.flatMap((g) => [{ heading: g.heading },
       ...tabRows(g.tabs.map((t) => ({ ...t, mark: t.active && t.windowId === here })), showTab)]);
@@ -1406,6 +1405,8 @@
   // The dropdown's rows, top to bottom. `mine`: this window's tabs.
   const newTabMenuItems = (mine) => tidy([
     { label: "Search Tabs…", action: () => window.dispatchEvent(new CustomEvent("vm-open-command-bar")) },
+    // Vivaldi's Start Page (Speed Dials) in a new tab here; Ctrl+T and + New Tab open the command bar instead (20-command-bar.js).
+    { label: "Start Page", action: () => Promise.resolve(window.__vm.openStartPage?.()).catch((error) => { console.warn("[vivarc] start page:", error); say("Could not open the Start Page"); }) },
     { label: "Open Tabs", flyout: openTabsFlyout },
     { label: "Recently Closed", flyout: async () => tabRows(spacesOf.closedTabs(await closedSessions()), (t) => restoreClosed(t.sessionId)) },
     { label: "Recently Closed Windows", flyout: async () => spacesOf.closedWindows(await closedSessions()).map((w) => ({ label: w.label, action: () => restoreClosed(w.sessionId) })) },

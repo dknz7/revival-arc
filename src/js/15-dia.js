@@ -44,7 +44,7 @@
   // What the breadcrumb shows for a tab: its site (a web page's host) and its title.
   const crumbOf = (tab) => {
     const url = tab?.pendingUrl || tab?.url || "";
-    if (BLANK.test(url) && !SECTION.test(url)) return { site: "", title: "New Tab" };
+    if (BLANK.test(url) && !SECTION.test(url)) return { site: "", title: window.__vm.workspaces?.startTitle?.(tab) || "New Tab" };
     let site = "";
     try {
       const parsed = new URL(url);

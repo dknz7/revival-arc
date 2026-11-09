@@ -889,7 +889,7 @@ def("D.drag-across-same-window-unchanged", {
 const NT_MENU = ".vm-menu:not(.vm-menu-flyout)";
 const NT_ROW = `document.querySelector("#vm-panel .vm-newtab")`;
 const NT_CHEV = `document.querySelector("#vm-panel .vm-newtab-chev")`;
-const NT_LABELS = ["Search Tabs…", "Open Tabs", "Recently Closed", "Recently Closed Windows", "Recently Cleaned", "---", "Clean Up Tabs", "Clean Up Daily", "---", "Mute All Tabs", "Close All Tabs"];
+const NT_LABELS = ["Search Tabs…", "Start Page", "Open Tabs", "Recently Closed", "Recently Closed Windows", "Recently Cleaned", "---", "Clean Up Tabs", "Clean Up Daily", "---", "Mute All Tabs", "Close All Tabs"];
 const mouse = (win, type, x, y) => h.cdp(win).send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1 });
 const centre = (win, expr) => h.ev(`(() => { const e = ${expr}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const b = e.getBoundingClientRect(); return b.width && b.height ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null; })()`, win);
 const hoverOn = async (win, expr) => { const p = await waitFor(() => centre(win, expr), 6000); if (!p) return false; await mouse(win, "mouseMoved", p.x, p.y); return p; };
@@ -957,7 +957,7 @@ ntCase("N.chevron-and-menu", {
     r.geo.chevRight > r.geo.rowRight || r.geo.chevRight < r.geo.rowRight - 12 ? `the chevron is not at the row's right edge (${J(r.geo)})` : null,
     Math.abs(r.geo.titleMid - r.geo.rowMid) > 2 ? `the + New Tab label is not centred (${J(r.geo)})` : null,
     J(r.labels.map((l) => l.replace(" (disabled)", ""))) === J(NT_LABELS) ? null : `menu rows ${J(r.labels)}`,
-    r.labels[4] === "Recently Cleaned (disabled)" ? null : `Recently Cleaned is not disabled: ${r.labels[4]}`,
+    r.labels[5] === "Recently Cleaned (disabled)" ? null : `Recently Cleaned is not disabled: ${r.labels[5]}`,
     r.cleanedFly ? "the disabled Recently Cleaned opened a flyout" : null, r.bar ? "the chevron click opened the command bar" : null, r.closed ? null : "a second chevron click did not close the menu", unchanged(b, s)],
 });
 // The rest of the row keeps its click: the command bar opens, no menu.
@@ -2148,6 +2148,142 @@ for (const layout of ["dia", "arc"]) {
 
 // Part 3 decisions that are the same check as a row above.
 const ALIASES = { "P3.1": ["T.parked-other.click"], "P3.2": ["R.D8", "R.D2"] };
+
+// ---------- Task 8q: a way back to Vivaldi's Start Page ----------
+// Vivarc treats Vivaldi's Start Page as a blank tab (Ctrl+T and + New Tab open the command bar instead). A start page the user
+// asks for (the New Tab dropdown's Start Page row, or its address typed) is marked on its tab (vivExtData.vmStart) and is a
+// page like any other: no bar over it, listed in the sidebar. Navigating that tab elsewhere clears the mark.
+const START_URL = "chrome://vivaldi-webui/startpage";
+const startTabsIn = (win) => h.ev(`chrome.tabs.query({ windowId: ${win} }).then((ts) => ts.filter((t) => /vivaldi-webui\\/startpage/.test(t.pendingUrl || t.url || "")).map((t) => ({ id: t.id, url: t.url, active: t.active, ext: JSON.parse(t.vivExtData || "{}") })))`, ctx.H);
+const rowCount = (win) => h.ev(`document.querySelectorAll("#vm-panel .vm-tab").length`, win);
+// Whether the bar shows up at any point within ms.
+const barWithin = async (win, ms) => { for (const end = Date.now() + ms; Date.now() < end; await sleep(80)) if (await hasEl(win, "#vm-cmd")) return true; return false; };
+// Vivaldi draws the Start Page itself in its UI (not in the page target): the Speed Dials are there and showing.
+const dialsShowing = (win) => h.ev(`(() => { const s = document.querySelector(".startpage.is-showing-speeddial"); const b = s?.getBoundingClientRect(); return !!(b && b.width > 200 && b.height > 200 && document.querySelectorAll("[class*=speeddial i]").length > 0); })()`, win);
+const addressFieldOpen = (win) => h.ev(`document.activeElement?.id === "urlFieldInput"`, win);
+async function typeInBar(win, text) {
+  if (!(await waitFor(() => hasEl(win, "#vm-cmd input"), 4000))) return false;
+  await h.ev(`document.querySelector("#vm-cmd input").focus()`, win);
+  const c = h.cdp(win);
+  await c.send("Input.insertText", { text });
+  await sleep(600);
+  for (const type of ["keyDown", "keyUp"]) await c.send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) });
+  return true;
+}
+const closeBar = async (win) => { await h.ev(`document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })) ?? 1`, win); await sleep(400); };
+// The facts of one start page tab (W's only one): what Vivaldi holds, whether the bar came, what the sidebar shows.
+const startFacts = async (win) => {
+  const tabs = await startTabsIn(win);
+  return { tabs, rows: await rowCount(win), dials: await dialsShowing(win), field: await addressFieldOpen(win), bar: await hasEl(win, "#vm-cmd"), menu: await hasEl(win, ".vm-menu") };
+};
+const wantedOne = (r, what) => r.tabs.length === 1 && r.tabs[0].ext.vmStart === true && r.tabs[0].active && r.tabs[0].url === START_URL ? null : `${what}: start tabs ${J(r.tabs)}`;
+
+// The dropdown row: a new active tab on the start page, marked, Speed Dials showing, no bar, listed in the sidebar.
+ntCase("N.start-page-row", {
+  act: async () => {
+    const rowsBefore = await rowCount(ctx.W);
+    if (!(await openDropdown(ctx.W))) return { error: "no dropdown" };
+    const labels = await rowsOf(ctx.W, NT_MENU + " > div");
+    await shot(ctx.W, "8q-1-dropdown-start-page-row");
+    if (!(await clickOn(ctx.W, menuRow("Start Page")))) return { error: `no Start Page row in ${J(labels)}` };
+    const bar = await barWithin(ctx.W, 2500);
+    await sleep(800);
+    await shot(ctx.W, "8q-2-start-page-speed-dials");
+    const rowTexts = await h.ev(`[...document.querySelectorAll("#vm-panel .vm-tab")].map((r) => r.textContent.trim())`, ctx.W);
+    await shot(ctx.W, "8q-3-sidebar-lists-it");
+    return { labels, bar, rowsBefore, ...(await startFacts(ctx.W)), rowTexts };
+  },
+  expect: (s, b, r) => [r.labels?.[1] === "Start Page" ? null : `the row is not second (after Search Tabs…): ${J(r.labels)}`, wantedOne(r, "after the row"), r.bar ? "the command bar opened over the start page" : null,
+    r.menu ? "the menu stayed open" : null, r.dials ? null : "the Speed Dials are not showing", r.field ? "Vivaldi's address field popped open" : null,
+    r.rows === r.rowsBefore + 1 ? null : `the sidebar lists ${r.rows} rows, want ${r.rowsBefore} + 1 (${J(r.rowTexts)})`,
+    r.rowTexts?.some((t) => t.includes("Start Page") && !t.includes("vivaldi-webui")) ? null : `the sidebar row is not called Start Page (${J(r.rowTexts)})`,
+    tabIs(s, "X1", { win: ctx.W, space: sp("X") }), normal(s).find((w) => w.id === ctx.W).tabs.filter((t) => t.url.startsWith(START_URL) && (t.ws ?? 0) === sp("X")).length === 1 ? null : "the start page is not in the space on screen"],
+});
+
+// Typing the address in the bar (the + New Tab row opens it on no tab: Enter makes the tab) lands there, marked, and stays.
+const typedStart = (text) => async () => {
+  const r0 = await rowCount(ctx.W);
+  const r = await h.ev(`(() => { const b = ${NT_ROW}.getBoundingClientRect(); return { l: b.left, y: b.top + b.height / 2 }; })()`, ctx.W);
+  await mouse(ctx.W, "mouseMoved", r.l + 30, r.y); await sleep(200); await mouse(ctx.W, "mousePressed", r.l + 30, r.y); await mouse(ctx.W, "mouseReleased", r.l + 30, r.y);
+  if (!(await typeInBar(ctx.W, text))) return { error: "the bar did not open" };
+  await sleep(1200);
+  const first = await startFacts(ctx.W);
+  const barAgain = await barWithin(ctx.W, 3000); // it stays: nothing opens a bar over it later
+  return { rowsBefore: r0, first, barAgain, last: await startFacts(ctx.W) };
+};
+for (const [name, text] of [["startpage", START_URL], ["newtab", "vivaldi://newtab"]]) {
+  ntCase(`N.start-page-typed-bar-${name}`, {
+    act: typedStart(text),
+    expect: (s, b, r) => [wantedOne(r.first, "just after Enter"), wantedOne(r.last, "3 s later"), r.first.bar ? "the bar was still open after Enter" : null, r.barAgain ? "a bar opened over the start page afterwards" : null,
+      r.first.dials ? null : "the Speed Dials are not showing", r.first.field ? "Vivaldi's address field popped open" : null,
+      r.last.rows === r.rowsBefore + 1 ? null : `the sidebar lists ${r.last.rows} rows, want ${r.rowsBefore} + 1`, tabIs(s, "X1", { win: ctx.W, space: sp("X") })],
+  });
+}
+// Editing a page's address (the sidebar URL field, Ctrl+L): the page goes to the start page, marked, and stays.
+ntCase("N.start-page-typed-edit", {
+  act: async () => {
+    await h.ev(`chrome.tabs.update(${ctx.tabs.X1}, { active: true }).then(() => 1)`, ctx.H); await sleep(600);
+    await h.ev(`(window.dispatchEvent(new CustomEvent("vm-edit-url")), 1)`, ctx.W);
+    if (!(await typeInBar(ctx.W, START_URL))) return { error: "the bar did not open" };
+    await sleep(1500);
+    const first = await startFacts(ctx.W);
+    return { first, barAgain: await barWithin(ctx.W, 2500), last: await startFacts(ctx.W), x1: await h.ev(`chrome.tabs.get(${ctx.tabs.X1}).then((t) => ({ url: t.url, ext: JSON.parse(t.vivExtData || "{}") }))`, ctx.H) };
+  },
+  expect: (s, b, r) => [r.x1?.url === START_URL && r.x1.ext.vmStart === true ? null : `X1 is ${J(r.x1)}, want the start page marked`, r.barAgain ? "a bar opened over the start page afterwards" : null,
+    r.last.rows >= r.first.rows && r.last.rows > 0 ? null : "the sidebar lost the tab", tabIs(s, "X1", { win: ctx.W, space: sp("X"), active: true })],
+});
+
+// Ctrl+T, + New Tab and a blank tab opened by Vivaldi itself still get the bar, with a start page the user asked for open.
+// Vivaldi's own start page (not asked for) stays a blank tab: the bar opens on it, the sidebar does not list it.
+ntCase("N.start-page-others-still-get-the-bar", {
+  act: async () => {
+    if ((await dropdownItem(ctx.W, "Start Page")) !== "ok") return { error: "no Start Page row" };
+    await sleep(1500);
+    const wanted = await startFacts(ctx.W);
+    const out = { wanted };
+    // Ctrl+T (its handler dispatches this) and the + New Tab row
+    await h.ev(`(window.dispatchEvent(new CustomEvent("vm-open-command-bar")), 1)`, ctx.W);
+    out.ctrlT = await barWithin(ctx.W, 2500); await closeBar(ctx.W);
+    const row = await h.ev(`(() => { const b = ${NT_ROW}.getBoundingClientRect(); return { l: b.left, y: b.top + b.height / 2 }; })()`, ctx.W);
+    await mouse(ctx.W, "mouseMoved", row.l + 30, row.y); await sleep(200); await mouse(ctx.W, "mousePressed", row.l + 30, row.y); await mouse(ctx.W, "mouseReleased", row.l + 30, row.y);
+    out.plusRow = await barWithin(ctx.W, 2500); await closeBar(ctx.W);
+    // a tab Vivaldi opens on its start page by itself (its New Tab command, a window starting): not asked for here
+    const rows0 = await rowCount(ctx.W);
+    const made = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(START_URL)}, active: true }).then((t) => t.id)`, ctx.H);
+    out.byVivaldi = await barWithin(ctx.W, 3000);
+    out.vivaldiExt = await h.ev(`chrome.tabs.get(${made}).then((t) => JSON.parse(t.vivExtData || "{}").vmStart ?? null).catch(() => "gone")`, ctx.H);
+    out.listedWhileBlank = (await rowCount(ctx.W)) - rows0; // the sidebar does not list a blank tab
+    await closeBar(ctx.W);
+    return out;
+  },
+  expect: (s, b, r) => [wantedOne(r.wanted, "the asked-for start page"), r.ctrlT ? null : "Ctrl+T did not open the bar with a start page open", r.plusRow ? null : "+ New Tab did not open the bar with a start page open",
+    r.byVivaldi ? null : "a start page Vivaldi opened by itself did not get the bar", r.vivaldiExt === null ? null : `that tab was marked wanted (${J(r.vivaldiExt)})`, r.listedWhileBlank === 0 ? null : `the sidebar listed the blank start page (${r.listedWhileBlank} rows)`],
+});
+
+// Navigating the tab away clears the mark; navigating a page to the start page (Vivaldi's own address field does this) marks it;
+// and after the mark is gone a new tab gets the bar again.
+ntCase("N.start-page-navigate-away-clears", {
+  act: async () => {
+    if ((await dropdownItem(ctx.W, "Start Page")) !== "ok") return { error: "no Start Page row" };
+    await sleep(1500);
+    const id = (await startTabsIn(ctx.W))[0]?.id;
+    if (!id) return { error: "no start tab" };
+    const extOfTab = () => h.ev(`chrome.tabs.get(${id}).then((t) => JSON.parse(t.vivExtData || "{}").vmStart ?? null).catch(() => "gone")`, ctx.H);
+    const go = (url) => h.ev(`chrome.tabs.update(${id}, { url: ${J(url)} }).then(() => 1)`, ctx.H);
+    const out = { marked: await extOfTab() };
+    await go("about:blank"); out.cleared = await waitFor(async () => ((await extOfTab()) === null ? "yes" : null), 5000, 150) ?? "no";
+    await go(START_URL); out.remarked = await waitFor(async () => ((await extOfTab()) === true ? "yes" : null), 5000, 150) ?? "no"; // a page navigated to it: asked for
+    out.barOverRemarked = await barWithin(ctx.W, 1500);
+    await go("http://127.0.0.1:1/"); out.cleared2 = await waitFor(async () => ((await extOfTab()) === null ? "yes" : null), 5000, 150) ?? "no";
+    // a later new tab gets the bar
+    const made = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(START_URL)}, active: true }).then((t) => t.id)`, ctx.H);
+    out.laterBar = await barWithin(ctx.W, 3000);
+    await closeBar(ctx.W);
+    return out;
+  },
+  expect: (s, b, r) => [r.marked === true ? null : `not marked at first (${J(r.marked)})`, r.cleared === "yes" ? null : "navigating away did not clear the mark", r.remarked === "yes" ? null : "a page navigated to the start page was not marked",
+    r.barOverRemarked ? "a bar opened over the re-marked start page" : null, r.cleared2 === "yes" ? null : "the second navigation away did not clear the mark", r.laterBar ? null : "a later new tab did not get the bar"],
+});
 
 // ---------- running ----------
 async function setLayout(dia) {

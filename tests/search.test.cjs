@@ -76,6 +76,7 @@ async function loadBar(context, settingsOpen = false) {
   const events = context.events = {};
   Object.assign(context.window, { addEventListener: (name, fn) => events[name] = fn, dispatchEvent() {} });
   Object.assign(context.window.__vm, { config: {}, cssLoaded: true, settings: { get: () => true, isOpen: () => settingsOpen }, normalise: x => x, shortcut: x => x, onShortcut() {} });
+  vm.runInContext(source('07-workspaces.js'), context);
   vm.runInContext(source('20-command-bar.js'), context);
   await events['vm-open-command-bar']();
   return nodes.find(node => node.tag === 'input');
@@ -498,7 +499,7 @@ test('a window starting on a page, or without Vivarc CSS, opens no bar', async (
 });
 
 // A tab opened on `url` in the active tab's space: how many times does the bar open on it?
-async function barsOnNewTab(url) {
+async function barsOnNewTab(url, ext = '{"workspaceId":1}') {
   const { context, calls } = setup();
   (await loadBar(context)).events.keydown({ key: 'Escape', preventDefault() {} });
   const inputs = [];
@@ -507,7 +508,7 @@ async function barsOnNewTab(url) {
   calls.onActivated({ tabId: 10, windowId: 1 });
   context.chrome.tabs.get = async () => ({ id: 10, windowId: 1, vivExtData: '{"workspaceId":1}' });
   context.Date = { now: () => Date.now() + 6000 };
-  await calls.onCreated({ id: 20, windowId: 1, active: true, url: '', pendingUrl: url, vivExtData: '{"workspaceId":1}' });
+  await calls.onCreated({ id: 20, windowId: 1, active: true, url: '', pendingUrl: url, vivExtData: ext });
   return inputs.length;
 }
 // Vivaldi's own pages are its start page with a section (Vivaldi's bundle.js); F2 > Bookmarks opens one directly.
@@ -535,11 +536,12 @@ test('the palette switches the layout: Layout: Dia while it is off, Layout: Arc 
     assert.deepEqual(set, [['diaLayout', next]], `from ${on ? 'Dia' : 'Arc'}`);
   }
 });
-test('the sidebar, the Dia breadcrumb and the command bar agree on what a blank tab is', () => {
+test('what a blank tab is lives in one place (07-workspaces.js); the Dia breadcrumb keeps an equal copy, the sidebar and the command bar none', () => {
   const rules = name => source(name).match(/^ {2}const (BLANK|SECTION) = .*$/gm);
-  assert.equal(rules('20-command-bar.js').length, 2);
-  assert.deepEqual(rules('10-sidebar.js'), rules('20-command-bar.js'));
-  assert.deepEqual(rules('15-dia.js'), rules('20-command-bar.js'));
+  assert.equal(rules('07-workspaces.js').length, 2);
+  assert.equal(rules('10-sidebar.js'), null);
+  assert.equal(rules('20-command-bar.js'), null);
+  assert.deepEqual(rules('15-dia.js'), rules('07-workspaces.js'));
 });
 
 for (const failure of ['missing default', 'native request error', 'POST search']) {
@@ -598,4 +600,79 @@ test("Split View clears the displaced tab's old split with null, not undefined",
   assert.equal(store[2].ext.keep, 2, 'its other keys stay');
   assert.equal(store[1].ext.tiling.id, 'fresh');
   assert.equal(store[3].ext.tiling.id, 'fresh');
+});
+
+// Task 8q: a way back to Vivaldi's Start Page. A start page the user asked for carries vivExtData.vmStart and is a page like
+// any other; a start page that opened by itself is still a new tab.
+const START = 'chrome://vivaldi-webui/startpage';
+test('a new tab on the start page opens the bar unless its tab carries the start-page mark', async () => {
+  assert.equal(await barsOnNewTab(START), 1);
+  assert.equal(await barsOnNewTab(START, '{"workspaceId":1,"vmStart":true}'), 0);
+  assert.equal(await barsOnNewTab(`${START}?section=Speed-dials`, '{"workspaceId":1,"vmStart":true}'), 0);
+  assert.equal(await barsOnNewTab('vivaldi://newtab', '{"workspaceId":1,"vmStart":true}'), 0);
+});
+// A bar on blank tab 20 (space 2), with setExtData recording what it is asked to write into which tab, in order with the navigations.
+async function startBar() {
+  const space = await spaces({ 10: page(10, 1), 20: blank(20, 2) });
+  const log = [];
+  space.context.window.__vm.setExtData = async (tab, patch) => { log.push(['mark', tab.id, { ...patch }]); };
+  const update = space.context.chrome.tabs.update;
+  space.context.chrome.tabs.update = async (id, opts) => { log.push(['update', id, { ...opts }]); return update(id, opts); };
+  await space.activate(20);
+  return { ...space, log, input: space.inputs.at(-1) };
+}
+for (const typed of [START, `${START}?section=Speed-dials`, 'vivaldi://newtab', 'chrome://newtab/', 'vivaldi://startpage']) {
+  test(`typing "${typed}" in the bar opens the start page in that tab and marks it first`, async () => {
+    const { log, input } = await startBar();
+    assert.ok(input, 'the bar is open on the blank tab');
+    input.value = typed;
+    await input.events.input();
+    await press(input, 'Enter');
+    assert.deepEqual(log, [['mark', 20, { vmStart: true }], ['update', 20, { url: START, active: true }]]);
+  });
+}
+test("typing one of Vivaldi's start page sections goes there as typed, unmarked", async () => {
+  const { log, input } = await startBar();
+  input.value = `${START}?section=Bookmarks`;
+  await input.events.input();
+  await press(input, 'Enter');
+  assert.deepEqual(log, [['update', 20, { url: `${START}?section=Bookmarks`, active: true }]]);
+});
+test('the start page row opens it in a new active tab and marks it; the bar stays shut for that tab', async () => {
+  const s = await startBar();
+  s.input.events.keydown({ key: 'Escape', preventDefault() {} });
+  const { context, calls, inputs, log } = s;
+  const bars = inputs.length;
+  context.chrome.tabs.create = async opts => { // Vivaldi's event for the tab arrives before create answers
+    log.push(['create', { ...opts }]);
+    await calls.onCreated({ id: 77, windowId: 1, active: true, url: '', pendingUrl: opts.url, vivExtData: '{"workspaceId":1}' });
+    return { id: 77, windowId: 1, index: 3, url: '', pendingUrl: opts.url };
+  };
+  await context.window.__vm.openStartPage();
+  assert.deepEqual(log.slice(0, 2), [['create', { url: START, active: true }], ['mark', 77, { vmStart: true }]]);
+  assert.equal(inputs.length, bars, 'no bar opened over it');
+});
+test('the start page mark is cleared when its tab leaves the start page, and a tab that moves from a page to it is marked', async () => {
+  const { context } = setup();
+  let changed;
+  context.chrome.tabs.onUpdated = { addListener: fn => { changed = fn; } };
+  const marks = [];
+  await loadBar(context);
+  context.window.__vm.setExtData = async (tab, patch) => { marks.push([tab.id, { ...patch }]); };
+  await new Promise(resolve => setImmediate(resolve));
+  const marked = { id: 5, windowId: 1, vivExtData: '{"vmStart":true}' };
+  changed(5, { url: `${START}?section=Speed-dials` }, { ...marked, url: `${START}?section=Speed-dials` });
+  changed(5, { url: `${START}?section=Bookmarks` }, { ...marked, url: `${START}?section=Bookmarks` });
+  assert.deepEqual(marks, [], 'moving about inside the start page keeps the mark');
+  changed(5, { url: 'https://example.test/' }, { ...marked, url: 'https://example.test/' });
+  assert.deepEqual(marks, [[5, { vmStart: null }]]);
+  marks.length = 0;
+  const bare = { id: 6, windowId: 1, vivExtData: '{}' };
+  changed(6, { url: START }, { ...bare, url: START });
+  assert.deepEqual(marks, [], 'a tab with no page before it is a new tab, not a start page asked for');
+  changed(6, { url: 'https://example.test/' }, { ...bare, url: 'https://example.test/' });
+  changed(6, { url: START }, { ...bare, url: START });
+  assert.deepEqual(marks, [[6, { vmStart: true }]], 'a page navigated to the start page was asked for');
+  changed(7, { url: START }, { id: 7, windowId: 2, vivExtData: '{}', url: START });
+  assert.equal(marks.length, 1, "another window's tabs are not this window's business");
 });

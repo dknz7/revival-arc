@@ -586,5 +586,34 @@
     return !!shown && [tab?.url, tab?.pendingUrl].some((url) => url && plain(url) === shown);
   };
 
-  window.__vm.workspaces = { returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  // What counts as a blank tab, for the command bar, the sidebar and (by a test that keeps its copy equal) the Dia layout.
+  // Vivaldi's own Start Page (Speed Dials) is blank on purpose: a new tab opens the command bar instead. The exception is a
+  // start page the user asked for (the New Tab dropdown's Start Page row, or its address typed): its tab carries
+  // vivExtData.vmStart, which makes it a page like any other. The flag lives on the tab, not in a window's memory, so it
+  // is seen by every window and survives a window reload and a restart; it goes with the tab and is cleared once the tab
+  // navigates out of the start page's address family.
+  const BLANK = /^(chrome|vivaldi):\/\/(newtab|vivaldi-webui\/startpage)/;
+  // Vivaldi's Bookmarks, History, Notes, Calendar and Dashboard are its start page with a section; of those, only
+  // Speed Dial is a new tab.
+  const SECTION = /[?&]section=(?!Speed-dials(?:[&#]|$))/i;
+  // Vivaldi's own address for its start page (measured on 8.2: its `vivaldi.homepage` default, renders the Speed Dials).
+  const START_URL = "chrome://vivaldi-webui/startpage";
+  const START_KEY = "vmStart";
+  const isBlankUrl = (url) => BLANK.test(url || "") && !SECTION.test(url || "");
+  const startWanted = (tab) => {
+    try { return !!JSON.parse(tab?.vivExtData || "{}")[START_KEY]; } catch (_) { return false; }
+  };
+  // `wanted`: whether the tab is a start page the user asked for (default: its own flag).
+  const isBlank = (tab, wanted = startWanted(tab)) => isBlankUrl(tab?.pendingUrl || tab?.url || "") && !wanted;
+  // What the tab is called where Vivaldi gives it its address for a title (a start page asked for), or null.
+  const startTitle = (tab) => (startWanted(tab) && isBlankUrl(tab?.pendingUrl || tab?.url || "") ? "Start Page" : null);
+  // Whether text typed as an address means Vivaldi's start page: its addresses (and the new tab page's), not a section.
+  const startTyped = (text) => {
+    const s = String(text ?? "").trim();
+    return /^(chrome|vivaldi):\/\/(newtab|startpage|vivaldi-webui\/startpage)\/?(?:[?#].*)?$/i.test(s) && !SECTION.test(s);
+  };
+  // Whether a url is still inside the start page's family, so a mark on its tab stays.
+  const inStartFamily = (url) => BLANK.test(url || "");
+
+  window.__vm.workspaces = { START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

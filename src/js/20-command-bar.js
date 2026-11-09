@@ -1,14 +1,9 @@
 // Vivarc command bar. Opens whenever a blank new tab is created (Cmd+T bound to "New Tab",
 // the sidebar "+ New Tab" row). The blank tab is navigated to the choice, or closed on Escape.
 (() => {
-  const BLANK = /^(chrome|vivaldi):\/\/(newtab|vivaldi-webui\/startpage)/;
-  // Vivaldi's Bookmarks, History, Notes, Calendar and Dashboard are its start page with a section; of those, only
-  // Speed Dial is a new tab.
-  const SECTION = /[?&]section=(?!Speed-dials(?:[&#]|$))/i;
-  const isBlank = (tab) => {
-    const url = tab.pendingUrl || tab.url || "";
-    return BLANK.test(url) && !SECTION.test(url);
-  };
+  // What a blank tab is, and the start page the user asked for (which is not one), is workspaces.isBlank (07-workspaces.js).
+  // One argument only: it is passed to filter/every, whose index would be taken for the second.
+  const isBlank = (tab) => window.__vm.workspaces.isBlank(tab);
   const startedAt = Date.now();
 
   const DEFAULT = {}; // Marks rows that resolve Vivaldi's current default at execution time.
@@ -87,8 +82,31 @@
     await toTop(created.id).catch((error) => console.warn("[vivarc] new tab to the top:", error));
     return created;
   };
+  // Vivaldi's Start Page (Speed Dials), asked for: the New Tab dropdown's Start Page row, or its address typed here. The tab
+  // carries the vmStart mark, which makes it a page like any other (workspaces.isBlank): no command bar opens over it
+  // and the sidebar lists it. `creating` holds the bar back from the tab made here, whose onCreated arrives before the
+  // mark is written. The mark is cleared when the tab navigates out of the start page's family (see onUpdated below).
+  let creating = 0;
+  const markStart = (id) => window.__vm.setExtData({ id }, { [window.__vm.workspaces.START_KEY]: true });
+  const openStartPage = async () => {
+    creating++;
+    try {
+      const created = await chrome.tabs.create({ url: window.__vm.workspaces.START_URL, active: true });
+      await markStart(created.id);
+      await toTop(created.id).catch((error) => console.warn("[vivarc] new tab to the top:", error));
+      return created;
+    } finally { setTimeout(() => { creating--; }, 1000); }
+  };
+  window.__vm.openStartPage = openStartPage; // shared with the sidebar's New Tab dropdown
   // Show url in the bar's target tab, or in a new tab when it has none.
   const show = async (id, isNew, url) => {
+    if (window.__vm.workspaces.startTyped(url)) { // the start page's address typed: it is where the user asked to go, and stays
+      if (id == null) return openStartPage();
+      await markStart(id);
+      await chrome.tabs.update(id, { url: window.__vm.workspaces.START_URL, active: true });
+      if (isNew) await toTop(id).catch((error) => console.warn("[vivarc] new tab to the top:", error));
+      return;
+    }
     if (id == null) return openNew(url);
     await chrome.tabs.update(id, { url, active: true });
     if (isNew) await toTop(id).catch((error) => console.warn("[vivarc] new tab to the top:", error));
@@ -406,7 +424,7 @@
       out.push({ type: "search", engine: mode, query: text, label: text || "%s", lead: true });
     } else if (!text) {
       (await allTabs()).slice(0, 7).forEach((tab) =>
-        out.push({ type: "tab", tab, url: tab.url, favicon: tab.favIconUrl, label: tab.title || tab.url }));
+        out.push({ type: "tab", tab, url: tab.url, favicon: tab.favIconUrl, label: window.__vm.workspaces.startTitle(tab) || tab.title || tab.url }));
     } else {
       const needle = text.toLowerCase();
       const seen = new Set();
@@ -420,7 +438,7 @@
       (await allTabs())
         .filter((t) => `${t.title} ${t.url}`.toLowerCase().includes(needle))
         .slice(0, 4)
-        .forEach((tab) => add({ type: "tab", tab, url: tab.url, favicon: tab.favIconUrl, label: tab.title || tab.url }));
+        .forEach((tab) => add({ type: "tab", tab, url: tab.url, favicon: tab.favIconUrl, label: window.__vm.workspaces.startTitle(tab) || tab.title || tab.url }));
       try {
         (await chrome.bookmarks.search(text)).filter((b) => b.url).slice(0, 3)
           .forEach((b) => add({ type: "bookmark", url: b.url, label: b.title || b.url, sub: hostOf(b.url) }));
@@ -657,7 +675,8 @@
   });
 
   chrome.tabs.onCreated.addListener(async (tab) => {
-    if (Date.now() - startedAt < 5000 || !isBlank(tab) || tab.active === false) return;
+    lastUrl.set(tab.id, tab.pendingUrl || tab.url || ""); // the start page mark's memory (below)
+    if ((creating && window.__vm.workspaces.startTyped(tab.pendingUrl || tab.url)) || Date.now() - startedAt < 5000 || !isBlank(tab) || tab.active === false) return;
     const previous = activeHistory.filter((id) => id !== tab.id).pop();
     // Creating/switching to an empty workspace creates its first blank tab.
     // Re-activating the previous tab here would switch straight back out of it.
@@ -678,6 +697,29 @@
       }, 120);
     }
   });
+  // The start page mark follows the tab. Navigating out of the start page's family clears it (the tab is a page again,
+  // and a later blank tab gets the bar). The address typed into Vivaldi's own field (not through the bar) is a user's
+  // choice too: a tab of this window that goes from a page to the start page is marked. A tab that opens on the start
+  // page by itself (a new tab) has no page before it, so it stays blank.
+  const lastUrl = new Map(); // this window's tab id -> its last address seen
+  chrome.tabs.query({ currentWindow: true }).then((tabs) => { for (const t of tabs) lastUrl.set(t.id, t.pendingUrl || t.url || ""); }, () => {});
+  chrome.tabs.onRemoved?.addListener((id) => { lastUrl.delete(id); });
+  chrome.tabs.onUpdated?.addListener((id, change, tab) => {
+    try {
+      if (!change?.url || myWindow == null || tab?.windowId !== myWindow) return;
+      const spaces = window.__vm.workspaces;
+      const before = lastUrl.get(id);
+      lastUrl.set(id, change.url);
+      if (spaces.startWanted(tab)) {
+        if (!spaces.inStartFamily(change.url)) setExtData(tab, { [spaces.START_KEY]: null }).catch((e) => console.warn("[vivarc] start page mark:", e));
+      } else if (before && !spaces.inStartFamily(before) && spaces.isBlankUrl(change.url)) {
+        markStart(id).catch((e) => console.warn("[vivarc] start page mark:", e));
+      }
+    } catch (error) {
+      console.warn("[vivarc] start page mark:", error);
+    }
+  });
+
   // A tab switch must not pop the collapsed address field open. Vivaldi remembers per tab where the cursor was; a tab
   // left with it in the address field (any switch made while the field had focus) puts it back there on every return,
   // and the field floats open over the sidebar. When the field gains focus just after a tab activation in this window

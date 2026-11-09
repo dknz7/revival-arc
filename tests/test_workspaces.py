@@ -398,5 +398,72 @@ class ShowsPage(unittest.TestCase):
         self.assertFalse(js("workspaces.showsPage('x', null)"))
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class BlankTab(unittest.TestCase):
+    """Task 8q: Vivaldi's Start Page is a blank tab (the command bar opens over it) unless the user asked for it."""
+
+    START = "chrome://vivaldi-webui/startpage"
+
+    def blank(self, url=None, pending=None, ext=None, wanted="undefined"):
+        tab = {"url": url, "pendingUrl": pending}
+        if ext is not None:
+            tab["vivExtData"] = ext
+        return js(f"workspaces.isBlank(tab, {wanted})", tab=tab)
+
+    def test_the_new_tab_and_start_page_addresses_are_blank(self):
+        for url in ["chrome://newtab/", "vivaldi://newtab", self.START, self.START + "?section=Speed-dials",
+                    self.START + "?section=Speed-dials&background-color=#363536"]:
+            self.assertTrue(self.blank(url), url)
+
+    def test_a_section_of_the_start_page_and_every_other_page_is_not(self):
+        for section in ["Bookmarks", "History", "Notes", "Calendar", "Dashboard", "bookmarks"]:
+            self.assertFalse(self.blank(self.START + "?section=" + section), section)
+        for url in ["https://example.com/", "about:blank", "", None, "chrome://settings"]:
+            self.assertFalse(self.blank(url), str(url))
+
+    def test_the_pending_address_decides_while_a_tab_is_loading(self):
+        self.assertTrue(self.blank("", self.START))
+        self.assertFalse(self.blank(self.START, "https://example.com/"))
+
+    def test_a_start_page_asked_for_is_not_blank(self):
+        self.assertFalse(self.blank(self.START, ext='{"vmStart":true}'))
+        self.assertFalse(self.blank(self.START, ext='{"workspaceId":3,"vmStart":true}'))
+        self.assertFalse(self.blank(self.START, wanted="true"))
+        self.assertFalse(self.blank("chrome://newtab/", ext='{"vmStart":true}'))
+
+    def test_the_mark_is_ignored_unless_it_is_set_and_the_explicit_answer_wins(self):
+        for ext in ['{}', '{"vmStart":false}', '{"vmStart":null}', "not json", None]:
+            self.assertTrue(self.blank(self.START, ext=ext), str(ext))
+        self.assertTrue(self.blank(self.START, ext='{"vmStart":true}', wanted="false"))
+        self.assertFalse(self.blank(self.START, ext='{}', wanted="true"))
+
+    def test_a_start_page_asked_for_is_called_Start_Page_not_by_its_address(self):
+        title = lambda url, ext: js("workspaces.startTitle(tab)", tab={"url": url, "vivExtData": ext})
+        self.assertEqual(title(self.START, '{"vmStart":true}'), "Start Page")
+        for url, ext in [(self.START, "{}"), (self.START + "?section=Bookmarks", '{"vmStart":true}'), ("https://example.com/", '{"vmStart":true}')]:
+            self.assertIsNone(title(url, ext), url)
+
+    def test_the_mark_makes_no_page_blank(self):
+        self.assertFalse(self.blank("https://example.com/", ext='{"vmStart":true}'))
+        self.assertFalse(self.blank(self.START + "?section=Bookmarks", ext='{"vmStart":true}'))
+
+    def test_a_typed_address_means_the_start_page_for_its_own_addresses_only(self):
+        typed = lambda text: js("workspaces.startTyped(text)", text=text)
+        for text in [self.START, self.START + "/", self.START + "?section=Speed-dials", "vivaldi://newtab", "chrome://newtab/",
+                     "vivaldi://startpage", "  " + self.START + "  ", "CHROME://vivaldi-webui/startpage"]:
+            self.assertTrue(typed(text), text)
+        for text in [self.START + "?section=Bookmarks", "https://example.com/startpage", "vivaldi://settings", "startpage", "",
+                     "https://vivaldi-webui/startpage", self.START + "x"]:
+            self.assertFalse(typed(text), text)
+        self.assertFalse(js("workspaces.startTyped(null)"))
+
+    def test_the_mark_stays_inside_the_start_pages_family(self):
+        family = lambda url: js("workspaces.inStartFamily(url)", url=url)
+        for url in [self.START, self.START + "?section=Bookmarks", "chrome://newtab/"]:
+            self.assertTrue(family(url), url)
+        for url in ["https://example.com/", "", None, "about:blank"]:
+            self.assertFalse(family(url), str(url))
+
+
 if __name__ == "__main__":
     unittest.main()
