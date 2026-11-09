@@ -2308,7 +2308,8 @@ for (const layout of ["dia", "arc"]) {
       return { samples, first: await srPerm(a, "geo"), second: await srPerm(a, "notif"), end: await srState(ctx.W) };
     },
     expect: (s, b, r) => [r.first === "granted" ? null : `the first click did not answer (${r.first})`, r.second === "default" ? null : `a slow click answered the question reopened in the slot: notifications ${r.second}`,
-      r.end.cards.length === 1 ? null : `${r.end.cards.length} cards at the end, want the second question waiting`],
+      r.end.cards.length === 1 ? null : `${r.end.cards.length} cards at the end, want the second question waiting`,
+      r.end.active === "BUTTON" ? "a refused click left the cursor on a card button (a later key would answer it)" : null],
   });
   // (2) Vivarc's own menus must survive the card: a press that closes Vivaldi's popup is not allowed to be followed by a
   // synthetic press that closes the menu that press opened.
@@ -2337,6 +2338,47 @@ for (const layout of ["dia", "arc"]) {
       expect: (s, b, r) => [r.early > 0 ? null : "setup: the menu did not open", r.late > 0 ? null : "the menu was closed by the card's reopen", r.s.cards.length === 1 || r.pill ? null : `${r.s.cards.length} cards and no pill (the question must still be reachable)`],
     });
   }
+  // Fix round 3: a held reopen must not fire while the user is typing in one of Vivarc's own fields (an inline rename ends,
+  // unchanged, when its field loses focus to the reopened popup's autofocused Deny).
+  def(`SR.a-rename-in-progress-survives-the-card-and-the-card-comes-back-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "notif");
+      const c = h.cdp(ctx.W);
+      const realClick = async (pt, button = "left") => { await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: pt[0], y: pt[1] });
+        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: pt[0], y: pt[1], button, clickCount: 1 });
+        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: pt[0], y: pt[1], button, clickCount: 1 }); };
+      const centre = (expr) => h.ev(`(() => { const e = ${expr}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const b = e.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`, ctx.W);
+      const rename = async (from, to) => {
+        await realClick(await centre(`[...document.querySelectorAll("#vm-panel .vm-row.vm-link")].find((r) => r.textContent.includes(${J(from)}))`), "right");
+        await sleep(400);
+        const item = await centre(`[...document.querySelectorAll(".vm-menu .vm-menu-item")].find((i) => i.textContent.includes("Rename"))`);
+        if (!item) return "no Rename item";
+        await realClick(item);
+        await sleep(1800); // longer than the card's reopen attempts
+        const typing = await h.ev(`document.activeElement?.className ?? null`, ctx.W);
+        await c.send("Input.insertText", { text: to });
+        await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        await sleep(900);
+        return typing;
+      };
+      let out = {};
+      try {
+        out.typing = await rename("Vivarc Guide", "SRRenamed");
+        out.titles = await h.ev(`chrome.bookmarks.search({ title: "SRRenamed" }).then((r) => r.length)`, ctx.H);
+        await srWait(ctx.W, (s) => s.cards.length === 1, 6000);
+        out.after = await srState(ctx.W);
+        out.rowShown = await h.ev(`[...document.querySelectorAll("#vm-panel .vm-row.vm-link")].some((r) => r.textContent.includes("SRRenamed"))`, ctx.W);
+      } finally { // put the seeded name back through the bookmark itself
+        await h.ev(`chrome.bookmarks.search({ title: "SRRenamed" }).then((r) => Promise.all(r.map((n) => chrome.bookmarks.update(n.id, { title: "Vivarc Guide" })))).then(() => 1)`, ctx.H);
+      }
+      return out;
+    },
+    expect: (s, b, r) => [String(r.typing).includes("vm-rename") ? null : `the rename field did not stay focused (active: ${r.typing})`, r.titles === 1 ? null : `the new name did not stick (${r.titles} bookmarks named SRRenamed)`,
+      r.rowShown ? null : "the row does not show the new name", r.after?.cards.length === 1 ? null : `the card did not come back afterwards (${r.after?.cards.length} cards)`],
+  });
   // (3) Vivarc's own press on Vivaldi's icon must not count as the user asking for the address field (8o's guard).
   def(`SR.a-synthetic-press-does-not-switch-the-8o-guard-off-${layout}`, {
     layout, setup: afSetup,

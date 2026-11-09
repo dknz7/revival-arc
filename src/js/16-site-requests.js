@@ -78,7 +78,18 @@
       }
     } finally { vm.synthNow = false; }
   };
-  const menuOpen = () => !!document.querySelector(".vm-menu, .vm-theme-pop, .vm-set-card");
+  // Whether the user is busy in something of Vivarc's own: a menu or popover, an inline name field, the command bar, or the cursor in
+  // any other text entry outside the card. The reopened popup would take the cursor (its Deny button is autofocused), and an
+  // inline rename ends, unchanged, when its field loses focus. A menu stays "open" for a moment after it closes: the item
+  // picked in it (Rename...) opens its field a tick later.
+  let busyAt = 0;
+  const busy = () => {
+    const a = document.activeElement;
+    const typing = !!a && !a.closest?.(`#${HOST}, ${POPUP}`) && (a.matches?.("input, textarea, [contenteditable]") || a.isContentEditable);
+    if (document.querySelector(".vm-menu, .vm-theme-pop, .vm-set-card, .vm-rename, .vm-rename-float, .vm-space-input, #vm-cmd") || typing) busyAt = Date.now();
+    return Date.now() - busyAt < 500;
+  };
+  const menuOpen = busy;
   const moved = () => { stackMovedAt = Date.now(); }; // something clickable has just appeared or gone where the pointer may be
 
   // Vivaldi's popup takes the cursor when it opens (its Deny button is autofocused). That would leave a hidden button
@@ -93,6 +104,21 @@
       }
       target?.focus?.();
     } catch (error) { warn("focus", error); }
+  };
+
+  // A click on a card button leaves the cursor on it, whether or not the click did anything (a refused click does not):
+  // a later Space or Enter would then answer. The cursor goes back to the page (or where it was before the popup).
+  const releaseFocus = () => {
+    try {
+      const a = document.activeElement;
+      if (!a || !a.closest?.(`#${HOST}`)) return;
+      let target = lastOutside;
+      if (!target || !target.isConnected || target.tagName === "WEBVIEW") {
+        const view = activeTab != null ? document.getElementById(String(activeTab)) : null;
+        target = view?.tagName === "WEBVIEW" ? view : null;
+      }
+      if (target) target.focus?.(); else a.blur();
+    } catch (error) { warn("release focus", error); }
   };
 
   const recentMove = () => Date.now() - stackMovedAt < MOVE_MS;
@@ -187,7 +213,7 @@
     close.type = "button";
     close.title = "Dismiss (Esc)";
     close.setAttribute("aria-label", "Dismiss");
-    close.addEventListener("click", (e) => { if (e.detail <= 1) dismiss(popup); });
+    close.addEventListener("click", (e) => { try { if (e.detail <= 1) dismiss(popup); } finally { releaseFocus(); } });
     head.append(icon, text, close);
     const actions = el("div", "vm-site-actions");
     request.options.forEach((option, i) => {
@@ -195,10 +221,11 @@
       b.type = "button";
       b.disabled = option.disabled;
       // A double-click's second click is never an answer: it lands wherever the stack has moved to.
-      b.addEventListener("click", (e) => { if (e.detail <= 1) answer(popup, i, option.label); });
+      b.addEventListener("click", (e) => { try { if (e.detail <= 1) answer(popup, i, option.label); } finally { releaseFocus(); } });
       actions.append(b);
     });
     card.append(head, actions);
+    card.addEventListener("pointerup", () => setTimeout(releaseFocus, 0)); // a press that never became a click leaves the cursor on the button too
     card.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dismiss(popup); } });
     return card;
   };
