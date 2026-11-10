@@ -16,7 +16,7 @@
 // a state the repairs would fix at once (a split), it raises the shared busy mark tile gestures use, so repairs wait.
 import http from "node:http";
 import { mkdirSync, writeFileSync } from "node:fs";
-import { Harness, Cdp, targets, sleep, tabUrl } from "./sandbox-lib.mjs";
+import { Harness, Cdp, targets, sleep, tabUrl, BG_REQUIRE } from "./sandbox-lib.mjs";
 
 const J = JSON.stringify;
 const args = process.argv.slice(2);
@@ -149,7 +149,8 @@ const PUT_IN_SPACE = String.raw`async (ids, space) => {
   return bad.length ? bad.join("; ") : null;
 }`;
 // A setup that builds a split (one space with tabs in two windows) cannot be built on Vivaldi 8.3, which refuses it
-// ("ambiguous windowId"): that case is reported SKIP with the reason, not run, and does not fail the sweep.
+// ("ambiguous windowId"): a case that declares it (split: true) is reported SKIP with the reason, not run, and does not
+// fail the sweep; any other case refused that way FAILs.
 const SPLIT_REFUSED = "Vivaldi refuses the split this setup builds (8.3 keeps a space's tabs in one window)";
 async function putInSpace(ids, space) {
   const bad = await h.cdp(ctx.H).eval(`(${PUT_IN_SPACE})(${J(ids)}, ${J(space || 0)})`, 60000); // CU.over-the-cap's chunks of 25
@@ -319,7 +320,7 @@ const SET = {
 };
 const SPLIT = new Set(["split-shown", "split-parked"]);
 const gesture = (row, col, expect) => def(`T.${row}.${col}`, {
-  gesture: true, clicks: true, busyThroughAct: SPLIT.has(row), setup: SET[row],
+  gesture: true, clicks: true, busyThroughAct: SPLIT.has(row), split: SPLIT.has(row), setup: SET[row],
   act: () => clickTile(ctx.W, "X", col === "shift" ? { shift: true } : col === "new" ? { shift: true, ctrl: true } : {}),
   expect,
 });
@@ -364,7 +365,7 @@ def("DOTS", {
 
 // Repairs (spec Part 2, "Repairs"), set up as Task 6 measured them.
 def("R.D8", {
-  busyThroughAct: true, timed: true,
+  busyThroughAct: true, timed: true, split: true,
   setup: async () => { await mkWin("W"); await mkWin("O"); await tab(ctx.W, "X1", sp("X"), { active: true }); await show(ctx.W, sp("X")); await tab(ctx.O, "X2", sp("X")); await focus(ctx.W); await focus(ctx.H); await focus(ctx.O); },
   act: () => h.ev(`chrome.windows.remove(${ctx.O}).then(() => "ok")`, ctx.H),
   expect: (s) => [tabIs(s, "X1", { win: ctx.W, space: sp("X") }), tabIs(s, "X2", { win: ctx.W, space: sp("X") }), recIs(s, ctx.W, sp("X")), recIs(s, ctx.H, 0)],
@@ -397,7 +398,7 @@ def("R.D2", {
   expect: (s) => [tabIs(s, "X1", { win: ctx.W, space: sp("X") }), tabIs(s, "X2", { win: ctx.W, space: sp("X") }), recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0)],
 });
 if (EXTRA) def("R.D8-min-leader", {
-  busyThroughAct: true, timed: true,
+  busyThroughAct: true, timed: true, split: true,
   setup: async () => {
     await mkWin("W"); await mkWin("V"); await mkWin("O");
     await tab(ctx.W, "X1", sp("X"), { active: true }); await show(ctx.W, sp("X")); await tab(ctx.O, "X2", sp("X"));
@@ -423,7 +424,7 @@ def("A8b", {
 
 // The delete confirmation counts the space's tabs in every window (the split is held by the busy mark).
 def("DEL.count", {
-  busyThroughAct: true,
+  busyThroughAct: true, split: true,
   setup: async () => { await mkWin("W"); await mkWin("O"); await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "X2", sp("X")); await show(ctx.W, sp("X")); await tab(ctx.O, "X3", sp("X")); await focus(ctx.W); },
   act: () => deleteLabel(ctx.W, "X"),
   expect: (s, b, r) => [r.label === "Delete “X” and close its 3 tabs in 2 windows" ? null : `confirmation ${J(r.label ?? r.error)}, want "Delete “X” and close its 3 tabs in 2 windows"`, allIn(s, sp("X"), ctx.W)],
@@ -489,7 +490,7 @@ const dragSetup = (oShows) => async () => {
 def("P3.4-drop", {
   setup: dragSetup(true),
   act: () => h.ev(`(async () => {
-    const bg = chrome.extension.getBackgroundPage(); let load; bg.webpackChunkgapp_browser_react.push([[Symbol("d")], {}, (q) => { load = q; }]);
+    const load = ${BG_REQUIRE("d")};
     const find = (marker, method) => { for (const [id, f] of Object.entries(load.m)) { if (!String(f).includes(marker)) continue; let m; try { m = load(id); } catch (_) { continue; }
       for (const v of Object.values(m || {})) if (v && typeof v[method] === "function") return v; } return null; };
     const actions = find("moveDroppedTabs:async function", "moveDroppedTabs"), pages = find("getPageById(e){", "getPages");
@@ -938,11 +939,34 @@ const flyRow = (label) => `[...document.querySelectorAll(".vm-menu-flyout .vm-me
 const rowsOf = (win, sel) => h.ev(`[...document.querySelectorAll(${J(sel)})].map((d) => d.className.includes("sep") ? "---" : d.className.includes("heading") ? "# " + d.textContent : (d.querySelector(".vm-menu-label") || d).textContent.trim() + (d.className.includes("marked") ? " *" : "") + (d.className.includes("disabled") ? " (disabled)" : ""))`, win);
 const hasEl = (win, sel) => h.ev(`!!document.querySelector(${J(sel)})`, win);
 const escapeAll = (win) => h.ev(`(document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), 1)`, win);
+// With spy: window.__ntSpy records, from just before the click, whether a .vm-menu was added or removed (a
+// MutationObserver) and which presses and clicks reached the chevron (capture-phase listeners on the document, so a
+// re-rendered chevron is still seen): "the click never landed" vs "the menu opened and something closed it".
+const NT_SPY = String.raw`(() => {
+  const t0 = performance.now(), at = () => Math.round(performance.now() - t0);
+  const spy = window.__ntSpy = { menuAdded: [], menuRemoved: [], presses: [], clicks: [], chevRenders: 0 };
+  const isMenu = (n) => n.nodeType === 1 && n.classList.contains("vm-menu") && !n.classList.contains("vm-menu-flyout");
+  spy.mo = new MutationObserver((list) => { for (const m of list) {
+    for (const n of m.addedNodes) { if (isMenu(n)) spy.menuAdded.push(at()); if (n.nodeType === 1 && (n.matches(".vm-newtab-chev") || n.querySelector?.(".vm-newtab-chev"))) spy.chevRenders++; }
+    for (const n of m.removedNodes) if (isMenu(n)) spy.menuRemoved.push(at());
+  } });
+  spy.mo.observe(document.documentElement, { childList: true, subtree: true });
+  const where = (e) => { const c = e.target.closest?.(".vm-newtab-chev"); return c ? "chev" : (e.target.className?.baseVal ?? e.target.className ?? e.target.nodeName).toString().slice(0, 40); };
+  spy.onDown = (e) => spy.presses.push([at(), where(e), e.isTrusted]);
+  spy.onClick = (e) => spy.clicks.push([at(), where(e), e.isTrusted]);
+  document.addEventListener("mousedown", spy.onDown, true);
+  document.addEventListener("click", spy.onClick, true);
+  return 1;
+})()`;
+const NT_SPY_READ = String.raw`(() => { const s = window.__ntSpy; if (!s) return null; s.mo.disconnect();
+  document.removeEventListener("mousedown", s.onDown, true); document.removeEventListener("click", s.onClick, true);
+  const { mo, onDown, onClick, ...out } = s; delete window.__ntSpy; return out; })()`;
 // Hover the row (the chevron shows), click the chevron, wait for the menu.
-async function openDropdown(win) {
+async function openDropdown(win, { spy = false } = {}) {
   await mouse(win, "mouseMoved", 600, 500); await sleep(150);
   if (!(await hoverOn(win, NT_ROW))) return false;
   await sleep(250);
+  if (spy) await h.ev(NT_SPY, win);
   if (!(await clickOn(win, NT_CHEV))) return false;
   return !!(await waitFor(() => hasEl(win, NT_MENU), 4000));
 }
@@ -1093,9 +1117,10 @@ def("N.closed-window-restore", {
   },
   ready: async () => !!(await waitFor(() => hasEl(ctx.H, "#vm-panel .vm-newtab-chev"), 8000)),
   act: async () => {
-    if (!(await openDropdown(ctx.H))) return `no dropdown (${J(await h.ev(`(() => { const r = ${NT_ROW}, b = r?.getBoundingClientRect();
+    if (!(await openDropdown(ctx.H, { spy: true }))) return `no dropdown (${J(await h.ev(`(() => { const r = ${NT_ROW}, b = r?.getBoundingClientRect();
       return { row: b ? [b.x, b.y, b.width, b.height].map(Math.round) : null, view: [innerWidth, innerHeight], chev: !!${NT_CHEV}, bar: !!document.querySelector("#vm-cmd"),
-        menu: !!document.querySelector(".vm-menu"), focus: document.hasFocus(), browser: document.querySelector("#browser")?.className.slice(0, 120) }; })()`, ctx.H).catch((e) => String(e)))})`;
+        menu: !!document.querySelector(".vm-menu"), focus: document.hasFocus(), browser: document.querySelector("#browser")?.className.slice(0, 120) }; })()`, ctx.H).catch((e) => String(e)))}; spy ${J(await h.ev(NT_SPY_READ, ctx.H).catch((e) => String(e)))})`;
+    await h.ev(NT_SPY_READ, ctx.H).catch(() => {});
     if (!(await openFly(ctx.H, "Recently Closed Windows"))) return "no flyout";
     ctx.closedRows = await rowsOf(ctx.H, ".vm-menu-flyout > div");
     if (!(await clickOn(ctx.H, `document.querySelector(".vm-menu-flyout .vm-menu-item")`))) return "no row";
@@ -2544,7 +2569,7 @@ const PE_SPY = `(() => { const bg = chrome.extension.getBackgroundPage(), ev = b
   bg.__peSends = 0; return 1; })()`;
 const peSends = () => h.ev(`chrome.extension.getBackgroundPage().__peSends || 0`, ctx.H);
 // Vivaldi's own auto-hide action (found by its code, as the sandbox helper finds its stores): hides the right side.
-const peHide = (win) => h.ev(`(() => { const bg = chrome.extension.getBackgroundPage(); let load; bg.webpackChunkgapp_browser_react.push([[Symbol("pe")], {}, (r) => { load = r; }]);
+const peHide = (win) => h.ev(`(() => { const load = ${BG_REQUIRE("pe")};
   for (const [k, f] of Object.entries(load.m)) { if (!String(f).includes("updateAutoHideVisibility(e,t,n){")) continue; const m = load(k);
     for (const v of Object.values(m || {})) if (v && typeof v.updateAutoHideVisibility === "function") { v.updateAutoHideVisibility(${win}, "right", { visible: false, keepOpen: false }); return 1; } }
   return 0; })()`, win);
@@ -2885,7 +2910,10 @@ async function runCase(c, layout) {
     Object.assign(out, { pass: !bad.length, bad, heldAtMs: c.timed ? heldAtMs : undefined, before: brief(before), after: brief(after), result,
       digestBefore: digest(before), digestAfter: digest(after), ms: Date.now() - t0 });
   } catch (e) {
-    if (e.skip) Object.assign(out, { pass: null, skip: e.skip, bad: [`${e.message || e}`], ms: Date.now() - t0 });
+    // SKIP only for a case that declares it builds a split (split: true); any other case refused that way FAILs, so
+    // leftover state or a regression cannot quietly drop it out of the count.
+    if (e.skip && c.split) Object.assign(out, { pass: null, skip: e.skip, bad: [`${e.message || e}`], ms: Date.now() - t0 });
+    else if (e.skip) Object.assign(out, { pass: false, bad: [`error: ${e.message || e} (refused as a split, but this case does not declare one)`], ms: Date.now() - t0 });
     else Object.assign(out, { pass: false, bad: [`error: ${e.message || e}`], ms: Date.now() - t0 });
   }
   const tag = `${out.skip ? "SKIP" : out.pass ? "PASS" : "FAIL"} ${layout} ${c.id}`;

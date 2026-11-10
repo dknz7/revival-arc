@@ -68,13 +68,19 @@ export class Cdp {
   close() { try { this.ws.close(); } catch (_) {} }
 }
 
+// An expression (for a window.html evaluate) that is Vivaldi's webpack require, from the chunk array on the background
+// page. The pushed entry is taken out again at once: webpack keeps it, and on the background page its function would be
+// a reference into the window that pushed it after that window closes (task 8t fix1, as Vivarc's own requireOf in
+// 07-workspaces.js; Vivaldi 8.3 keeps closed windows by itself too).
+export const BG_REQUIRE = (tag) => String.raw`((a) => { let load; const e = [[Symbol(${JSON.stringify(tag)})], {}, (r) => { load = r; }]; a.push(e);
+  const i = a.lastIndexOf(e); if (i >= 0) a.splice(i, 1); return load; })(chrome.extension.getBackgroundPage().webpackChunkgapp_browser_react)`;
+
 // Installed once per window.html: finds Vivaldi's workspace store in its webpack chunks (they live on the background
 // page) and exposes window.__sbx = { sw, ws, mgr, pages, snap }.
 //   sw.setActiveWorkspace(win, space)  ws.getActiveWorkspaces() / ws.getActiveWorkspaceId(win)  mgr.addWorkspaceWithId
 export const HELPER = String.raw`(() => {
   if (window.__sbx) return window.__sbx.found;
-  const bg = chrome.extension.getBackgroundPage();
-  let load; bg.webpackChunkgapp_browser_react.push([[Symbol("sbx")], {}, (r) => { load = r; }]);
+  const load = ${BG_REQUIRE("sbx")};
   const find = (marker, method) => {
     for (const [id, f] of Object.entries(load.m)) {
       if (!String(f).includes(marker)) continue;
