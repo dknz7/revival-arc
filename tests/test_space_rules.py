@@ -887,6 +887,17 @@ class SetSpace(unittest.TestCase):
           try {{ await native.setSpace(2, 50); }} catch (e) {{ return ["threw " + e.message, calls, fakeTabs]; }} return ["ok", calls, fakeTabs]""")
         self.assertIn("did not put the tab", status)
 
+    def test_8_2_a_tab_that_never_arrives_in_the_other_window_is_not_written(self):
+        # chrome.tabs.move resolves and the tab stays in its old window: stamping the target's space there would put
+        # it in a space its own window may not show (the old dropAcross threw before any write; review of task 8t)
+        status, calls, tabs = native_js(f"""globalThis.chrome.tabs.move = async (id, props) => {{ calls.push(["tabs.move", id, props]); }};
+          fakeTabs.push(...{json.dumps([ws_tab(2, 8, 0)])});
+          try {{ await native.setSpace(2, 42, {{ windowId: 7 }}); }} catch (e) {{ return ["threw " + e.message, calls, fakeTabs]; }}
+          return ["ok", calls, fakeTabs]""")
+        self.assertIn("did not arrive in that window", status)
+        self.assertEqual([c[0] for c in calls], ["tabs.move"], "no vivExtData write")
+        self.assertNotIn("workspaceId", json.loads(tabs[0].get("vivExtData") or "{}"))
+
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class TearOff(unittest.TestCase):

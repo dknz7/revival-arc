@@ -101,6 +101,8 @@
         await new Promise((resolve) => setTimeout(resolve, 150));
         now = await chrome.tabs.get(id);
       }
+      // Not there: no write, which would stamp the target window's space on a tab still in its old window.
+      if (now.windowId !== win) throw new Error("the tab did not arrive in that window");
     }
     await write();
     if (!(await landed(id, space, win))) throw new Error("Vivaldi did not put the tab in that space");
