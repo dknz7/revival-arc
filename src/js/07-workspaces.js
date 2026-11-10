@@ -124,7 +124,9 @@
   // The tab's vivExtData with its space set to `shown`, every other key kept. For the default space (0) the value is 0,
   // not an absent key: measured in the sandbox, chrome.tabs.update MERGES vivExtData, so a write without workspaceId
   // leaves the old space in place, while workspaceId: 0 makes Vivaldi drop the key (the tab then reads as default).
-  // That is Vivaldi 8.2; 8.3 drops a workspaceId written this way, so a space is only ever set through native.setSpace.
+  // That is Vivaldi 8.2; 8.3 drops a workspaceId written this way, so moving an existing tab into a space goes through
+  // native.setSpace. (A tab Vivarc opens may still name its space in chrome.tabs.create's vivExtData, as Clean Up's
+  // restore does in 13-cleanup.js: 8.2 takes it, 8.3 drops it, and setSpace puts it right after.)
   const restamp = (tab, shown) => {
     let data = {};
     try { data = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) {}

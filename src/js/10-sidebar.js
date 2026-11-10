@@ -393,11 +393,17 @@
         }
         if (now.windowId !== fresh.id) throw new Error("the tab did not arrive in the new window");
         await chrome.tabs.update(tab.id, { vivExtData: spacesOf.tornData(now) });
-        await window.__vm.native.setSpace(tab.id, 0); // Vivaldi 8.3 drops that write's workspaceId (08-space-native.js)
         await window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] split view left behind by a tear-off:", error));
+        // Vivaldi 8.3 drops that write's workspaceId (08-space-native.js), but its windows.create({ tabId }) has already
+        // cleared the space, so this is a no-op there. Its own catch: a failure here still leaves the split broken and
+        // the Undo offered. On 8.2 a tab left in a space this window does not show is gathered home by repair 3.
+        await window.__vm.native.setSpace(tab.id, 0)
+          .catch((error) => console.warn("[vivarc] tab to a new window, not moved into the default space:", error));
       } catch (error) {
-        // The tab is in the new window, still in its old space: repair 3 gathers it home. No Undo is offered.
-        console.warn("[vivarc] tab to a new window, left in its old space (repairs gather it home):", error);
+        // The tab did not arrive, or its rewrite failed: it is wherever Vivaldi put it, with its split view and folder.
+        // Vivaldi 8.3 already cleared its space when it made the window; on 8.2 it keeps its old space, which repair 3
+        // gathers home. No Undo is offered.
+        console.warn("[vivarc] tab to a new window, not rewritten (split view and folder kept):", error);
         return;
       }
       offerUndo(tab.id, fresh.id, origin);
