@@ -152,7 +152,7 @@ const PUT_IN_SPACE = String.raw`async (ids, space) => {
 // ("ambiguous windowId"): that case is reported SKIP with the reason, not run, and does not fail the sweep.
 const SPLIT_REFUSED = "Vivaldi refuses the split this setup builds (8.3 keeps a space's tabs in one window)";
 async function putInSpace(ids, space) {
-  const bad = await h.ev(`(${PUT_IN_SPACE})(${J(ids)}, ${J(space || 0)})`, ctx.H);
+  const bad = await h.cdp(ctx.H).eval(`(${PUT_IN_SPACE})(${J(ids)}, ${J(space || 0)})`, 60000); // CU.over-the-cap's chunks of 25
   if (!bad) return;
   const error = new Error(`setup: could not put tab ${bad} into space ${spaceName(space)}`);
   if (bad.split("; ").every((b) => b.endsWith(": ambiguous windowId"))) error.skip = SPLIT_REFUSED;
@@ -1093,7 +1093,9 @@ def("N.closed-window-restore", {
   },
   ready: async () => !!(await waitFor(() => hasEl(ctx.H, "#vm-panel .vm-newtab-chev"), 8000)),
   act: async () => {
-    if (!(await openDropdown(ctx.H))) return "no dropdown";
+    if (!(await openDropdown(ctx.H))) return `no dropdown (${J(await h.ev(`(() => { const r = ${NT_ROW}, b = r?.getBoundingClientRect();
+      return { row: b ? [b.x, b.y, b.width, b.height].map(Math.round) : null, view: [innerWidth, innerHeight], chev: !!${NT_CHEV}, bar: !!document.querySelector("#vm-cmd"),
+        menu: !!document.querySelector(".vm-menu"), focus: document.hasFocus(), browser: document.querySelector("#browser")?.className.slice(0, 120) }; })()`, ctx.H).catch((e) => String(e)))})`;
     if (!(await openFly(ctx.H, "Recently Closed Windows"))) return "no flyout";
     ctx.closedRows = await rowsOf(ctx.H, ".vm-menu-flyout > div");
     if (!(await clickOn(ctx.H, `document.querySelector(".vm-menu-flyout .vm-menu-item")`))) return "no row";
