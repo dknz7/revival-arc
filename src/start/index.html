@@ -66,9 +66,48 @@
     <div class="card"><h3>Favorites</h3><p>The tiles at the top. Drag a tab onto the sidebar, or right-click a tab and choose Add to Favorites.</p></div>
     <div class="card"><h3>Pinned</h3><p>Your folders and links, always one click away. Drag to reorder, drop onto a folder to file things. Navigate inside a pinned tab and it stays on its pin, shown as <code>/</code> and the page title; hover it to go back to the pinned page or separate the current page into its own tab.</p></div>
     <div class="card"><h3>Open tabs</h3><p>Below the divider. They stay until you close them, or hover the divider and press Clear.</p></div>
-    <div class="card"><h3>Spaces</h3><p>The space selector at the bottom of the sidebar is always available: each is a space with its own tabs and pinned links (favorites are shared). Click one, or press <span data-shortcut="spaces">Cmd + Option + Left / Right</span> for the previous/next. Create one with <span data-shortcut="createSpace">Ctrl + Cmd + N</span> (or click <b>+</b>). Spaces only group tabs: they share the profile's logins.</p></div>
+    <div class="card"><h3>Spaces</h3><p>The space selector at the bottom of the sidebar is always available: each is a space with its own tabs and pinned links (favorites are shared). Click one, or press <span data-shortcut="spaces">Cmd + Option + Left / Right</span> for the previous/next. Create one with <span data-shortcut="createSpace">Ctrl + Cmd + N</span> (or click <b>+</b>). Spaces only group tabs: they share the profile's logins. A space lives in one window; see Spaces and windows below.</p></div>
     <div class="card"><h3>Profiles</h3><p>The round avatars at the bottom of the sidebar are your Vivaldi profiles: separate logins, one window each. Click one to switch, press <span data-shortcut="profileNumber">Ctrl + Cmd + 1..9</span>, or use <span data-shortcut="profiles">Ctrl + Cmd + Left / Right</span> for the previous/next one. The <b>+</b> adds a new profile.</p></div>
     <div class="card"><h3>Your look</h3><p>Hover the space name and click the palette to pick a color, intensity and grain for each profile.</p></div>
+    <div class="card"><h3>Hide the sidebar</h3><p>Press <span data-shortcut="sidebar">Cmd + S</span> to hide the sidebar in the window you are in, and again to bring it back. Other windows keep theirs. A hidden sidebar stays hidden until you press the key again. In the Dia layout there is also a button for it in the top row. After the first start on a new version, restart Vivaldi once: it reads its keys at launch.</p></div>
+    <div class="card"><h3>Mute a tab</h3><p>Right-click a tab and pick <i>Mute Tab</i> (or <i>Unmute Tab</i>). A tab playing sound shows a small speaker: click it to mute. A muted tab shows a crossed-out speaker in place of its icon: click it to unmute.</p></div>
+    <div class="card"><h3>Drag tabs between windows</h3><p>Drag a tab out past the edge of the window and it opens in a new window, as a plain tab of that window's default space. A toast in the new window offers <i>Undo</i> for 5 seconds. Drag a tab into another window's sidebar and it lands there, in the space that window shows. Pins, favorites, folders and a window's only tab stay put.</p></div>
+  </div>
+
+  <h2>Spaces and windows</h2>
+  <div class="grid two">
+    <div class="card"><h3>Click a space tile</h3><p>It goes to where the space lives. If the space is in another window, that window comes forward showing it. Nothing is pulled out of the other window.</p></div>
+    <div class="card"><h3>Bring it here, or send it away</h3><p>Hold <span data-shortcut="tileBring">Shift</span> and click a tile to bring that space into this window. Hold <span data-shortcut="tileWindow">Cmd + Shift</span> and click to send it to a new window of its own.</p></div>
+    <div class="card"><h3>The dot</h3><p>A dot on a space tile means the space lives in another window. The default space belongs to each window, so it has no dot and cannot be moved.</p></div>
+    <div class="card"><h3>New tabs, favorites and pins</h3><p>New tabs, links included, open in the space on screen. So do favorites and pins: if the tab you click is in another space or window, it is brought here instead of opening a second one.</p></div>
+    <div class="card"><h3>Move to a space</h3><p>Right-click a tab and pick <i>Move to</i> a space. Your window stays where it is. If another window shows that space, the tab goes there. If another window has the space tucked away, Vivarc says so and moves nothing: show the space in its window first.</p></div>
+    <div class="card"><h3>Kept in step</h3><p>If a window ends up on a space that was deleted, or a space is split across windows (after a window closes, say), Vivarc puts it right by itself. Clicking a split space gathers it.</p></div>
+    <div class="card"><h3>Delete a space</h3><p>Right-click a tile and pick <i>Delete Space…</i>. The question counts the space's tabs in every window, and warns you when a window would close with them.</p></div>
+  </div>
+  <p class="lead" style="margin-top:14px;font-size:14.5px">The full rules are in <code>docs/vivarc-rules.md</code> in the Vivarc repository.</p>
+
+  <h2>The New Tab menu</h2>
+  <div class="grid two">
+    <div class="card"><h3>Open it</h3><p>Hover <b>+ New Tab</b> and click the chevron at its right. The rest of the row still opens the command bar. The menu has <i>Search Tabs…</i>, <i>Start Page</i>, <i>Open Tabs</i> (every window, by space), <i>Recently Closed</i>, <i>Recently Closed Windows</i> and <i>Recently Cleaned</i>.</p></div>
+    <div class="card"><h3>Start Page</h3><p>Opens Vivaldi's own start page, with your speed dials, in a new tab. <span data-shortcut="commandBar">Cmd + T</span> still opens the command bar.</p></div>
+    <div class="card"><h3>Clean Up Tabs</h3><p>Closes the tabs in the space on screen that you have not used for 7 days, then offers <i>Undo</i> in a toast. Pinned tabs, favorites, the tab on screen, tabs playing sound, private tabs and the tabs of a visible split view are never cleaned. Cleaned tabs wait in <i>Recently Cleaned</i> for 30 days.</p></div>
+    <div class="card"><h3>Clean Up Daily</h3><p>A tick in the same menu (off by default; it is also in Vivarc Settings). Once a day it does the same for every space in every window, quietly.</p></div>
+    <div class="card"><h3>Mute All Tabs</h3><p>Mutes every tab in the window, and turns into <i>Unmute All Tabs</i> once they are.</p></div>
+    <div class="card"><h3>Close All Tabs</h3><p>Closes the same tabs the <i>Clear</i> button does, after asking first.</p></div>
+  </div>
+
+  <h2>The Dia layout</h2>
+  <div class="grid">
+    <div class="card"><h3>A slim top row</h3><p>Switch it on in Vivarc Settings: type <code>settings</code> in <span data-shortcut="commandBar">Cmd + T</span> and look for <i>Dia layout</i>. Vivaldi's menu, a sidebar button, Back, Forward and Reload, the page as <code>site / title</code>, Translate, Copy link and the window buttons sit in one row over the page.</p></div>
+    <div class="card"><h3>Narrow windows</h3><p>When the window gets small, the row's other items give way and the window buttons stay. On a Mac the row starts after the traffic lights.</p></div>
+    <div class="card"><h3>Per profile</h3><p>Settings are saved for each profile. A profile that has not switched Dia on shows the Arc layout, which can look like Vivarc is missing: check <i>Dia layout</i> in that profile's settings.</p></div>
+  </div>
+
+  <h2>Good to know</h2>
+  <div class="grid">
+    <div class="card"><h3>Site requests</h3><p>When a site asks to send notifications, know your location or use your camera or microphone, the question shows as a card at the top right of the page, with the site's own options. Click one to answer. Close the card and a small <i>Site request pending</i> pill keeps it one click away. The address bar stays collapsed.</p></div>
+    <div class="card"><h3>The right-hand panel</h3><p>Pause the pointer at the right edge of the window and Vivaldi's panel slides in, on any monitor.</p></div>
+    <div class="card"><h3>The address field</h3><p>Switching tabs no longer pops the hidden address field open. <span data-shortcut="address">Cmd + L</span> edits the address when you want it.</p></div>
   </div>
 
   <h2>Keyboard shortcuts</h2>
@@ -76,6 +115,8 @@
     <tr><td><span data-shortcut="commandBar">Cmd + T</span></td><td>Open the command bar</td></tr>
     <tr><td><span data-shortcut="address">Cmd + L</span></td><td>Edit the current page's address</td></tr>
     <tr><td><span data-shortcut="sidebar">Cmd + S</span></td><td>Hide this window's sidebar, or show it again. Other windows keep theirs.</td></tr>
+    <tr><td><span data-shortcut="tileBring">Shift</span></td><td>Click a space tile with it held to bring that space into this window</td></tr>
+    <tr><td><span data-shortcut="tileWindow">Cmd + Shift</span></td><td>Click a space tile with it held to send that space to a new window</td></tr>
     <tr><td><span data-shortcut="copyUrl">Cmd + Shift + C</span></td><td>Copy the current page's URL</td></tr>
     <tr><td><span data-shortcut="quickCommands">Cmd + E</span></td><td>Vivaldi's own Quick Commands</td></tr>
   </table>
@@ -130,6 +171,7 @@
   const primary = mac ? 'Cmd' : 'Ctrl';
   const shortcuts = {
     commandBar: [primary, 'T'], address: [primary, 'L'], sidebar: [primary, 'S'],
+    tileBring: ['Shift'], tileWindow: [primary, 'Shift'],
     copyUrl: [primary, 'Shift', 'C'], quickCommands: mac ? ['Cmd', 'E'] : ['F2'],
     spaces: mac ? ['Cmd', 'Option', '\u2190 / \u2192'] : ['Ctrl', '\u2190 / \u2192'],
     createSpace: mac ? ['Ctrl', 'Cmd', 'N'] : ['Ctrl', 'Alt', 'N'],

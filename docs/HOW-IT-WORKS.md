@@ -60,7 +60,7 @@ Set `"autoConfigureProfiles": false` to skip this and configure profiles only wi
 
 - Vivaldi profiles are the equivalent of Arc spaces; each is its own window (switch with Cmd+`).
 - Vivaldi's own UI code cannot be called from a mod, so Cmd+T opens Vivarc's command bar, not Vivaldi's Quick Commands (Cmd+E and F2 still do).
-- macOS only for now.
+- macOS and Windows (see the README for the install lines).
 
 ## Notes for contributors
 

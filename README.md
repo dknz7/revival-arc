@@ -36,7 +36,7 @@ No developer experience needed. It takes about two minutes.
 3. Follow what it says. It offers to close Vivaldi for you, and if macOS asks for a permission (**App Management**) it opens the right settings page and waits while you switch it on for Terminal.
 4. Open Vivaldi.
 
-Every profile gets the sidebar, and profiles you create later set themselves up the first time they open (the sidebar needs no restart, but Vivaldi reads keyboard shortcuts at launch, so the space and profile shortcuts work after the profile's next restart). Each profile starts with a few example favorites and pins so you can see how it works, and a new profile opens a short guide page.
+Every profile gets the sidebar, and profiles you create later set themselves up the first time they open (the sidebar needs no restart, but Vivaldi reads keyboard shortcuts at launch, so the space, profile and sidebar-hide (Cmd+S) shortcuts work after the profile's next restart). Each profile starts with a few example favorites and pins so you can see how it works, and a new profile opens a short guide page.
 
 Requires macOS and Vivaldi 8.x. If your Mac has never had developer tools, macOS shows an "Install" window the first time (it is Apple's free command line tools, which include Python); click Install, wait, then paste the line again.
 
@@ -178,15 +178,43 @@ python3 ~/.vivarc/app/vivarc.py status      # what is installed
   <img src="docs/screenshots/theme.png" alt="Theme editor with colour pad, swatches, intensity and grain" width="760">
 </p>
 
+**Spaces across windows.** A space lives in one window. Click a space tile to go to it: if it lives in another window, that window comes forward showing it, and no tabs move. A dot on a tile marks a space that lives in another window. Shift+click brings the space here; Ctrl+Shift+click (Cmd+Shift+click on a Mac) sends it to a new window of its own. The default space belongs to each window, so it has no dot and cannot be moved. New tabs, links, favorites and pins open in the space on screen; a favorite or pin whose tab is elsewhere is brought here, never duplicated. Right-click a tab and pick **Move to** a space: your window stays where it is, a space shown in another window takes the tab there, and a space tucked away in another window is refused with a message (show it in its window first). If Vivaldi leaves things out of step, for example after a window closes and splits a space, Vivarc gathers the space into one window by itself, and a click on a split space gathers it too. Deleting a space asks first, counts its tabs in every window and warns when a window would close. The full rules are in [docs/vivarc-rules.md](docs/vivarc-rules.md).
+
+**Dragging tabs.** Drag a tab row out past the window's edge to open it in a new window, as a plain tab of that window's default space. Escape does not cancel a drag that has left the window, so a toast in the new window offers **Undo** for 5 seconds. Drag a tab into another window's sidebar and it lands there, at the drop position, in the space that window shows. Pins, favorites, folders and a window's only tab are not torn off.
+
+**The New Tab menu.** Hover **+ New Tab** and click the chevron at its right (the rest of the row still opens the command bar). The menu has:
+
+- **Search Tabs…**, **Open Tabs** (every window, by space), **Recently Closed** and **Recently Closed Windows**.
+- **Start Page**: Vivaldi's own start page with your speed dials, in a new tab. Cmd+T still opens the command bar.
+- **Clean Up Tabs**: closes the tabs of the space on screen that you have not used for 7 days, with an **Undo** toast. Pinned tabs, favorites, the tab on screen, tabs playing sound, private tabs and the tabs of a visible split view are never cleaned. Cleaned tabs wait in **Recently Cleaned** for 30 days (up to 200).
+- **Clean Up Daily**: a tick, off by default, also in Vivarc Settings. Once a day it does the same for every space in every window, quietly.
+- **Mute All Tabs** and **Close All Tabs** (the tabs the _Clear_ button closes; it asks first).
+
+**Muting.** Right-click a tab for **Mute Tab** or **Unmute Tab**. A tab playing sound shows a small speaker: click it to mute. A muted tab shows a crossed-out speaker in place of its favicon: click it to unmute.
+
+**Site requests.** When a site asks for notifications, your location, the camera or the microphone, the question shows as a card at the top right with the site's own options, and the address bar stays collapsed. Close the card and a small **Site request pending** pill keeps it one click away. A prompt Vivarc cannot read still opens the address bar, so a question is never hidden.
+
+**Hiding the sidebar.** Cmd+S (Ctrl+S on Windows), and in the Dia layout the button between Vivaldi's menu and Back, hide or show the sidebar in this window only. Vivarc takes the key over from Vivaldi once per profile, so restart Vivaldi once after the first start on a new version. A hidden sidebar does not slide back in on hover.
+
+**The Dia layout.** Switch it on in Vivarc Settings (Cmd+T, `settings`, _Dia layout_) for a slim row over the page: Vivaldi's menu, the sidebar button, Back, Forward and Reload, the page as `site / title`, Translate, Copy link and the window buttons. In a narrow window the other items give way and the window buttons stay. On a Mac the row starts after the traffic lights. Settings are per profile, so a profile still on the Arc layout can look like Vivarc is missing: check _Dia layout_ there.
+
+**Also:** Vivaldi's right-hand panel slides in when the pointer pauses at the window's right edge, on any monitor. Switching tabs no longer pops the hidden address field open.
+
 **Shortcuts**
 
-| Keys        | Does                                                                                                                           |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| Cmd+T       | Command bar                                                                                                                    |
-| Cmd+S       | Hide this window's sidebar, or show it again. Other windows keep theirs. Press it again to bring it back.                      |
-| Cmd+Shift+C | Copy the page URL (with a toast)                                                                                               |
-| Cmd+L       | Edit the address                                                                                                               |
-| Cmd+E       | Vivaldi's own Quick Commands                                                                                                   |
+| Mac                   | Windows               | Does                                                                     |
+| --------------------- | --------------------- | ------------------------------------------------------------------------ |
+| Cmd+T                 | Ctrl+T                | Command bar                                                              |
+| Cmd+S                 | Ctrl+S                | Hide this window's sidebar, or show it again. Other windows keep theirs. |
+| Cmd+Shift+C           | Ctrl+Shift+C          | Copy the page URL (with a toast)                                         |
+| Cmd+L                 | Ctrl+L                | Edit the address                                                         |
+| Cmd+E                 | F2                    | Vivaldi's own Quick Commands                                             |
+| Cmd+Option+Left/Right | Ctrl+Left/Right       | Previous or next space                                                   |
+| Ctrl+Cmd+N            | Ctrl+Alt+N            | Create a space                                                           |
+| Ctrl+Cmd+1..9         | Ctrl+Shift+1..9       | Switch to the nth profile                                                |
+| Ctrl+Cmd+Left/Right   | Ctrl+Shift+Left/Right | Previous or next profile                                                 |
+| Shift+click           | Shift+click           | On a space tile: bring that space here                                   |
+| Cmd+Shift+click       | Ctrl+Shift+click      | On a space tile: send that space to a new window                         |
 
 **Also:** an optional link preview (Peek, by [PaRr0tBoY](https://github.com/PaRr0tBoY/Awesome-Vivaldi), downloaded from upstream and verified at install; shift+click a link to open it), and an importer for your Arc spaces and site icons.
 
@@ -204,11 +232,12 @@ In each Vivaldi profile: **File > Import Bookmarks and Settings… > HTML file**
 
 ### Where Vivaldi differs from Arc
 
-- **Spaces and profiles are two layers.** A **space** is a Vivaldi workspace: a group of tabs and pinned links inside one window. Once a profile has workspaces, a row of emoji tiles under the sidebar switches between them (click one, or **Cmd+Option+Left/Right** for the previous/next; **Ctrl+Cmd+N** makes one; right-click a tile to delete it). Each space lists only its own tabs and has its own Pinned folder, named after the workspace; favorites are shared. Spaces **share the profile's logins**, which Vivaldi does not separate. A **profile** is the real boundary: its own window, bookmarks, logins and extensions. Switch with the **round avatars in the bottom bar** (click one, **Cmd+Ctrl+1..9** for the nth, **Cmd+Ctrl+Left/Right** for the previous/next); the **+** creates a profile and right-clicking your own avatar opens Vivaldi's profile manager. Vivaldi's own use of Cmd+Option+arrows for switching tabs is given up for the spaces, and Ctrl+Tab still cycles tabs.
+- **Spaces and profiles are two layers.** A **space** is a Vivaldi workspace: a group of tabs and pinned links that lives in one window at a time (see _Spaces across windows_ above). Once a profile has workspaces, a row of emoji tiles under the sidebar switches between them (click one, or **Cmd+Option+Left/Right** for the previous/next; **Ctrl+Cmd+N** makes one; right-click a tile to delete it). Each space lists only its own tabs and has its own Pinned folder, named after the workspace; favorites are shared. Spaces **share the profile's logins**, which Vivaldi does not separate. A **profile** is the real boundary: its own window, bookmarks, logins and extensions. Switch with the **round avatars in the bottom bar** (click one, **Cmd+Ctrl+1..9** for the nth, **Cmd+Ctrl+Left/Right** for the previous/next); the **+** creates a profile and right-clicking your own avatar opens Vivaldi's profile manager. Vivaldi's own use of Cmd+Option+arrows for switching tabs is given up for the spaces, and Ctrl+Tab still cycles tabs.
 - **Links do not pick a space.** Arc can send a link to a given space; Vivaldi opens links from other apps in whichever profile was used last. The workaround is [Finicky](https://github.com/johnste/finicky), a tiny app that becomes your default browser and routes each link to a profile by domain:
   1. `brew install --cask finicky`, then set Finicky as the default browser in System Settings.
   2. Copy [templates/finicky.js](templates/finicky.js) to `~/.finicky.js` and edit it: one `handlers` entry per space, with the domains you want in it and the profile name as shown in Vivaldi's profile menu.
-- **Not built yet:** Boosts, automatic archiving of old tabs, and Arc's share links.
+- **Old tabs** are not archived automatically. **Clean Up Tabs** in the New Tab menu closes tabs idle for 7 days and keeps them 30 days in Recently Cleaned; the daily run is opt-in.
+- **Not built yet:** Boosts and Arc's share links.
 
 ## Safety
 
