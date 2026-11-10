@@ -75,10 +75,20 @@
 
   // Vivaldi's translation state per tab lives in its own store, which its address-bar button reads. A mod has no API
   // for it: the store is found in webpack's modules as findRemover (07-workspaces.js) finds Vivaldi's workspace manager.
+  // Vivaldi's webpack require from its chunk array, the entry taken out again at once: webpack keeps a pushed entry, and
+  // on the background page it would be a reference into this window after the window closes (07-workspaces.js,
+  // requireOf; this file is also loaded on its own by its tests, so it has its own copy).
+  const requireOf = (chunks, tag) => {
+    let load;
+    const entry = [[Symbol(tag)], {}, (require) => { load = require; }];
+    chunks.push(entry);
+    const at = typeof chunks.lastIndexOf === "function" ? chunks.lastIndexOf(entry) : -1;
+    if (at >= 0) chunks.splice(at, 1);
+    return load;
+  };
   const findTranslation = (chunks) => {
     try {
-      let load;
-      chunks.push([[Symbol("vivarc-translation")], {}, (require) => { load = require; }]);
+      const load = requireOf(chunks, "vivarc-translation");
       for (const [id, factory] of Object.entries(load?.m || {})) {
         if (!String(factory).includes("VIVALDI_TABS_LANGUAGE_DETERMINED")) continue;
         let exported;
@@ -102,8 +112,7 @@
   };
   const findCodes = (chunks) => {
     try {
-      let load;
-      chunks.push([[Symbol("vivarc-translation-codes")], {}, (require) => { load = require; }]);
+      const load = requireOf(chunks, "vivarc-translation-codes");
       for (const [id, factory] of Object.entries(load?.m || {})) {
         if (!String(factory).includes("getTranslationCode")) continue;
         let exported;

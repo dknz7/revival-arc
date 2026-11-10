@@ -265,6 +265,40 @@ class DeleteSpace(unittest.TestCase):
         self.assertEqual(js("workspaces.removalScope(null, 5)"), {"tabCount": 0, "windowCount": 0, "closesWindow": False})
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class ChunkEntries(unittest.TestCase):
+    """Webpack 5's chunk push runs the entry's function and then keeps the entry in the array for good. Vivaldi's array is
+    on the background page, which outlives every window, so an entry left there is a reference into the window that made
+    it after the window closes (810 entries after one sandbox sweep, task 8t fix1). Every lookup takes its entry out."""
+
+    def test_no_lookup_leaves_an_entry_in_vivaldis_chunk_array(self):
+        out = js("""(() => {
+          const require = Object.assign(() => ({}), { m: { 1: function () { return "nothing to see"; } } });
+          const chunks = [[[1], {}]];
+          const push = Array.prototype.push;
+          chunks.push = function (data) { if (data[2]) data[2](require); return push.call(this, data); }; // webpack's own
+          const left = {};
+          for (const name of ["findRemover", "findCreator", "findSwitcher", "findMover", "findRecord"]) {
+            workspaces[name](chunks); left[name] = chunks.length;
+          }
+          return left;
+        })()""")
+        self.assertEqual(out, {"findRemover": 1, "findCreator": 1, "findSwitcher": 1, "findMover": 1, "findRecord": 1})
+
+    def test_a_lookup_still_finds_what_it_looks_for_on_a_real_array(self):
+        out = js("""(() => {
+          const calls = [];
+          const manager = { removeWorkspace: (w, id) => calls.push([w, id]) };
+          const require = Object.assign((id) => ({ Z: manager }), { m: { 2: function () { return "removeWorkspace("; } } });
+          const chunks = [];
+          const push = Array.prototype.push;
+          chunks.push = function (data) { if (data[2]) data[2](require); return push.call(this, data); };
+          workspaces.findRemover(chunks)(7, 42);
+          return [calls, chunks.length];
+        })()""")
+        self.assertEqual(out, [[[7, 42]], 0])
+
+
 class CreateSpaceDialog(unittest.TestCase):
     def test_opens_native_dialog_in_the_requested_window(self):
         fake = DeleteSpace.FAKE.replace("removeWorkspace", "showWorkspaceDialog")

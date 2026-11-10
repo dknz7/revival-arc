@@ -217,6 +217,19 @@ class TranslationState(unittest.TestCase):
         self.assertEqual(js("(() => {" + fake + "return window.__vm.dia.findCodes(chunks)('zh-CN'); })()"), "zh-Hans")
         self.assertIsNone(js("window.__vm.dia.findCodes(undefined)"))
 
+    def test_no_lookup_leaves_an_entry_in_vivaldis_chunk_array(self):
+        # webpack 5 keeps a pushed entry in the array; on the background page it would hold this window after it closes
+        # (task 8t fix1, test_workspaces.ChunkEntries)
+        out = js("""(() => {
+          const require = Object.assign(() => ({}), { m: {} });
+          const chunks = [];
+          const push = Array.prototype.push;
+          chunks.push = function (data) { if (data[2]) data[2](require); return push.call(this, data); };
+          window.__vm.dia.findTranslation(chunks); window.__vm.dia.findCodes(chunks);
+          return chunks.length;
+        })()""")
+        self.assertEqual(out, 0)
+
     def test_no_store_means_no_button_rather_than_an_error(self):
         self.assertIsNone(js("window.__vm.dia.findTranslation(undefined)"))
         self.assertIsNone(js("window.__vm.dia.findTranslation({ push: ([ids, extra, run]) => run(Object.assign(() => ({}), { m: {} })) })"))

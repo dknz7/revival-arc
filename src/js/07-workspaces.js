@@ -300,14 +300,28 @@
   const KEY_NAMES = { ctrl: "Ctrl", meta: "Cmd", alt: window.__vm.windows ? "Alt" : "Option", shift: "Shift" };
   const CREATE_HINT = `Press ${CREATE_KEY.split("+").map((k) => KEY_NAMES[k] || k.toUpperCase()).join("+")} to create a space`;
 
+  // Vivaldi's webpack require, handed out by a push onto its chunk array (an entry whose function webpack calls with it).
+  // Webpack 5 then keeps the pushed entry in the array for good, and Vivaldi's array lives on the background page, which
+  // outlives every window: an entry left there holds its function, a reference from the background page into this
+  // window's JS world after the window closes (measured in the sandbox, task 8t fix1: 810 such entries after one sweep).
+  // So the entry is taken out again at once. (Vivaldi 8.3 itself also keeps closed windows, Vivarc or not, so this
+  // alone does not free them; it keeps Vivarc from being one more thing that holds them.) -> require, or undefined.
+  const requireOf = (chunks, tag) => {
+    let load;
+    const entry = [[Symbol(tag)], {}, (require) => { load = require; }];
+    chunks.push(entry);
+    const at = typeof chunks.lastIndexOf === "function" ? chunks.lastIndexOf(entry) : -1;
+    if (at >= 0) chunks.splice(at, 1);
+    return load;
+  };
+
   // Vivaldi has no extension API to delete a workspace, only its own store. Its webpack chunk array lives on the
   // background page (chrome.extension.getBackgroundPage), not on the window the mod runs in, and its push hands out the module
   // list; the module that defines removeWorkspace is found by its source and loaded
   // only if it already ran. Returns (windowId, id) => Promise, or null when Vivaldi no longer looks like this.
   const findRemover = (chunks) => {
     try {
-      let load;
-      chunks.push([[Symbol("vivarc")], {}, (require) => { load = require; }]);
+      const load = requireOf(chunks, "vivarc");
       for (const [id, factory] of Object.entries(load?.m || {})) {
         if (!String(factory).includes("removeWorkspace(")) continue;
         let exported;
@@ -324,8 +338,7 @@
   // Reuse Vivaldi's own dialog so naming, icons and workspace creation remain native.
   const findCreator = (chunks) => {
     try {
-      let load;
-      chunks.push([[Symbol("vivarc-create-space")], {}, (require) => { load = require; }]);
+      const load = requireOf(chunks, "vivarc-create-space");
       for (const [id, factory] of Object.entries(load?.m || {})) {
         if (!String(factory).includes("showWorkspaceDialog(")) continue;
         let exported;
@@ -342,8 +355,7 @@
 
   const findSwitcher = (chunks) => {
     try {
-      let load;
-      chunks.push([[Symbol("vivarc-switch-space")], {}, (require) => { load = require; }]);
+      const load = requireOf(chunks, "vivarc-switch-space");
       for (const [id, factory] of Object.entries(load?.m || {})) {
         if (!String(factory).includes("setActiveWorkspace")) continue;
         let exported;
@@ -365,8 +377,7 @@
   // space is 0, as Vivaldi passes it (workspaceId: t || 0).
   const findMover = (chunks) => {
     try {
-      let load;
-      chunks.push([[Symbol("vivarc-move-space")], {}, (require) => { load = require; }]);
+      const load = requireOf(chunks, "vivarc-move-space");
       for (const [id, factory] of Object.entries(load?.m || {})) {
         if (!String(factory).includes('debug:"PageActions.moveToWorkspace"')) continue;
         let exported;
@@ -508,8 +519,7 @@
   // Null when the store is not found, and the caller decides what to fall back to.
   const findRecord = (chunks) => {
     try {
-      let load;
-      chunks.push([[Symbol("vivarc-record")], {}, (require) => { load = require; }]);
+      const load = requireOf(chunks, "vivarc-record");
       for (const [id, factory] of Object.entries(load?.m || {})) {
         if (!/getActiveWorkspaceId\([\w$]+\)\{/.test(String(factory))) continue; // its definition, whatever the minifier named its parameter
         let exported;
