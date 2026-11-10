@@ -149,10 +149,9 @@
         try {
           const home = spacesOf.cleanedHome({ entry, here, shown, spaces, tabs, record });
           const made = await chrome.tabs.create({ windowId: home.window, url: entry.url, active: false, vivExtData: JSON.stringify({ workspaceId: home.space }) });
-          // Vivaldi files a new tab in the space on screen unless told otherwise: read back, put right if it differs
-          let fresh = made;
-          try { fresh = await chrome.tabs.get(made.id); } catch (_) {}
-          if (spacesOf.of(fresh) !== home.space) await chrome.tabs.update(made.id, { vivExtData: spacesOf.restamp(fresh, home.space) });
+          // Vivaldi files a new tab in the space on screen unless told otherwise (and 8.3 drops the workspaceId given to
+          // create): put right if it differs. The tab is open either way, so a space that cannot be set only warns.
+          await window.__vm.native.setSpace(made.id, home.space).catch((error) => warn("reopen into its space", error));
           opened.push(entry);
           last = made;
         } catch (error) { warn("reopen", error); }

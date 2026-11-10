@@ -124,6 +124,7 @@
   // The tab's vivExtData with its space set to `shown`, every other key kept. For the default space (0) the value is 0,
   // not an absent key: measured in the sandbox, chrome.tabs.update MERGES vivExtData, so a write without workspaceId
   // leaves the old space in place, while workspaceId: 0 makes Vivaldi drop the key (the tab then reads as default).
+  // That is Vivaldi 8.2; 8.3 drops a workspaceId written this way, so a space is only ever set through native.setSpace.
   const restamp = (tab, shown) => {
     let data = {};
     try { data = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) {}
@@ -134,7 +135,8 @@
   // The vivExtData of a tab that leaves its window: in `space` (default 0), out of its split view (tiling) and its folder
   // (group, fixedGroupTitle), every other key kept. For a tear-off (default space) and a drop into another window (the
   // space that window shows). chrome.tabs.update merges vivExtData and only drops a key written as null (measured), so
-  // the keys the tab has are nulled; a key it never had is not written.
+  // the keys the tab has are nulled; a key it never had is not written. Vivaldi 8.3 drops the workspaceId of this write
+  // and keeps the rest, so the callers set the space with native.setSpace as well.
   const tornData = (tab, space = 0) => {
     let data = {};
     try { data = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) {}

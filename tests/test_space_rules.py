@@ -41,11 +41,41 @@ globalThis.chrome = {
   tabs: {
     get: async (id) => fakeTabs.find((t) => t.id === id),
     query: async ({ windowId } = {}) => fakeTabs.filter((t) => windowId == null || t.windowId === windowId),
-    update: async (id, props) => { calls.push(["update", id, props]); },
+    // A vivExtData write lands as Vivaldi 8.2 takes it (workspaceId 0 drops the key); with globalThis.vivaldi83 its
+    // workspaceId is dropped and the other keys merge, as 8.3 does.
+    update: async (id, props) => {
+      calls.push(["update", id, props]);
+      const tab = fakeTabs.find((t) => t.id === id);
+      if (tab && props.vivExtData) {
+        const data = { ...JSON.parse(tab.vivExtData || "{}"), ...JSON.parse(props.vivExtData) };
+        if (globalThis.vivaldi83) data.workspaceId = JSON.parse(tab.vivExtData || "{}").workspaceId;
+        if (!data.workspaceId) delete data.workspaceId;
+        tab.vivExtData = JSON.stringify(data);
+      }
+    },
+    move: async (id, props) => {
+      calls.push(["tabs.move", id, props]);
+      const tab = fakeTabs.find((t) => t.id === id);
+      if (tab) tab.windowId = props.windowId;
+    },
     remove: async (id) => { calls.push(["remove", id]); },
     create: async (props) => { calls.push(["create", props]); return { id: 900, windowId: props.windowId }; },
   },
 };
+// Vivaldi's tabsPrivate.move. As 8.2 by default: an empty move with "target-is-tab" answers "nothing to move". With
+// globalThis.vivaldi83 it rejects that tweak in its argument check, as 8.3 does, and a move with a workspaceId puts the
+// tab in that window and space, unless globalThis.spaceMoveFails (it then answers as 8.3 does, success: false).
+globalThis.vivaldi = { tabsPrivate: { move: async (args) => {
+  if (globalThis.vivaldi83 && (args.tweaks || []).includes("target-is-tab")) {
+    throw new Error("Error at parameter 'moveProperties': Value must be one of above, below, into");
+  }
+  if (!args.tabIds.length) return { success: false, message: "nothing to move" };
+  calls.push(["tabsPrivate.move", args]);
+  if (globalThis.spaceMoveFails) return { success: false, message: "ambiguous windowId" };
+  const tab = fakeTabs.find((t) => t.id === args.tabIds[0]);
+  if (tab) { tab.windowId = args.windowId ?? tab.windowId; tab.vivExtData = JSON.stringify(args.workspaceId ? { workspaceId: args.workspaceId } : {}); }
+  return { success: true };
+} } };
 globalThis.window = { __vm: {} };
 const installBg = () => {
   const sw = { setActiveWorkspace: (w, s) => { calls.push(["switch", w, s === undefined ? "undef" : s]); return Promise.resolve(); } };
@@ -766,6 +796,96 @@ class MoveToSpace(unittest.TestCase):
     def test_without_vivaldis_move_it_rejects_instead_of_throwing(self):
         out = native_js("try { await native.moveToSpace([2], 50); return 'no error'; } catch (e) { return e.message; }")
         self.assertIn("unavailable", out)
+
+    # Vivaldi 8.3 (task 8t): its own Move to Workspace fails into a space with no tabs, so the move is setSpace's.
+    def test_on_vivaldi_8_3_the_move_is_a_tab_move_with_the_space_not_vivaldis_own(self):
+        tabs = [ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42)]
+        out = native_js(f"globalThis.vivaldi83 = true; fakeTabs.push(...{json.dumps(tabs)}); installBg(); await native.moveToSpace([2], 50); return calls")
+        self.assertEqual(out, [["tabsPrivate.move", {"tabIds": [2], "target": 2, "windowId": 7, "tweaks": ["do-not-reparent"],
+                                                       "workspaceId": 50, "debug": "Vivarc.setSpace"}]])
+
+    def test_on_vivaldi_8_3_it_needs_no_vivaldi_move_to_be_found(self):
+        tabs = [ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42)]
+        out = native_js(f"globalThis.vivaldi83 = true; fakeTabs.push(...{json.dumps(tabs)}); await native.moveToSpace([2], 50); return calls.map((c) => c[0])")
+        self.assertEqual(out, ["tabsPrivate.move"])
+
+    def test_on_vivaldi_8_3_a_space_shown_in_another_window_is_moved_into_that_window(self):
+        tabs = [ws_tab(1, 8, 0, active=True), ws_tab(2, 8, 0), ws_tab(3, 7, 42, active=True)]
+        out = native_js(f"globalThis.vivaldi83 = true; fakeTabs.push(...{json.dumps(tabs)}); installBg(); await native.moveToSpace([2], 42); return calls")
+        self.assertEqual(out[0][1]["windowId"], 7)
+        self.assertEqual(out[0][1]["target"], "last")
+        self.assertEqual(out[0][1]["workspaceId"], 42)
+
+    def test_on_vivaldi_8_3_a_refused_move_throws_and_gives_the_screen_back(self):
+        tabs = [ws_tab(1, 7, 42, active=True, accessed=50), ws_tab(3, 7, 42, accessed=40)]
+        out = native_js(f"""globalThis.vivaldi83 = true; globalThis.spaceMoveFails = true; fakeTabs.push(...{json.dumps(tabs)}); installBg();
+          try {{ await native.moveToSpace([1], 50); return ['no error', calls]; }} catch (e) {{ return [e.message, calls]; }}""")
+        self.assertIn("ambiguous windowId", out[0])
+        self.assertEqual(out[1][0], ["update", 3, {"active": True}])
+        self.assertEqual(out[1][-1], ["update", 1, {"active": True}], "the original tab is active again")
+
+
+def tab_at(id, window_id, index, space=0):
+    return {**ws_tab(id, window_id, space), "index": index}
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class SetSpace(unittest.TestCase):
+    """native.setSpace: the one way Vivarc puts a tab into a space (task 8t). Vivaldi 8.2 takes a vivExtData write;
+    Vivaldi 8.3 drops that write's workspaceId and takes a tabsPrivate.move with the space instead."""
+
+    def run_set(self, tabs, call, v83=False):
+        flag = "globalThis.vivaldi83 = true; " if v83 else ""
+        return native_js(f"""{flag}fakeTabs.push(...{json.dumps(tabs)});
+          try {{ await native.setSpace({call}); }} catch (e) {{ return ["threw " + e.message, calls, fakeTabs]; }}
+          return ["ok", calls, fakeTabs]""")
+
+    def test_8_2_writes_the_space(self):
+        status, calls, _ = self.run_set([ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42)], "2, 50")
+        self.assertEqual(status, "ok")
+        self.assertEqual(calls, [["update", 2, {"vivExtData": '{"workspaceId":50}'}]])
+
+    def test_8_2_into_another_window_moves_the_tab_then_writes(self):
+        status, calls, _ = self.run_set([ws_tab(2, 8, 0)], "2, 42, { windowId: 7 }")
+        self.assertEqual(status, "ok")
+        self.assertEqual(calls, [["tabs.move", 2, {"windowId": 7, "index": -1}], ["update", 2, {"vivExtData": '{"workspaceId":42}'}]])
+
+    def test_a_tab_already_in_the_space_is_left_alone(self):
+        for v83 in (False, True):
+            status, calls, _ = self.run_set([ws_tab(2, 7, 42)], "2, 42", v83)
+            self.assertEqual([status, calls], ["ok", []])
+
+    def test_8_3_moves_the_tab_onto_itself_with_the_space(self):
+        status, calls, tabs = self.run_set([ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42)], "2, 50", v83=True)
+        self.assertEqual(status, "ok")
+        self.assertEqual(calls, [["tabsPrivate.move", {"tabIds": [2], "target": 2, "windowId": 7, "tweaks": ["do-not-reparent"],
+                                                         "workspaceId": 50, "debug": "Vivarc.setSpace"}]],
+                         "no vivExtData write: 8.3 drops its workspaceId")
+
+    def test_8_3_the_default_space_is_0(self):
+        status, calls, tabs = self.run_set([ws_tab(2, 7, 42)], "2, 0", v83=True)
+        self.assertEqual(status, "ok")
+        self.assertEqual(calls[0][1]["workspaceId"], 0)
+
+    def test_8_3_into_another_window_lands_before_the_tab_at_the_index_or_last(self):
+        tabs = [tab_at(1, 7, 0), tab_at(3, 7, 1), tab_at(2, 8, 0)]
+        _, calls, _ = self.run_set(tabs, "2, 42, { windowId: 7, index: 1 }", v83=True)
+        self.assertEqual([calls[0][1]["target"], calls[0][1]["windowId"]], [3, 7])
+        _, calls, _ = self.run_set(tabs, "2, 42, { windowId: 7 }", v83=True)
+        self.assertEqual(calls[0][1]["target"], "last")
+        _, calls, _ = self.run_set(tabs, "2, 42, { windowId: 7, index: 5 }", v83=True)
+        self.assertEqual(calls[0][1]["target"], "last")
+
+    def test_8_3_a_refused_move_throws_with_vivaldis_reason(self):
+        status, calls, _ = native_js(f"""globalThis.vivaldi83 = true; globalThis.spaceMoveFails = true; fakeTabs.push(...{json.dumps([ws_tab(2, 7, 0)])});
+          try {{ await native.setSpace(2, 50); }} catch (e) {{ return ["threw " + e.message, calls, fakeTabs]; }} return ["ok", calls, fakeTabs]""")
+        self.assertIn("ambiguous windowId", status)
+        self.assertEqual([c[0] for c in calls], ["tabsPrivate.move", "update"], "the 8.2 write is tried as the fallback")
+
+    def test_8_2_a_write_that_does_not_take_throws(self):
+        status, _, _ = native_js(f"""globalThis.chrome.tabs.update = async () => {{}}; fakeTabs.push(...{json.dumps([ws_tab(2, 7, 0)])});
+          try {{ await native.setSpace(2, 50); }} catch (e) {{ return ["threw " + e.message, calls, fakeTabs]; }} return ["ok", calls, fakeTabs]""")
+        self.assertIn("did not put the tab", status)
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")

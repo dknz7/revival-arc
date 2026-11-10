@@ -134,11 +134,7 @@
       const tab = spacesOf.pickBound(await boundAnywhere(node), here, shown);
       const action = spacesOf.pinAction(tab, here, shown);
       if (action.kind === "open") return await openPin(node);
-      if (action.kind === "bring") {
-        await chrome.tabs.move(tab.id, { windowId: here, index: -1 });
-        const fresh = await chrome.tabs.get(tab.id);
-        await chrome.tabs.update(tab.id, { vivExtData: spacesOf.restamp(fresh, shown) });
-      }
+      if (action.kind === "bring") await window.__vm.native.setSpace(tab.id, shown, { windowId: here, index: -1 });
       await chrome.tabs.update(tab.id, { active: true });
     } catch (err) {
       console.warn("[vivarc] could not open the pin in this space", err);
@@ -397,6 +393,7 @@
         }
         if (now.windowId !== fresh.id) throw new Error("the tab did not arrive in the new window");
         await chrome.tabs.update(tab.id, { vivExtData: spacesOf.tornData(now) });
+        await window.__vm.native.setSpace(tab.id, 0); // Vivaldi 8.3 drops that write's workspaceId (08-space-native.js)
         await window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] split view left behind by a tear-off:", error));
       } catch (error) {
         // The tab is in the new window, still in its old space: repair 3 gathers it home. No Undo is offered.
@@ -426,10 +423,8 @@
       const now = await chrome.tabs.get(tabId);
       if (now.windowId !== newWindowId) return; // it has moved on since: nothing to undo
       await chrome.windows.get(origin.windowId); // throws when the window it came from is gone
-      await chrome.tabs.move(tabId, { windowId: origin.windowId, index: origin.index });
-      const back = await chrome.tabs.get(tabId);
-      // The space first, then the activation: activating it while it is still default would be a switch here (G4).
-      if (spacesOf.of(back) !== origin.space) await chrome.tabs.update(tabId, { vivExtData: spacesOf.restamp(back, origin.space) });
+      // The space with the move, then the activation: activating it while it is still default would be a switch here (G4).
+      await window.__vm.native.setSpace(tabId, origin.space, { windowId: origin.windowId, index: origin.index });
       if (origin.active) await chrome.tabs.update(tabId, { active: true });
       await chrome.windows.update(origin.windowId, { focused: true });
       // The emptied window closes by itself (measured); if it is still there with no tab, close it.
@@ -463,13 +458,10 @@
       if (tab.windowId === here) return; // it is already here
       const shown = window.__vm.native?.record()?.activeIn(here) ?? state.active; // Vivaldi's record, read now
       const index = await indexOf();
-      await chrome.tabs.move(tab.id, { windowId: here, index });
-      let now = await chrome.tabs.get(tab.id);
-      for (let i = 0; i < 20 && now.windowId !== here; i++) {
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        now = await chrome.tabs.get(tab.id);
-      }
-      if (now.windowId !== here) throw new Error("the tab did not arrive in this window");
+      // Into this window and its space in one go (08-space-native.js; it throws when the tab does not arrive), then the
+      // rest of the "tab leaves its window" write.
+      await window.__vm.native.setSpace(tab.id, shown, { windowId: here, index });
+      const now = await chrome.tabs.get(tab.id);
       await chrome.tabs.update(tab.id, { vivExtData: spacesOf.tornData(now, shown) });
       await window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] split view left behind by a drop from another window:", error));
       await chrome.tabs.update(tab.id, { active: true });
@@ -806,20 +798,10 @@
   // Vivaldi's own tab-stack moves (PageActions.createTabStack, moveToIndex with "ungroup"). Vivaldi 8.3 changed them:
   // "target-is-tab" is gone (its argument check rejects it), a number is always a tab id that the tabs land before (or
   // "first" / "last"), and an index no longer resolves. Which Vivaldi this is gets found once, with no side effects: an
-  // empty move with the old tweak, which 8.3 rejects in its argument check and 8.2 answers with "nothing to move".
+  // empty move with the old tweak, which 8.3 rejects in its argument check and 8.2 answers with "nothing to move"
+  // (native.movesByTab, 08-space-native.js, shared with setting a tab's space).
   const stackMove = (args) => vivaldi.tabsPrivate.move({ ...args, debug: "Vivarc.folders" });
-  let modernMove = null;
-  const isModern = async () => {
-    if (modernMove !== null) return modernMove;
-    try {
-      await stackMove({ tabIds: [], target: 0, tweaks: ["target-is-tab"] });
-      modernMove = false;
-    } catch (error) {
-      if (!/Value must be one of/.test(String(error))) throw error;
-      modernMove = true;
-    }
-    return modernMove;
-  };
+  const isModern = () => window.__vm.native.movesByTab();
   // The target for tabs to start at `index` (where chrome.tabs.move would put them): the index on 8.2; on 8.3 the tab
   // they land before, among the window's other tabs.
   const placeAt = async (ids, windowId, index) => {
