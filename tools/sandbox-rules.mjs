@@ -2,7 +2,8 @@
 // tools/sandbox.ps1 launches. Each case starts from a clean state (one window, no spaces), builds its setup, acts,
 // waits until things settle, then asserts the expected snapshot AND the two invariants over every normal window:
 // the record's space is the active tab's space, and no named space has tabs in more than one window.
-// It prints one PASS/FAIL line per rule ID. Port 9333 only (sandbox-lib.mjs refuses any other).
+// It prints one PASS/FAIL line per rule ID, or SKIP for a case whose setup builds a split that Vivaldi refuses (8.3
+// keeps a space's tabs in one window). Port 9333 only (sandbox-lib.mjs refuses any other).
 //
 //   pwsh -NoProfile -File tools/sandbox.ps1            # a sandbox running this checkout's Vivarc
 //   node tools/sandbox-rules.mjs                       # Dia: every rule; Arc: the tile rows and the Dia button's absence
@@ -125,11 +126,47 @@ async function mkWin(role, { width = 700 } = {}) {
   return id;
 }
 
+// Puts tabs into a space the way the setups need it, without Vivarc's code: the vivExtData write Vivaldi 8.2 takes, and
+// where it does not take (Vivaldi 8.3 drops a workspaceId written to vivExtData, task 8t), Vivaldi's own tab move with
+// that workspaceId, onto the tab itself and with its window. The move is only tried when Vivaldi's move reads a number
+// as a tab (8.3: it rejects the old "target-is-tab" tweak). -> null, or what did not take.
+const PUT_IN_SPACE = String.raw`async (ids, space) => {
+  const of = (t) => { try { return Number(JSON.parse(t.vivExtData || "{}").workspaceId) || 0; } catch (_) { return 0; } };
+  const bad = [];
+  let byTab = null;
+  for (const id of ids) {
+    let t = await chrome.tabs.get(id);
+    if (of(t) === space) continue;
+    await chrome.tabs.update(id, { vivExtData: JSON.stringify({ ...JSON.parse(t.vivExtData || "{}"), workspaceId: space }) });
+    t = await chrome.tabs.get(id);
+    if (of(t) === space) continue;
+    if (byTab === null) byTab = await (async () => vivaldi.tabsPrivate.move({ tabIds: [], target: 0, tweaks: ["target-is-tab"], debug: "sbx" }))()
+      .then(() => false, (e) => /Value must be one of/.test(String(e))); // 8.3's argument check throws, not rejects
+    const r = byTab ? await vivaldi.tabsPrivate.move({ tabIds: [id], target: id, windowId: t.windowId, tweaks: ["do-not-reparent"], workspaceId: space, debug: "sbx" }) : null;
+    t = await chrome.tabs.get(id);
+    if (of(t) !== space) bad.push(id + ": " + ((r && r.message) || "not in the space"));
+  }
+  return bad.length ? bad.join("; ") : null;
+}`;
+// A setup that builds a split (one space with tabs in two windows) cannot be built on Vivaldi 8.3, which refuses it
+// ("ambiguous windowId"): that case is reported SKIP with the reason, not run, and does not fail the sweep.
+const SPLIT_REFUSED = "Vivaldi refuses the split this setup builds (8.3 keeps a space's tabs in one window)";
+async function putInSpace(ids, space) {
+  const bad = await h.ev(`(${PUT_IN_SPACE})(${J(ids)}, ${J(space || 0)})`, ctx.H);
+  if (!bad) return;
+  const error = new Error(`setup: could not put tab ${bad} into space ${spaceName(space)}`);
+  if (bad.split("; ").every((b) => b.endsWith(": ambiguous windowId"))) error.skip = SPLIT_REFUSED;
+  throw error;
+}
+
 async function tab(win, label, space, { active = false } = {}) {
   const p = { windowId: win, url: tabUrl(label), active };
   if (space) p.vivExtData = J({ workspaceId: space });
   const id = await h.ev(`chrome.tabs.create(${J(p)}).then(t => t.id)`, ctx.H);
   ctx.tabs[label] = id;
+  // 0 means the default space: on 8.3 Vivaldi files a new tab into the space on screen, so it is put there too. null
+  // leaves the space Vivaldi gives.
+  if (space != null) await putInSpace([id], space);
   return id;
 }
 const show = async (win, space) => { await h.switchTo(win, space ?? undefined, ctx.H); await sleep(300); };
@@ -415,10 +452,11 @@ const favCase = (id, how) => def(id, {
     await sleep(1500);
     if (how === "fav-space") await show(ctx.W, sp("Y"));
     if (how === "fav-default") await show(ctx.W, undefined);
-    if (how === "fav-window") { await mkWin("V"); await tab(ctx.V, "Y1@V", sp("Y"), { active: true }); await show(ctx.V, sp("Y")); await activate(ctx.tabs["Y1@V"]); await focus(ctx.V); }
+    // Y moves to V whole (Y1 closes first): Vivaldi 8.3 refuses a tab into a space that has tabs in another window.
+    if (how === "fav-window") { await mkWin("V"); await h.ev(`chrome.tabs.remove(${ctx.tabs.Y1}).then(() => 1)`, ctx.H); await tab(ctx.V, "Y1@V", sp("Y"), { active: true }); await show(ctx.V, sp("Y")); await activate(ctx.tabs["Y1@V"]); await focus(ctx.V); }
     if (how === "pin-moved") {
       await activate(ctx.tabs.Y1); await sleep(500);
-      await h.ev(`chrome.tabs.get(${bound.id}).then((t) => { const d = JSON.parse(t.vivExtData || "{}"); d.workspaceId = ${sp("X")}; return chrome.tabs.update(t.id, { vivExtData: JSON.stringify(d) }); }).then(() => 1)`, ctx.H);
+      await putInSpace([bound.id], sp("X"));
     }
     ctx.clickIn = how === "fav-window" ? ctx.V : ctx.W;
     ctx.wantSpace = how === "fav-default" ? 0 : sp("Y");
@@ -1120,6 +1158,7 @@ const SET_SND = async () => {
   ctx.snd = sndUrl(`X2-${Date.now()}`); // a fresh address per case: a closed case's page may linger in the target list
   const id = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(ctx.snd)}, active: false, vivExtData: ${J(J({ workspaceId: sp("X") }))} }).then((t) => t.id)`, ctx.H);
   ctx.tabs.SND = id;
+  await putInSpace([id], sp("X"));
   await tab(ctx.W, "Y1", sp("Y"));
   await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W);
   await waitFor(() => h.ev(`chrome.tabs.get(${id}).then((t) => t.status === "complete")`, ctx.H), 8000);
@@ -1296,8 +1335,11 @@ const SET_CLOSEALL = async () => {
   await mkWin("W", { width: 900 });
   for (const l of ["X1", "X2", "X3", "X4", "X5"]) await tab(ctx.W, l, sp("X"), { active: l === "X1" });
   await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
-  // a folder made as the sidebar makes one (Vivaldi ignores a `group` written to vivExtData)
-  const made = await h.ev(`vivaldi.tabsPrivate.move({ tabIds: [${ctx.tabs.X4}, ${ctx.tabs.X5}], target: ${ctx.tabs.X4}, tweaks: ["do-not-reparent", "create-new-group", "target-is-tab"], debug: "sbx" }).then((r) => r?.group || null, (e) => "err:" + e)`, ctx.W);
+  // a folder made as the sidebar makes one (Vivaldi ignores a `group` written to vivExtData). Vivaldi 8.3 rejects the
+  // "target-is-tab" tweak in its argument check (a number is a tab there anyway): asked again without it, as the sidebar does.
+  const stack = (tweaks) => `(async () => vivaldi.tabsPrivate.move({ tabIds: [${ctx.tabs.X4}, ${ctx.tabs.X5}], target: ${ctx.tabs.X4}, tweaks: ${J(tweaks)}, debug: "sbx" }))().then((r) => r?.group || null, (e) => "err:" + e)`;
+  let made = await h.ev(stack(["do-not-reparent", "create-new-group", "target-is-tab"]), ctx.W);
+  if (/Value must be one of/.test(String(made))) made = await h.ev(stack(["do-not-reparent", "create-new-group"]), ctx.W);
   if (!made || String(made).startsWith("err:")) throw new Error("no folder: " + made);
   await sleep(800); await focus(ctx.W);
 };
@@ -1768,7 +1810,8 @@ cuCase("CU.over-the-cap", {
     await SET_CU();
     // 205 more idle tabs in X, made in chunks (the sidebar re-renders on each; a single burst jams the window's UI)
     for (let i = 0; i < 205; i += 25) {
-      await h.cdp(ctx.H).eval(`Promise.all(Array.from({ length: ${Math.min(25, 205 - i)} }, (_, k) => chrome.tabs.create({ windowId: ${ctx.W}, url: "data:text/html,<title>B" + (${i} + k) + "</title>B", active: false, vivExtData: JSON.stringify({ workspaceId: ${sp("X")} }) }))).then((t) => t.length)`, 60000);
+      await h.cdp(ctx.H).eval(`Promise.all(Array.from({ length: ${Math.min(25, 205 - i)} }, (_, k) => chrome.tabs.create({ windowId: ${ctx.W}, url: "data:text/html,<title>B" + (${i} + k) + "</title>B", active: false, vivExtData: JSON.stringify({ workspaceId: ${sp("X")} }) }))).then((t) => t.map((x) => x.id))`, 60000)
+        .then((ids) => putInSpace(ids, sp("X")));
       await sleep(400);
     }
     await waitFor(() => h.cdp(ctx.W).eval("1", 20000), 120000, 1000);
@@ -2840,11 +2883,13 @@ async function runCase(c, layout) {
     Object.assign(out, { pass: !bad.length, bad, heldAtMs: c.timed ? heldAtMs : undefined, before: brief(before), after: brief(after), result,
       digestBefore: digest(before), digestAfter: digest(after), ms: Date.now() - t0 });
   } catch (e) {
-    Object.assign(out, { pass: false, bad: [`error: ${e.message || e}`], ms: Date.now() - t0 });
+    if (e.skip) Object.assign(out, { pass: null, skip: e.skip, bad: [`${e.message || e}`], ms: Date.now() - t0 });
+    else Object.assign(out, { pass: false, bad: [`error: ${e.message || e}`], ms: Date.now() - t0 });
   }
-  const tag = `${out.pass ? "PASS" : "FAIL"} ${layout} ${c.id}`;
+  const tag = `${out.skip ? "SKIP" : out.pass ? "PASS" : "FAIL"} ${layout} ${c.id}`;
   const timing = out.heldAtMs !== undefined ? ` (invariants held ${out.heldAtMs ?? "never"} ms after the act)` : "";
-  console.log(out.pass ? `${tag}${timing}` : `${tag}${timing}: ${out.bad.join(" | ")}\n      before ${out.before ?? "-"}\n      after  ${out.after ?? "-"}`);
+  if (out.skip) console.log(`${tag}: ${out.skip} (${out.bad.join(" | ")})`);
+  else console.log(out.pass ? `${tag}${timing}` : `${tag}${timing}: ${out.bad.join(" | ")}\n      before ${out.before ?? "-"}\n      after  ${out.after ?? "-"}`);
   if (LOGDIR) writeFileSync(`${LOGDIR}/${layout}-${c.id}.json`, J(out, null, 1));
   return out;
 }
@@ -2869,13 +2914,13 @@ for (const layout of layouts) {
   for (const [alias, ids] of Object.entries(ALIASES)) {
     const got = ids.map((id) => mine.find((r) => r.id === id)).filter(Boolean);
     if (got.length !== ids.length) continue;
-    const ok = got.every((r) => r.pass);
-    console.log(`${ok ? "PASS" : "FAIL"} ${layout} ${alias} (= ${ids.join(" + ")})`);
+    const ok = got.some((r) => r.pass === false) ? false : got.some((r) => r.pass === null) ? null : true;
+    console.log(`${ok === null ? "SKIP" : ok ? "PASS" : "FAIL"} ${layout} ${alias} (= ${ids.join(" + ")})`);
     mine.push({ id: alias, layout, pass: ok, alias: true });
   }
   results.push(...mine);
-  const n = mine.filter((r) => r.pass).length;
-  console.log(`${layout}: ${n} pass, ${mine.length - n} fail`);
+  const n = mine.filter((r) => r.pass).length, skipped = mine.filter((r) => r.pass === null).length;
+  console.log(`${layout}: ${n} pass, ${mine.length - n - skipped} fail${skipped ? `, ${skipped} skipped (${SPLIT_REFUSED})` : ""}`);
 }
 await reset().catch(() => {});
 await setLayout(false).catch(() => {});
@@ -2883,6 +2928,7 @@ h.close();
 server.close();
 srServers.forEach((s) => s.close());
 // Success needs at least one case run and every one passed: a skipped layout or an --only that matched nothing fails.
-const ran = results.filter((r) => !r.alias && r.id !== "layout").length;
+// A case skipped for a refused split (SKIP) did not run.
+const ran = results.filter((r) => !r.alias && r.id !== "layout" && r.pass !== null).length;
 if (!ran) console.log("FAIL no case ran");
-process.exit(ran && results.every((r) => r.pass) ? 0 : 1);
+process.exit(ran && results.every((r) => r.pass !== false) ? 0 : 1);
