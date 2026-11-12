@@ -904,6 +904,44 @@ def("D.shield-panel-controls", {
     r.report?.modal === "Privacy Report" ? null : `Privacy Report: dialog ${J(r.report?.modal)}`, !r.report?.mark ? null : "Privacy Report: the mark stayed",
     r.modalAfter ? "the Privacy Report dialog did not close" : null],
 });
+// The Shield with the sidebar hidden (Ctrl+S: the tab bar holding Vivaldi's button is display: none) still shows the popup;
+// from the keyboard (Enter on the Shield) it opens and a second Enter closes it; the cursor going to the address field
+// (Ctrl+L) while it is open drops the mark, so the field floats with what it holds instead of being typed into unseen.
+def("D.shield-hidden-and-keys", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await goTo(ctx.W, "https://example.com/"); await sleep(2500); },
+  ready: () => waitFor(() => h.ev(`!!document.querySelector("#vm-dia-crumb .vm-dia-shield") && !!document.querySelector("#tabs-tabbar-container .SiteInfoButton")`, ctx.W), 8000),
+  act: async () => {
+    const r = {};
+    try {
+      await ctrlS(ctx.W); r.hidden = (await sideState(ctx.W)).hidden;
+      await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.openHidden = await SHIELD_STATE(ctx.W);
+      await shot(ctx.W, "shield-open-sidebar-hidden");
+      await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(700); r.escHidden = await SHIELD_STATE(ctx.W);
+    } finally { if ((await sideState(ctx.W)).hidden) await ctrlS(ctx.W); }
+    // Enter as the keyboard sends it (a keyDown with its text, so the button activates), to the focused Shield.
+    const enter = async () => { await h.ev(`(document.querySelector("#vm-dia-crumb .vm-dia-shield").focus(), 1)`, ctx.W);
+      await h.cdp(ctx.W).send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: String.fromCharCode(13) });
+      await h.cdp(ctx.W).send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }); await sleep(900); };
+    await enter(); r.keyOpen = await SHIELD_STATE(ctx.W);
+    await enter(); r.keyClose = await SHIELD_STATE(ctx.W);
+    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.open3 = await SHIELD_STATE(ctx.W);
+    // Ctrl+L as the keyboard sends it while the popup is open
+    { const c = h.cdp(ctx.W), ctrl = { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 }, l = { key: "l", code: "KeyL", windowsVirtualKeyCode: 76, nativeVirtualKeyCode: 76 };
+      await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...ctrl, modifiers: 2 }); await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...l, modifiers: 2 }); await sleep(60);
+      await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...l, modifiers: 2 }); await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...ctrl, modifiers: 0 }); await sleep(900); }
+    r.fieldFocused = await h.ev(`(() => { const f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"); return { mark: document.querySelector("#browser").classList.contains("vm-shield-open"),
+      fieldH: Math.round(f.getBoundingClientRect().height), vis: getComputedStyle(f).visibility, active: document.activeElement?.id }; })()`, ctx.W);
+    await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(400); await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(600);
+    r.end = await SHIELD_STATE(ctx.W);
+    return r;
+  },
+  expect: (s, b, r) => [r.hidden ? null : "setup: the sidebar did not hide", ...shieldOpenOk(r.openHidden, "sidebar hidden"), r.escHidden && !r.escHidden.open && !r.escHidden.mark ? null : `sidebar hidden, Escape: ${J(r.escHidden)}`,
+    ...shieldOpenOk(r.keyOpen, "Enter"), r.keyClose && !r.keyClose.open && !r.keyClose.mark ? null : `a second Enter did not close it: ${J(r.keyClose)}`,
+    ...shieldOpenOk(r.open3, "a click after the keys"),
+    r.fieldFocused && r.fieldFocused.active === "urlFieldInput" && !r.fieldFocused.mark && r.fieldFocused.fieldH > 0 && r.fieldFocused.vis === "visible" ? null : `Ctrl+L with the popup open: ${J(r.fieldFocused)}, want the field open with the cursor`,
+    r.end && !r.end.mark ? null : `the end: ${J(r.end)}`],
+});
 // Full screen: Vivaldi turns its address row off (address-top-off), and the Dia row goes with it, so nothing of it pokes out
 // at the top-left over the page; back from full screen it is whole again, with nothing dropped (it was not measured at 0 px).
 def("D.fullscreen-row", {

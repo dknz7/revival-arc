@@ -989,6 +989,7 @@
    max-height 0 and hides its own buttons in it, and moves its window buttons to its auto-hiding title bar. Ours would
    centre on that 0px row, half above the window (Task 8u), so the row goes altogether until Vivaldi shows it again. */
 #browser.vm-on.vm-dia.address-top-off #main > .mainbar { display: none !important; }
+#browser.vm-on.vm-dia.address-top-off:not(.fullscreen) #webview-container { margin-top: 8px !important; }
 #browser.vm-on.vm-dia #main > .inner { height: 100% !important; }
 #browser.vm-on.vm-dia:not(.fullscreen) #webview-container {
   margin: var(--vm-dia-bar) 8px 8px 0 !important;
@@ -1050,6 +1051,7 @@
 #vm-dia-crumb .vm-dia-shield[aria-expanded="true"] { background: color-mix(in srgb, currentColor 8%, transparent); }
 #vm-dia-crumb .vm-dia-translate[hidden] { display: none; }
 #vm-dia-crumb .vm-dia-translate[data-state="translated"] { background: color-mix(in srgb, currentColor 14%, transparent); }
+#vm-dia-crumb .vm-dia-translate[data-state="translated"]:hover { background: color-mix(in srgb, currentColor 20%, transparent); }
 #vm-dia-crumb .vm-dia-translate[data-state="translating"] svg { animation: vm-dia-pulse 1.2s ease-in-out infinite; }
 @keyframes vm-dia-pulse { 50% { opacity: 0.4; } }
 @media (prefers-reduced-motion: reduce) { #vm-dia-crumb .vm-dia-translate[data-state="translating"] svg { animation: none; opacity: 0.6; } }
@@ -1079,8 +1081,9 @@
 @container (max-width: 70px) { #vm-dia-crumb .vm-dia-share { display: none; } }
 @container (max-width: 33px) { #vm-dia-crumb .vm-dia-shield { display: none; } }
 /* The Shield's popup (15-dia.js): Vivaldi's own site-info popup, opened from the collapsed address field and shown alone,
-   fixed under the Shield, while the field stays collapsed (vm-shield-open on #browser, set only while that popup is the
-   one open). The field and its toolbar keep no height; only the popup is visible and clickable. Vivaldi's arrow points
+   fixed under the Shield, while the field stays collapsed (vm-shield-open on #browser, from the Shield's press until that
+   popup closes or anything else opens in the field). With the sidebar hidden (Ctrl+S) the tab bar is laid out again but
+   takes no room and shows nothing, so the popup inside it can show. The field and its toolbar keep no height; only the popup is visible and clickable. Vivaldi's arrow points
    at its own button, so it goes. The sidebar's blur would make it the popup's containing block and clip it, so it is
    off meanwhile (nothing is behind the sidebar to blur). */
 #browser.vm-on.vm-dia.vm-shield-open #tabs-tabbar-container :is(.toolbar-tabbar-before, .UrlBar-AddressField) {
@@ -1094,6 +1097,9 @@
 }
 #browser.vm-on.vm-dia.vm-shield-open #tabs-tabbar-container .UrlBar-AddressField .SiteInfoButton > .SiteInfo.button-popup::before { display: none; }
 #browser.vm-on.vm-dia.vm-shield-open #tabs-tabbar-container { backdrop-filter: none !important; z-index: 3 !important; }
+#browser.vm-on.vm-dia.vm-shield-open.vm-sidebar-hidden #tabs-tabbar-container {
+  display: flex !important; position: absolute !important; width: 0 !important; min-width: 0 !important; visibility: hidden;
+}
 /* A Vivarc space colour gives the sidebar its own text colour (--colorFg, 40-theme.js), which the popup, inside the sidebar,
    would take over Vivaldi's popup background: it keeps Vivaldi's (set inline on #browser). */
 #browser.vm-on.vm-themed { --vm-vivaldi-fg: var(--colorFg); }

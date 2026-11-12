@@ -84,7 +84,7 @@ const settle = async () => { for (let i = 0; i < 40; i++) await new Promise((r) 
   await window.__vm.settings.loaded;
   await settle();
   const atOpen = window.__vm.settings.get("diaLayout");
-  for (const [k, v] of sc.then || []) { window.__vm.settings.set(k, v); await settle(); }
+  for (const [k, v] of sc.then || []) { if (k === "__reset") window.__vm.settings.reset(); else window.__vm.settings.set(k, v); await settle(); }
   if (sc.prefsLater) { Object.assign(prefs, sc.prefsLater); changed.forEach((fn) => fn({ path: "vivaldi.address_bar.visible" })); await new Promise((r) => setTimeout(r, 400)); await settle(); }
   process.stdout.write(JSON.stringify({ atOpen, now: window.__vm.settings.get("diaLayout"), glass: window.__vm.settings.get("glass"), writes, posts }) + "\n");
 })();
@@ -115,6 +115,19 @@ class PrivateDia(unittest.TestCase):
     def test_the_address_row_alone_is_not_the_dia_layout(self):
         out = settings_run(incognito=True, prefs={**DIA_OFF, ADDRESS: True})
         self.assertFalse(out["atOpen"])
+
+    def test_a_dia_row_edited_in_vivaldis_toolbar_editor_still_counts(self):
+        out = settings_run(incognito=True, prefs={**DIA_ON, ROW: ["Back", "Reload", "FlexibleSpacer", "Bookmarks"]})
+        self.assertTrue(out["atOpen"])
+
+    def test_the_users_own_address_bar_row_is_not_the_dia_layout_even_with_the_frame_off(self):
+        out = settings_run(incognito=True, prefs={ADDRESS: True, ROW: ["Back", "Forward", "AddressField"], FRAME: False})
+        self.assertFalse(out["atOpen"])
+
+    def test_reset_in_a_private_window_keeps_the_normal_windows_layout(self):
+        out = settings_run(incognito=True, prefs=DIA_ON, then=[["diaLayout", False], ["__reset", None]])
+        self.assertTrue(out["now"])
+        self.assertNotIn(["pref", ADDRESS], out["writes"])
 
     def test_toggling_it_in_a_private_window_is_this_windows_only_and_not_saved(self):
         out = settings_run(incognito=True, prefs=DIA_ON, then=[["diaLayout", False]])

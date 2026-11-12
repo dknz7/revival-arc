@@ -44,7 +44,10 @@
   // Whether the profile has the layout on, from Vivaldi's prefs alone: they hold the layout's own values (target) only
   // while it is on, since off puts the address row back off. A private window reads it this way (01-settings.js): the
   // normal windows' store and settings channel are not reachable from its off-the-record profile.
-  const inherits = (current, windows) => Object.entries(target(windows)).every(([path, value]) => same(current?.[path], value));
+  // The top row's contents count only as far as the layout's own row has no address field: the user may have edited the
+  // Dia row in Vivaldi's toolbar editor since.
+  const inherits = (current, windows) => current?.[ADDRESS] === true && (!windows || current?.[FRAME] === false) &&
+    Array.isArray(current?.[ROW]) && !current[ROW].includes("AddressField");
 
   // What the breadcrumb shows for a tab: its site (a web page's host) and its title.
   const crumbOf = (tab) => {
@@ -344,6 +347,11 @@
   const shieldWarn = (what, error) => console.warn(`[vivarc] Dia layout: shield ${what}:`, error);
   // Under the Shield, right-aligned to it and kept inside the window. Measured, then corrected by any offset a containing
   // block other than the window gives a fixed box.
+  // Written only when they change: the tab bar's mutations (titles, favicons) call this while the popup is open.
+  const shieldVars = (browser, x, y) => {
+    if (browser.style.getPropertyValue("--vm-shield-x") !== `${x}px`) browser.style.setProperty("--vm-shield-x", `${x}px`);
+    if (browser.style.getPropertyValue("--vm-shield-y") !== `${y}px`) browser.style.setProperty("--vm-shield-y", `${y}px`);
+  };
   const shieldPlace = () => {
     try {
       const pop = siteInfo();
@@ -353,14 +361,12 @@
       const w = pop.offsetWidth || 330;
       let x = Math.round(Math.max(8, Math.min(b.right - w, window.innerWidth - w - 8)));
       let y = Math.round(b.bottom + 6);
-      browser.style.setProperty("--vm-shield-x", `${x}px`);
-      browser.style.setProperty("--vm-shield-y", `${y}px`);
+      shieldVars(browser, x, y);
       const at = pop.getBoundingClientRect();
       if (Math.abs(at.left - x) > 1 || Math.abs(at.top - y) > 1) {
         x -= Math.round(at.left - x);
         y -= Math.round(at.top - y);
-        browser.style.setProperty("--vm-shield-x", `${x}px`);
-        browser.style.setProperty("--vm-shield-y", `${y}px`);
+        shieldVars(browser, x, y);
       }
     } catch (error) { shieldWarn("place", error); }
   };
@@ -374,7 +380,7 @@
       document.querySelector("#browser")?.classList.remove(SHIELD_OPEN);
       shieldNode?.setAttribute("aria-expanded", "false");
       const a = document.activeElement;
-      if (refocus && (!a || a === document.body || a.closest?.(".UrlBar-AddressField"))) {
+      if (refocus && !document.querySelector(".addressfield-popup-container") && (!a || a === document.body || a.closest?.(".UrlBar-AddressField"))) {
         activeTab().then((tab) => {
           const view = tab && document.getElementById(String(tab.id));
           if (view?.tagName === "WEBVIEW" && (document.activeElement === document.body || !document.activeElement)) view.focus();
@@ -386,20 +392,22 @@
     const button = document.querySelector(SITE_INFO_BUTTON);
     const browser = document.querySelector("#browser");
     if (!button || !browser) { toast("Site info is not available for this page"); return; }
+    shieldWatch?.disconnect(); // one watch at a time
     browser.classList.add(SHIELD_OPEN);
     shieldNode.setAttribute("aria-expanded", "true");
     const started = Date.now();
     let seen = false;
+    let watch = null;
     const check = () => {
       try {
-        if (!shieldWatch) return;
+        if (!watch || shieldWatch !== watch) return; // a later open (or a close) owns the state now
         if (otherPopup()) { shieldEnd(false); return; } // not ours to hide: it floats as before
         if (siteInfo()) { seen = true; document.querySelector("#browser")?.classList.add(SHIELD_OPEN); shieldPlace(); return; }
         if (seen || Date.now() - started > 800) shieldEnd(true);
       } catch (error) { shieldWarn("watch", error); shieldEnd(false); }
     };
-    shieldWatch = new MutationObserver(check);
-    shieldWatch.observe(document.querySelector("#tabs-tabbar-container") || document.body, { childList: true, subtree: true });
+    watch = shieldWatch = new MutationObserver(check);
+    watch.observe(document.querySelector("#tabs-tabbar-container") || document.body, { childList: true, subtree: true });
     window.__vm.press(button);
     check();
     setTimeout(check, 850); // nothing opened at all: the mark must not stay
@@ -411,10 +419,11 @@
   };
   // A press on the Shield while the popup is open closes it (Vivaldi closes it on any press outside it, the Shield too): the
   // click that follows must not open it again. Read at the press, before Vivaldi's own handlers run.
-  const shieldClick = () => {
+  const shieldClick = (e) => {
     try {
-      if (shieldWasOpen) {
-        shieldWasOpen = false;
+      const wasOpen = e?.detail === 0 ? !!shieldWatch || !!siteInfo() : shieldWasOpen; // detail 0: Enter or Space
+      shieldWasOpen = false;
+      if (wasOpen) {
         shieldClose();
         shieldEnd(true);
         return;
@@ -569,8 +578,39 @@
     document.addEventListener?.("focusout", (e) => {
       try {
         if (!shieldWatch || !e.target?.closest?.(".SiteInfo")) return;
-        setTimeout(() => { if (document.activeElement?.tagName === "WEBVIEW" && siteInfo()) shieldClose(); }, 0);
+        setTimeout(() => {
+          try { if (document.activeElement?.tagName === "WEBVIEW" && siteInfo()) shieldClose(); } catch (error) { shieldWarn("page focus", error); }
+        }, 0);
       } catch (error) { shieldWarn("page focus", error); }
+    }, true);
+    // The keys that ask for the address field (as 20-command-bar.js counts them) while the popup is open: the field is
+    // hidden then and cannot take the cursor, so the mark goes first and the field gets it (Vivaldi's own try may have
+    // come first and failed).
+    const toField = () => {
+      shieldEnd(false);
+      setTimeout(() => {
+        try {
+          const field = document.querySelector("#tabs-tabbar-container #urlFieldInput");
+          if (field && document.activeElement !== field) { field.focus(); field.select?.(); }
+        } catch (error) { shieldWarn("address field", error); }
+      }, 0);
+    };
+    const ASK = new Set(["ctrl+l", "l+meta", "f6", "alt+d"].map((k) => window.__vm.normalise?.(k) ?? k));
+    // Every window hears every key: only the one it was pressed in acts (00-core.js passes that window's id).
+    window.__vm.onShortcut?.((key, _combo, pressedIn) => {
+      if (shieldWatch && ASK.has(key) && (pressedIn != null ? pressedIn === window.vivaldiWindowId : document.hasFocus())) toField();
+    });
+    document.addEventListener?.("keydown", (e) => {
+      if (shieldWatch && (e.key === "F6" || ((e.ctrlKey || e.metaKey) && e.key?.toLowerCase() === "l") || (e.altKey && e.key?.toLowerCase() === "d"))) toField();
+    }, true);
+    // The cursor going anywhere else in the UI while the popup is open (the command bar, a Vivarc field): the mark goes,
+    // so nothing the user types into is kept hidden; the field floats with what it holds, as before.
+    document.addEventListener?.("focusin", (e) => {
+      try {
+        const t = e.target;
+        if (!shieldWatch || !t || t === document.body || t.closest?.(".SiteInfoButton, .vm-dia-shield")) return;
+        shieldEnd(false);
+      } catch (error) { shieldWarn("focus", error); }
     }, true);
     chrome.windows.getCurrent().then((win) => { ownWindow = win.id; }, () => {});
     chrome.tabs.onActivated.addListener(({ windowId }) => { if (windowId === ownWindow) activeTab().then(fill); });

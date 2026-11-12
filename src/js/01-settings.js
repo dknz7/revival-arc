@@ -68,15 +68,17 @@
     listeners.forEach((fn) => fn(values));
   };
   const persist = () => { store.set("settings", saved); channel.postMessage(saved); };
-  // The normal windows' value for each window-only key the user has not set here. Never throws.
+  // The normal windows' value for each window-only key the user has not set here: whether any changed. Never throws.
   const inherit = async () => {
+    let changed = false;
     try {
       const from = window.__vm.dia?.inherited;
-      if (!WINDOW_ONLY.length || typeof from !== "function") return;
+      if (!WINDOW_ONLY.length || typeof from !== "function") return false;
       const on = await from();
-      if (typeof on !== "boolean") return;
-      for (const key of WINDOW_ONLY) if (!mine.has(key)) local[key] = on;
+      if (typeof on !== "boolean") return false;
+      for (const key of WINDOW_ONLY) if (!mine.has(key) && local[key] !== on) { local[key] = on; changed = true; }
     } catch (error) { console.warn("[vivarc] settings: private window:", error); }
+    return changed;
   };
 
   Object.assign(api, {
@@ -88,7 +90,13 @@
       update({ ...saved, [key]: value });
       persist();
     },
-    reset: () => { local = {}; mine.clear(); update({}); persist(); if (WINDOW_ONLY.length) inherit().then(() => update(saved)); },
+    // A private window reads the normal windows' values again first, so its layout does not switch off and back on.
+    reset: () => {
+      const done = () => { update({}); persist(); };
+      local = {};
+      mine.clear();
+      if (WINDOW_ONLY.length) inherit().then(done); else done();
+    },
   });
 
   channel.onmessage = (e) => update(e.data);
@@ -100,7 +108,7 @@
     try {
       vivaldi.prefs.onChanged?.addListener(() => {
         clearTimeout(soon);
-        soon = setTimeout(() => inherit().then(() => update(saved)), 150);
+        soon = setTimeout(() => inherit().then((changed) => { if (changed) update(saved); }), 150);
       });
     } catch (error) { console.warn("[vivarc] settings: private window:", error); }
   }
