@@ -196,7 +196,7 @@ python3 ~/.vivarc/app/vivarc.py status      # what is installed
 
 **Hiding the sidebar.** Cmd+S (Ctrl+S on Windows), and in the Dia layout the button between Vivaldi's menu and Back, hide or show the sidebar in this window only. Vivarc takes the key over from Vivaldi once per profile, so restart Vivaldi once after the first start on a new version. A hidden sidebar does not slide back in on hover.
 
-**The Dia layout.** Switch it on in Vivarc Settings (Cmd+T, `settings`, _Dia layout_) for a slim row over the page: Vivaldi's menu, the sidebar button, Back, Forward and Reload, the page as `site / title`, Translate, Copy link and the window buttons. In a narrow window the other items give way and the window buttons stay. On a Mac the row starts after the traffic lights. Settings are per profile, so a profile still on the Arc layout can look like Vivarc is missing: check _Dia layout_ there.
+**The Dia layout.** Switch it on in Vivarc Settings (Cmd+T, `settings`, _Dia layout_) for a slim row over the page: Vivaldi's menu, the sidebar button, Back, Forward and Reload, the page as `site / title`, Translate, Copy link and the window buttons. In a narrow window the other items give way and the window buttons stay. On a Mac the row starts after the traffic lights. Settings are per profile, so a profile still on the Arc layout can look like Vivarc is missing: check _Dia layout_ there. A private window follows your normal windows' layout; switching it there changes that window only.
 
 **Also:** Vivaldi's right-hand panel slides in when the pointer pauses at the window's right edge, on any monitor. Switching tabs no longer pops the hidden address field open.
 

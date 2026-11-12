@@ -41,6 +41,11 @@
     return { set: changes(back), saved: null };
   };
 
+  // Whether the profile has the layout on, from Vivaldi's prefs alone: they hold the layout's own values (target) only
+  // while it is on, since off puts the address row back off. A private window reads it this way (01-settings.js): the
+  // normal windows' store and settings channel are not reachable from its off-the-record profile.
+  const inherits = (current, windows) => Object.entries(target(windows)).every(([path, value]) => same(current?.[path], value));
+
   // What the breadcrumb shows for a tab: its site (a web page's host) and its title.
   const crumbOf = (tab) => {
     const url = tab?.pendingUrl || tab?.url || "";
@@ -143,7 +148,7 @@
     return "tight";
   };
 
-  window.__vm.dia = { target, plan, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, sidebarLabel, rowFit, ROW_ITEMS };
+  window.__vm.dia = { target, plan, inherits, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, sidebarLabel, rowFit, ROW_ITEMS };
   if (!window.__vm.store) return;
 
   const { store, settings } = window.__vm;
@@ -153,6 +158,9 @@
     get: async (path) => (await vivaldi.prefs.get(path))?.value,
     set: (path, value) => vivaldi.prefs.set({ path, value }),
   };
+  const readTarget = async () => Object.fromEntries(await Promise.all(Object.keys(target(windows)).map(async (path) => [path, await prefs.get(path)])));
+  // Read only: whether the normal windows have the layout on (inherits). A private window starts from it.
+  window.__vm.dia.inherited = async () => inherits(await readTarget(), windows);
 
   // Every window runs this and all of them hear the switch: each step is idempotent, and they queue per window.
   // The user's values are kept before anything changes, and forgotten only once they are back: a restore cut short
@@ -160,8 +168,7 @@
   let queue = Promise.resolve();
   const sync = (on) => {
     queue = queue.then(async () => {
-      const paths = Object.keys(target(windows));
-      const current = Object.fromEntries(await Promise.all(paths.map(async (path) => [path, await prefs.get(path)])));
+      const current = await readTarget();
       const saved = await store.get(KEPT, null);
       const next = plan(on, current, saved, windows);
       if (next.saved && !same(next.saved, saved)) await store.set(KEPT, next.saved);

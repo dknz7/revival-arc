@@ -54,5 +54,94 @@ class ProfileSetup(unittest.TestCase):
         self.assertEqual(out["stored"], [])
 
 
+# 01-settings.js and 15-dia.js together in one window: the store holds `saved`, Vivaldi's prefs hold `prefs`, the window is
+# private or not. `then`: settings.set calls made afterwards. Reports the window's Dia value, every pref and store write,
+# and every message to the other windows.
+SETTINGS = r'''
+const fs = require("fs"), vm = require("vm"), path = require("path");
+const sc = JSON.parse(process.argv[2]);
+const writes = [], posts = [], stored = new Map(sc.saved ? [["settings", sc.saved]] : []);
+const prefs = { ...sc.prefs };
+const changed = [];
+global.console = { log() {}, warn() {} };
+const node = () => ({ classList: { contains: () => false, add() {}, remove() {}, toggle() {} }, style: { setProperty() {}, removeProperty() {} }, remove() {}, dataset: {} });
+global.document = { body: node(), querySelector: () => null };
+global.MutationObserver = class { observe() {} };
+global.ResizeObserver = class { observe() {} unobserve() {} };
+global.requestAnimationFrame = (fn) => fn();
+global.BroadcastChannel = class { postMessage(m) { posts.push(m); } };
+global.chrome = { extension: { inIncognitoContext: sc.incognito },
+  windows: { getCurrent: async () => ({ id: 1, type: "normal", incognito: sc.incognito }) },
+  tabs: { query: async () => [], onActivated: { addListener() {} }, onUpdated: { addListener() {} }, onReplaced: { addListener() {} } } };
+global.vivaldi = { prefs: { get: async (p) => ({ value: prefs[p] }), set: async ({ path: p, value }) => { writes.push(["pref", p]); prefs[p] = value; },
+  onChanged: { addListener: (fn) => changed.push(fn) } } };
+global.window = { __vm: { windows: true, onMark() {}, ready: Promise.resolve(true), config: {},
+  store: { get: async (k, f) => stored.get(k) ?? f, set: async (k, v) => { writes.push(["store", k]); stored.set(k, v); } } },
+  dispatchEvent() {}, innerWidth: 1000 };
+for (const file of ["01-settings.js", "15-dia.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], file), "utf8"));
+const settle = async () => { for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r)); };
+(async () => {
+  await window.__vm.settings.loaded;
+  await settle();
+  const atOpen = window.__vm.settings.get("diaLayout");
+  for (const [k, v] of sc.then || []) { window.__vm.settings.set(k, v); await settle(); }
+  if (sc.prefsLater) { Object.assign(prefs, sc.prefsLater); changed.forEach((fn) => fn({ path: "vivaldi.address_bar.visible" })); await new Promise((r) => setTimeout(r, 400)); await settle(); }
+  process.stdout.write(JSON.stringify({ atOpen, now: window.__vm.settings.get("diaLayout"), glass: window.__vm.settings.get("glass"), writes, posts }) + "\n");
+})();
+'''
+ADDRESS, ROW, FRAME = "vivaldi.address_bar.visible", "vivaldi.toolbars.navigation", "vivaldi.windows.use_native_decoration"
+DIA_ON = {ADDRESS: True, ROW: ["Back", "Forward", "Reload", "FlexibleSpacer", "Extensions"], FRAME: False}
+DIA_OFF = {ADDRESS: False, ROW: ["PanelToggle", "Back", "Forward", "Reload", "AddressField"], FRAME: True}
+
+
+def settings_run(**scenario):
+    out = subprocess.run(["node", "-e", SETTINGS, JS, json.dumps(scenario)], check=True, capture_output=True, text=True)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the settings' JavaScript")
+class PrivateDia(unittest.TestCase):
+    def test_a_private_window_opens_with_dia_when_the_profile_has_it(self):
+        out = settings_run(incognito=True, prefs=DIA_ON)
+        self.assertTrue(out["atOpen"])
+        self.assertEqual(out["writes"], [])
+        self.assertEqual(out["posts"], [])
+
+    def test_and_without_it_when_the_profile_does_not(self):
+        out = settings_run(incognito=True, prefs=DIA_OFF)
+        self.assertFalse(out["atOpen"])
+        self.assertEqual(out["writes"], [])
+
+    def test_the_address_row_alone_is_not_the_dia_layout(self):
+        out = settings_run(incognito=True, prefs={**DIA_OFF, ADDRESS: True})
+        self.assertFalse(out["atOpen"])
+
+    def test_toggling_it_in_a_private_window_is_this_windows_only_and_not_saved(self):
+        out = settings_run(incognito=True, prefs=DIA_ON, then=[["diaLayout", False]])
+        self.assertFalse(out["now"])
+        self.assertEqual(out["writes"], [], "no store or pref write")
+        self.assertEqual(out["posts"], [], "no message to the other windows")
+
+    def test_other_settings_in_a_private_window_keep_their_usual_path(self):
+        out = settings_run(incognito=True, prefs=DIA_ON, then=[["glass", True]])
+        self.assertTrue(out["glass"])
+        self.assertIn(["store", "settings"], out["writes"])
+
+    def test_it_follows_the_normal_windows_until_toggled_here(self):
+        out = settings_run(incognito=True, prefs=DIA_ON, prefsLater=DIA_OFF)
+        self.assertTrue(out["atOpen"])
+        self.assertFalse(out["now"])
+        out = settings_run(incognito=True, prefs=DIA_OFF, then=[["diaLayout", True]], prefsLater=DIA_ON)
+        self.assertTrue(out["now"])
+        out = settings_run(incognito=True, prefs=DIA_ON, then=[["diaLayout", False]], prefsLater={**DIA_ON, ADDRESS: True})
+        self.assertFalse(out["now"], "toggled here: the window keeps its own choice")
+
+    def test_a_normal_window_uses_its_saved_setting_not_the_prefs(self):
+        out = settings_run(incognito=False, prefs=DIA_ON, saved={})
+        self.assertFalse(out["atOpen"])
+        out = settings_run(incognito=False, prefs=DIA_OFF, saved={"diaLayout": True})
+        self.assertTrue(out["atOpen"])
+
+
 if __name__ == "__main__":
     unittest.main()

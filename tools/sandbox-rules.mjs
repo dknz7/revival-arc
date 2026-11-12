@@ -692,6 +692,62 @@ def("D.private-window-keeps-profile", {
     ...rowHealthy(r.rowBefore, "before"), ...rowHealthy(r.rowAfter, "after the private window opened"),
     r.privStore === 0 ? null : `the private window recorded a profile setup (bootstrap ${J(r.privStore)})`],
 });
+// A private window opens in the normal windows' layout (Dia here, Arc in the case below), and a switch flipped in it stays in
+// it: the normal windows, the prefs and both stores are left as they were.
+const SETTINGS_OF = `window.__vm.store.get("settings", {}).then((s) => s.diaLayout ?? null)`;
+def("D.private-window-inherits-dia", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(800); },
+  ready: () => waitFor(() => h.ev(`!!document.querySelector("#vm-dia-crumb")`, ctx.W), 6000),
+  act: async () => {
+    const r = { start: await readPrefs(ctx.W), savedBefore: await h.ev(SETTINGS_OF, ctx.W) };
+    try {
+      const pid = await openPrivate();
+      if (pid == null) return { error: "no private window" };
+      const ev = (expr) => h.cdp(pid).eval(expr, 15000);
+      r.privRow = await waitFor(async () => { const x = await DIA_ROW(pid); return x.dia && x.rowH === 46 && x.ours.length >= 2 ? x : null; }, 8000) || await DIA_ROW(pid);
+      await shot(pid, "private-window");
+      await ev(`(window.__vm.settings.set("diaLayout", false), 1)`);
+      await sleep(1500);
+      r.privOff = await ev(`document.querySelector("#browser").classList.contains("vm-dia")`);
+      r.privSaved = await ev(SETTINGS_OF);
+      r.wDia = await layoutIn(ctx.W);
+      r.wSetting = await h.ev(`window.__vm.settings.get("diaLayout")`, ctx.W);
+      await ev(`(window.__vm.settings.set("diaLayout", true), 1)`);
+      await sleep(1500);
+      r.privBack = await DIA_ROW(pid);
+      r.end = await readPrefs(ctx.W);
+      r.savedAfter = await h.ev(SETTINGS_OF, ctx.W);
+      r.wRow = await DIA_ROW(ctx.W);
+      return r;
+    } finally { await closePrivate(); }
+  },
+  expect: (s, b, r) => r.error ? [r.error] : [...rowHealthy(r.privRow, "the private window at open"),
+    r.privOff === false ? null : "Dia off in the private window did not take", r.privSaved === null ? null : `the private window saved diaLayout ${J(r.privSaved)}`,
+    r.wDia === true && r.wSetting === true ? null : `the normal window followed the private one (${J([r.wDia, r.wSetting])})`,
+    ...rowHealthy(r.privBack, "the private window on again"), ...rowHealthy(r.wRow, "the normal window"),
+    ...Object.keys(r.start).map((p) => J(r.start[p]) === J(r.end[p]) ? null : `${p} changed: ${J(r.start[p])} -> ${J(r.end[p])}`),
+    J(r.savedBefore) === J(r.savedAfter) ? null : `the normal windows' saved setting changed: ${J(r.savedBefore)} -> ${J(r.savedAfter)}`],
+});
+def("D.private-window-inherits-arc", {
+  layout: "arc",
+  setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(800); },
+  ready: () => waitFor(() => h.ev(`!!document.querySelector("#vm-panel")`, ctx.W), 6000),
+  act: async () => {
+    const r = { start: await readPrefs(ctx.W) };
+    try {
+      const pid = await openPrivate();
+      if (pid == null) return { error: "no private window" };
+      await sleep(3000);
+      r.privDia = await h.cdp(pid).eval(`document.querySelector("#browser").classList.contains("vm-dia")`, 10000);
+      r.privSetting = await h.cdp(pid).eval(`window.__vm.settings.get("diaLayout")`, 10000);
+      r.end = await readPrefs(ctx.W);
+      return r;
+    } finally { await closePrivate(); }
+  },
+  expect: (s, b, r) => r.error ? [r.error] : [r.privDia === false && r.privSetting === false ? null : `the private window is in the Dia layout (${J([r.privDia, r.privSetting])})`,
+    ...Object.keys(r.start).map((p) => J(r.start[p]) === J(r.end[p]) ? null : `${p} changed: ${J(r.start[p])} -> ${J(r.end[p])}`)],
+});
 // Full screen: Vivaldi turns its address row off (address-top-off), and the Dia row goes with it, so nothing of it pokes out
 // at the top-left over the page; back from full screen it is whole again, with nothing dropped (it was not measured at 0 px).
 def("D.fullscreen-row", {

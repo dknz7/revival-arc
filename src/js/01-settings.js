@@ -46,6 +46,14 @@
   const listeners = new Set();
   const channel = new BroadcastChannel("vivarc-settings");
   let saved = {};
+  // A private window has a store and channel of its own (off the record), so the normal windows' settings never reach it.
+  // Its Dia layout follows theirs instead, read from Vivaldi's prefs (15-dia.js, dia.inherited), and a switch flipped in it
+  // stays in that window: never saved, never sent. `local` holds those values; `mine` the ones the user set in this window,
+  // which stop following the normal windows.
+  const privateWindow = !!globalThis.chrome?.extension?.inIncognitoContext;
+  const WINDOW_ONLY = privateWindow ? ["diaLayout"] : [];
+  let local = {};
+  const mine = new Set();
   let values = resolve(SCHEMA, config, saved);
 
   const apply = (browser) => {
@@ -54,23 +62,48 @@
   };
   const update = (next) => {
     saved = next || {};
-    values = resolve(SCHEMA, config, saved);
+    values = resolve(SCHEMA, config, { ...saved, ...local });
     const browser = document.querySelector("#browser");
     if (browser) apply(browser);
     listeners.forEach((fn) => fn(values));
   };
   const persist = () => { store.set("settings", saved); channel.postMessage(saved); };
+  // The normal windows' value for each window-only key the user has not set here. Never throws.
+  const inherit = async () => {
+    try {
+      const from = window.__vm.dia?.inherited;
+      if (!WINDOW_ONLY.length || typeof from !== "function") return;
+      const on = await from();
+      if (typeof on !== "boolean") return;
+      for (const key of WINDOW_ONLY) if (!mine.has(key)) local[key] = on;
+    } catch (error) { console.warn("[vivarc] settings: private window:", error); }
+  };
 
   Object.assign(api, {
     get: (key) => values[key],
     all: () => ({ ...values }),
     onChange: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
-    set: (key, value) => { update({ ...saved, [key]: value }); persist(); },
-    reset: () => { update({}); persist(); },
+    set: (key, value) => {
+      if (WINDOW_ONLY.includes(key)) { local[key] = value; mine.add(key); update(saved); return; }
+      update({ ...saved, [key]: value });
+      persist();
+    },
+    reset: () => { local = {}; mine.clear(); update({}); persist(); if (WINDOW_ONLY.length) inherit().then(() => update(saved)); },
   });
 
   channel.onmessage = (e) => update(e.data);
   window.__vm.onMark(apply);
+  // A private window follows the normal windows while it is open: a switch there changes the prefs it reads. Vivaldi sets
+  // them one by one, so it reads them once they have settled.
+  if (WINDOW_ONLY.length) {
+    let soon = 0;
+    try {
+      vivaldi.prefs.onChanged?.addListener(() => {
+        clearTimeout(soon);
+        soon = setTimeout(() => inherit().then(() => update(saved)), 150);
+      });
+    } catch (error) { console.warn("[vivarc] settings: private window:", error); }
+  }
   // Resolves once the saved settings are in: until then the values are the defaults, not the user's.
-  api.loaded = store.get("settings", {}).then(update);
+  api.loaded = store.get("settings", {}).then(async (next) => { await inherit(); update(next); });
 })();
