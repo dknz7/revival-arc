@@ -1652,11 +1652,13 @@
   // pointerup, hence the fallback).
   let pressing = false;
   let refreshAfterPress = false;
+  let placeAfterPress = false;
   let pressFallback = 0;
   const released = () => {
     clearTimeout(pressFallback);
     if (!pressing) return;
     pressing = false;
+    if (placeAfterPress) { placeAfterPress = false; place(); }
     if (refreshAfterPress) { refreshAfterPress = false; refresh(false); }
   };
   const pressed = () => {
@@ -1684,6 +1686,9 @@
         bindTabs();
         cacheIcons();
         if (naming()) { wantBookmarks ||= bookmarks; return; } // finishing the rename refreshes again
+        // A press may have landed while the tabs loaded: the release refreshes again (task 8t fix 2: rendering here
+        // replaced the pressed chevron and lost the click).
+        if (pressing) { wantBookmarks ||= bookmarks; refreshAfterPress = true; return; }
         render();
         failures = 0;
       } catch (e) {
@@ -1731,7 +1736,10 @@
     }
     placeProfileBar();
     if (panel.parentElement !== container || panel.nextElementSibling !== anchor) {
-      container.insertBefore(panel, anchor);
+      // Moving the panel, even to where it is, takes the pressed node out of the document and loses the click (measured,
+      // task 8t fix 2): while a button is held, a panel still in the tab bar is put back in order at the release.
+      if (pressing && panel.parentElement === container) placeAfterPress = true;
+      else container.insertBefore(panel, anchor);
     }
   };
 

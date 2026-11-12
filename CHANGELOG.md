@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- Fix: a click on the sidebar (the New Tab chevron, a tile, a row) is no longer lost when the sidebar refreshes or Vivaldi re-renders the tab bar while the mouse button is down. The refresh, and putting the sidebar back in place, now wait for the release.
 - Dia layout: a **Shield** button in the top row opens Vivaldi's own site-info panel under it (connection, cookies, site settings, JavaScript, the Ad and Tracker Blocker's Off / Light / Strong / Aggressive, Privacy Report), with the address field staying collapsed. Escape, a click elsewhere or a second click on the Shield closes it, and the page keeps the cursor. Anything else Vivaldi opens there still floats the address field as before.
 - Dia layout: Copy link and Translate are now icon buttons (a share icon, and 文/A for Translate) with tooltips, the size of the row's other buttons, in the order Shield, Copy link, Translate. Translate still shows only on pages not in English; translated, it looks pressed and its tooltip says Show original, and it pulses while translating. In a narrow window the title goes first, then Translate, Copy link and the Shield.
 - A private window opens in the Dia layout when your normal windows use it, and in the Arc layout when they do not. Switching Dia on or off in a private window changes that window only and is not saved.

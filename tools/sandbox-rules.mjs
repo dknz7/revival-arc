@@ -1287,23 +1287,27 @@ const escapeAll = (win) => h.ev(`(document.dispatchEvent(new KeyboardEvent("keyd
 // re-rendered chevron is still seen): "the click never landed" vs "the menu opened and something closed it".
 const NT_SPY = String.raw`(() => {
   const t0 = performance.now(), at = () => Math.round(performance.now() - t0);
-  const spy = window.__ntSpy = { menuAdded: [], menuRemoved: [], presses: [], clicks: [], chevRenders: 0 };
+  const spy = window.__ntSpy = { menuAdded: [], menuRemoved: [], presses: [], releases: [], clicks: [], chevRenders: [] };
   const isMenu = (n) => n.nodeType === 1 && n.classList.contains("vm-menu") && !n.classList.contains("vm-menu-flyout");
   spy.mo = new MutationObserver((list) => { for (const m of list) {
-    for (const n of m.addedNodes) { if (isMenu(n)) spy.menuAdded.push(at()); if (n.nodeType === 1 && (n.matches(".vm-newtab-chev") || n.querySelector?.(".vm-newtab-chev"))) spy.chevRenders++; }
+    for (const n of m.addedNodes) { if (isMenu(n)) spy.menuAdded.push(at()); if (n.nodeType === 1 && (n.matches(".vm-newtab-chev") || n.querySelector?.(".vm-newtab-chev"))) spy.chevRenders.push(at()); }
     for (const n of m.removedNodes) if (isMenu(n)) spy.menuRemoved.push(at());
   } });
   spy.mo.observe(document.documentElement, { childList: true, subtree: true });
-  const where = (e) => { const c = e.target.closest?.(".vm-newtab-chev"); return c ? "chev" : (e.target.className?.baseVal ?? e.target.className ?? e.target.nodeName).toString().slice(0, 40); };
-  spy.onDown = (e) => spy.presses.push([at(), where(e), e.isTrusted]);
-  spy.onClick = (e) => spy.clicks.push([at(), where(e), e.isTrusted]);
+  // What a press, release or click landed on: its tag, id, class, whether it is (in) the chevron, and whether the node
+  // pressed is still in the document at the release (a node replaced in between is how a click is lost).
+  const where = (t) => [t?.nodeName ?? null, t?.id || "", String(t?.className?.baseVal ?? t?.className ?? "").slice(0, 30), !!t?.closest?.(".vm-newtab-chev")];
+  spy.onDown = (e) => { spy.down = e.target; spy.presses.push([at(), ...where(e.target), e.isTrusted]); };
+  spy.onUp = (e) => spy.releases.push([at(), ...where(e.target), e.isTrusted, "pressed node connected: " + !!spy.down?.isConnected]);
+  spy.onClick = (e) => spy.clicks.push([at(), ...where(e.target), e.isTrusted]);
   document.addEventListener("mousedown", spy.onDown, true);
+  document.addEventListener("mouseup", spy.onUp, true);
   document.addEventListener("click", spy.onClick, true);
   return 1;
 })()`;
 const NT_SPY_READ = String.raw`(() => { const s = window.__ntSpy; if (!s) return null; s.mo.disconnect();
-  document.removeEventListener("mousedown", s.onDown, true); document.removeEventListener("click", s.onClick, true);
-  const { mo, onDown, onClick, ...out } = s; delete window.__ntSpy; return out; })()`;
+  document.removeEventListener("mousedown", s.onDown, true); document.removeEventListener("mouseup", s.onUp, true); document.removeEventListener("click", s.onClick, true);
+  const { mo, onDown, onUp, onClick, down, ...out } = s; delete window.__ntSpy; return out; })()`;
 // Hover the row (the chevron shows), click the chevron, wait for the menu.
 async function openDropdown(win, { spy = false } = {}) {
   await mouse(win, "mouseMoved", 600, 500); await sleep(150);
@@ -1315,8 +1319,9 @@ async function openDropdown(win, { spy = false } = {}) {
 }
 const openFly = async (win, label) => { if (!(await hoverOn(win, menuRow(label)))) return false; return !!(await waitFor(() => hasEl(win, ".vm-menu-flyout"), 4000)); };
 // Open the dropdown, open the flyout of `parent`, click its row `row`.
-async function pickFrom(win, parent, row) {
-  if (!(await openDropdown(win))) return "no dropdown";
+async function pickFrom(win, parent, row, { spy = false } = {}) {
+  if (!(await openDropdown(win, { spy }))) return `no dropdown${spy ? ` (spy ${J(await h.ev(NT_SPY_READ, win).catch((e) => String(e)))})` : ""}`;
+  if (spy) await h.ev(NT_SPY_READ, win).catch(() => {});
   if (!(await openFly(win, parent))) return `no ${parent} flyout`;
   if (!(await clickOn(win, flyRow(row)))) return `no row ${row} in ${parent}: ${J(await rowsOf(win, ".vm-menu-flyout > div"))}`;
   // a tab the pick just made is read by its title: let every tab finish loading before the snapshot (a title is empty until then)
@@ -1432,7 +1437,7 @@ ntCase("N.open-tabs-pick-other-window-parked", {
 // Recently Closed: a closed tab of the space on screen comes back in its space, shown.
 ntCase("N.recently-closed-restore", {
   setup: async () => { await SET_NT(); await tab(ctx.W, "Gone1", sp("X")); await waitFor(() => h.ev(`chrome.tabs.get(${ctx.tabs.Gone1}).then((t) => t.title === "Gone1" && t.status === "complete")`, ctx.H), 8000); await sleep(400); await h.ev(`chrome.tabs.remove(${ctx.tabs.Gone1}).then(() => 1)`, ctx.H); await sleep(800); await activate(ctx.tabs.X1); await focus(ctx.W); },
-  act: () => pickFrom(ctx.W, "Recently Closed", "Gone1"),
+  act: () => pickFrom(ctx.W, "Recently Closed", "Gone1", { spy: true }),
   expect: (s) => { const t = byTitle(s, "Gone1"); return [t ? null : "Gone1 was not restored", t && t.win !== ctx.W ? `restored into ${roleOf(t.win)}` : null, t && t.space !== sp("X") ? `restored into ${spaceName(t.space)}` : null,
     t && !t.active ? "the restored tab is not shown" : null, recIs(s, ctx.W, sp("X"))]; },
 });
@@ -1446,6 +1451,68 @@ ntCase("N.recently-closed-restore-other-space", {
   },
   act: () => pickFrom(ctx.W, "Recently Closed", "GoneD"),
   expect: (s) => { const t = byTitle(s, "GoneD"); return [t ? null : "GoneD was not restored", t && t.space !== 0 ? `restored into ${spaceName(t.space)}` : null, t && !t.active ? "the restored tab is not shown" : null, recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0)]; },
+});
+// Task 8t fix 2: a press on the chevron that lands while a sidebar refresh is loading its tabs still opens the menu. The
+// refresh is made slow on purpose (this window's chrome.tabs.query held 700 ms) and started by a new background tab; the
+// button is held across the moment the refresh would render (which rebuilds the New Tab row, chevron included), then
+// released. Before the fix the refresh rendered mid-press: the pressed chevron left the document and the click was lost.
+const SLOW_QUERY = String.raw`(() => { if (window.__slowQ) return 1; const orig = chrome.tabs.query; window.__slowQ = orig;
+  chrome.tabs.query = function (q, ...rest) { const p = orig.call(this, q, ...rest); return q && q.currentWindow ? new Promise((r) => setTimeout(() => r(p), 700)) : p; }; return 1; })()`;
+const FAST_QUERY = `(() => { if (window.__slowQ) { chrome.tabs.query = window.__slowQ; delete window.__slowQ; } return 1; })()`;
+ntCase("N.press-during-refresh", {
+  act: async () => {
+    const win = ctx.W, r = {};
+    await mouse(win, "mouseMoved", 600, 500); await sleep(150);
+    if (!(await hoverOn(win, NT_ROW))) return { error: "no New Tab row" };
+    await sleep(250);
+    const p = await centre(win, NT_CHEV);
+    if (!p) return { error: "no chevron" };
+    await mouse(win, "mouseMoved", p.x, p.y); await sleep(150);
+    try {
+      await h.ev(SLOW_QUERY, win);
+      await h.ev(NT_SPY, win);
+      await h.ev(`chrome.tabs.create({ windowId: ${win}, url: ${J(tabUrl("BG1"))}, active: false }).then(() => 1)`, ctx.H);
+      await sleep(250); // the refresh has started and is waiting for its tabs
+      await mouse(win, "mousePressed", p.x, p.y);
+      await sleep(1100); // past the moment it would render
+      await mouse(win, "mouseReleased", p.x, p.y);
+      r.menu = !!(await waitFor(() => hasEl(win, NT_MENU), 3000));
+      r.spy = await h.ev(NT_SPY_READ, win);
+    } finally { await h.ev(FAST_QUERY, win).catch(() => {}); await escapeAll(win).catch(() => {}); }
+    return r;
+  },
+  expect: (s, b, r) => r.error ? [r.error] : [r.menu ? null : `the menu did not open: the click was lost (spy ${J(r.spy)})`,
+    r.spy?.clicks?.some((c) => c[4]) ? null : `no click reached the chevron (spy ${J(r.spy)})`],
+});
+// And one that lands while Vivaldi re-renders the tab bar around the panel: place() puts the panel back in order, and moving
+// it (even to where it is) takes the pressed node out of the document. A node put in after the panel stands in for
+// Vivaldi's re-render; the panel waits for the release to be put back in order.
+ntCase("N.press-during-replace", {
+  act: async () => {
+    const win = ctx.W, r = {};
+    await mouse(win, "mouseMoved", 600, 500); await sleep(150);
+    if (!(await hoverOn(win, NT_ROW))) return { error: "no New Tab row" };
+    await sleep(250);
+    const p = await centre(win, NT_CHEV);
+    if (!p) return { error: "no chevron" };
+    await mouse(win, "mouseMoved", p.x, p.y); await sleep(150);
+    try {
+      await h.ev(NT_SPY, win);
+      await mouse(win, "mousePressed", p.x, p.y);
+      await sleep(100);
+      r.moved = await h.ev(`(() => { const panel = document.querySelector("#vm-panel"); const d = document.createElement("div"); d.id = "vm-8t-stand-in"; panel.after(d); return panel.nextElementSibling === d; })()`, win);
+      await sleep(400); // place() has run (a mutation, then a frame)
+      r.orderDuring = await h.ev(`document.querySelector("#vm-panel").nextElementSibling?.id ?? null`, win);
+      await mouse(win, "mouseReleased", p.x, p.y);
+      r.menu = !!(await waitFor(() => hasEl(win, NT_MENU), 3000));
+      r.spy = await h.ev(NT_SPY_READ, win);
+      r.orderAfter = await h.ev(`document.querySelector("#vm-panel").nextElementSibling?.id ?? "anchor"`, win);
+    } finally { await h.ev(`(document.getElementById("vm-8t-stand-in")?.remove(), 1)`, win).catch(() => {}); await escapeAll(win).catch(() => {}); }
+    return r;
+  },
+  expect: (s, b, r) => r.error ? [r.error] : [r.moved ? null : "setup: the stand-in did not go after the panel", r.menu ? null : `the menu did not open: the click was lost (spy ${J(r.spy)})`,
+    r.spy?.clicks?.some((c) => c[4]) ? null : `no click reached the chevron (spy ${J(r.spy)})`,
+    r.orderAfter !== "vm-8t-stand-in" ? null : "the panel was not put back in order after the release"],
 });
 // Recently Closed Windows: Vivaldi rehomed the closed window's named-space tabs to H before it closed (D2), so its entry holds
 // only its default-space tabs; the label counts those, and the restored window has exactly that many. The rehomed tabs stay in H.
