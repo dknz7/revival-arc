@@ -1053,6 +1053,33 @@ tearCase("D.tear-off-split", {
     n != null ? tabIs(s, "X2", { win: n, space: 0 }) : null, x2?.tiling ? `X2 keeps tiling ${J(x2.tiling)}` : null, x1?.tiling ? `X1 (peer) keeps tiling ${J(x1.tiling)}` : null,
     tabIs(s, "X1", { win: ctx.W, space: sp("X") }), recIs(s, ctx.W, sp("X"))]; },
 });
+// Task 8t fix 2 (fix1 Minor #2): when setting the default space fails, the tear-off still breaks the split view and still
+// offers Undo. W's native.setSpace is made to reject for the drop (and put back after); unsplit runs before it, and the
+// Undo toast after it, whatever it does.
+tearCase("D.tear-off-setspace-fails", {
+  setup: async () => {
+    await SET["shown-here"]();
+    const t = { id: "sbx-split", layout: "row", type: "selection" };
+    for (const [i, label] of ["X1", "X2"].entries()) {
+      const cur = await extOf(ctx.tabs[label]);
+      await h.ev(`chrome.tabs.update(${ctx.tabs[label]}, { vivExtData: ${J(J({ ...cur, tiling: { ...t, index: i } }))} }).then(() => 1)`, ctx.H);
+    }
+    await sleep(600);
+    if (!(await extOf(ctx.tabs.X2))?.tiling || !(await extOf(ctx.tabs.X1))?.tiling) throw new Error("the split view was not recorded on X1 and X2");
+    await h.ev(`(() => { const n = window.__vm.native; if (!n.__realSetSpace) n.__realSetSpace = n.setSpace; window.__sbxSetSpaceCalls = 0;
+      n.setSpace = (...a) => { window.__sbxSetSpaceCalls++; return Promise.reject(new Error("sandbox: setSpace refused")); }; return 1; })()`, ctx.W);
+  }, label: "X2",
+  after: async () => {
+    const r = await seesToast();
+    ctx.setSpaceCalls = await h.ev(`window.__sbxSetSpaceCalls`, ctx.W).catch(() => null);
+    await h.ev(`(() => { const n = window.__vm.native; if (n.__realSetSpace) { n.setSpace = n.__realSetSpace; delete n.__realSetSpace; } return 1; })()`, ctx.W).catch(() => {});
+    return r;
+  },
+  expect: async (s) => { const n = ctx.N ?? newWindow(s), x1 = await extOf(ctx.tabs.X1), x2 = await extOf(ctx.tabs.X2); return [n == null ? "no new window" : null,
+    ctx.setSpaceCalls >= 1 ? null : `setup: the refusing setSpace was not called (${J(ctx.setSpaceCalls)})`,
+    x2?.tiling ? `X2 keeps tiling ${J(x2.tiling)}` : null, x1?.tiling ? `X1 (peer) keeps tiling ${J(x1.tiling)}` : null,
+    /Opened in a new window/.test(ctx.toast || "") ? null : `no Undo toast in the new window (${J(ctx.toast)})`, recIs(s, ctx.W, sp("X"))]; },
+});
 tearCase("D.tear-off-active", {
   setup: SET["shown-here"], label: "X1",
   expect: (s) => { const n = newWindow(s); return [n == null ? "no new window" : null, n != null ? tabIs(s, "X1", { win: n, space: 0 }) : null,

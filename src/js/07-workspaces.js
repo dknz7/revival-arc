@@ -303,7 +303,9 @@
   // Vivaldi's webpack require, handed out by a push onto its chunk array (an entry whose function webpack calls with it).
   // Webpack 5 then keeps the pushed entry in the array for good, and Vivaldi's array lives on the background page, which
   // outlives every window: an entry left there holds its function, a reference from the background page into this
-  // window's JS world after the window closes (measured in the sandbox, task 8t fix1: 810 such entries after one sweep).
+  // window's JS world after the window closes (measured in the sandbox, task 8t fix1: 810 such entries after one sweep, of
+  // which 254 were Vivarc's own: vivarc-record 221, vivarc-switch-space 25, vivarc-translation 8; the rest were the test
+  // harness's and a probe's).
   // So the entry is taken out again at once. (Vivaldi 8.3 itself also keeps closed windows, Vivarc or not, so this
   // alone does not free them; it keeps Vivarc from being one more thing that holds them.) -> require, or undefined.
   const requireOf = (chunks, tag) => {
