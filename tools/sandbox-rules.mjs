@@ -3321,6 +3321,8 @@ const actFailure = (r) => typeof r === "string" ? (ACTED.has(r) ? null : `the ac
 async function runCase(c, layout) {
   const t0 = Date.now();
   const out = { id: c.id, layout };
+  if (LOGDIR) writeFileSync(`${LOGDIR}/_running.txt`, `${layout} ${c.id} since ${new Date(t0).toISOString()}
+`); // what a stalled sweep is on
   try {
     const r0 = await reset();
     if (!r0.clean) throw new Error(`reset not clean: ${r0.why}`);

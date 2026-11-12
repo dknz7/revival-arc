@@ -51,11 +51,14 @@ export class Cdp {
       this.pending.clear();
     };
   }
+  // A reply that never comes (a connection gone quiet without closing: task 8v's final Dia sweep waited 15 minutes on
+  // one) rejects after 90 s, so a case fails instead of the sweep stalling for good.
   send(method, params = {}) {
     if (this.closed) return Promise.reject(new Error("closed"));
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => { if (this.pending.delete(id)) reject(new Error(`no reply to ${method} in 90 s`)); }, 90000);
+      this.pending.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
       this.ws.send(JSON.stringify({ id, method, params }));
     });
   }
