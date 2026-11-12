@@ -92,7 +92,20 @@
   // dispatches, and `synthUntil` for the focus its popup then takes. Handlers that react to outside presses ask `synthetic(e)`.
   const synthetic = (e) => !!window.__vm?.synthNow || (e?.type === "focusin" && Date.now() < (window.__vm?.synthUntil || 0) && !!e.target?.closest?.(".addressfield-popup-container"));
 
-  window.__vm = { config, store, shortcut, windows, normalise, tilingOf, setExtData, unsplit, synthetic, synthNow: false, synthUntil: 0, onShortcut: (fn) => subscribers.add(fn) };
+  // The events a real click makes, marked as Vivarc's own (above): Vivaldi's address-field buttons only answer to the whole
+  // sequence (a bare .click() does nothing).
+  const press = (button) => {
+    const vm = window.__vm;
+    vm.synthUntil = Date.now() + 1500;
+    vm.synthNow = true;
+    try {
+      for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
+        button.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type, { bubbles: true, cancelable: true, button: 0, view: window }));
+      }
+    } finally { vm.synthNow = false; }
+  };
+
+  window.__vm = { config, store, shortcut, windows, normalise, tilingOf, setExtData, unsplit, synthetic, press, synthNow: false, synthUntil: 0, onShortcut: (fn) => subscribers.add(fn) };
 
   // Vivaldi re-renders #browser's class list, so the marker classes are re-applied whenever they go missing.
   const markListeners = new Set();

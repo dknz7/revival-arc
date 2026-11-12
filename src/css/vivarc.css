@@ -1021,8 +1021,8 @@
 }
 #browser.vm-on #vm-dia-sidebar:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
 
-/* Breadcrumb: "site / title" (a click edits the address in the command bar), then Translate and Copy link. Everything
-   else in the row is title bar: drag to move, double-click to maximise. */
+/* Breadcrumb: "site / title" (a click edits the address in the command bar), then three icon buttons: Shield, Copy link,
+   Translate. Everything else in the row is title bar: drag to move, double-click to maximise. */
 #vm-dia-crumb {
   display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; height: 100%; padding: 0 6px 0 10px;
   -webkit-app-region: drag; app-region: drag;
@@ -1037,15 +1037,22 @@
 #vm-dia-crumb .vm-dia-sep { opacity: 0.3; flex: 0 0 auto; }
 #vm-dia-crumb.vm-dia-no-site :is(.vm-dia-site, .vm-dia-sep) { display: none; }
 #vm-dia-crumb .vm-dia-title { opacity: 0.9; overflow: hidden; text-overflow: ellipsis; }
-#vm-dia-crumb :is(.vm-dia-translate, .vm-dia-share) {
-  display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto;
-  padding: 5px 10px; border-radius: 8px; font-size: 12px;
-  background: color-mix(in srgb, currentColor 8%, transparent);
+/* The icon buttons: the size, radius, spacing and hover of the row's own (Vivaldi's 34px toolbar buttons, 3px apart, and
+   the sidebar button), each icon in currentColor so it follows the theme. Translate shows only on a page that is not in
+   English; translated, it looks pressed; while translating it pulses. */
+#vm-dia-crumb .vm-dia-actions { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; margin-left: auto; }
+#vm-dia-crumb .vm-dia-icon {
+  display: flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 34px; height: 34px; padding: 0;
+  border-radius: 8px;
 }
-#vm-dia-crumb :is(.vm-dia-translate, .vm-dia-share):hover { background: color-mix(in srgb, currentColor 14%, transparent); }
-/* Translate, left of Copy link, only on a page that is not in English: shown, it takes the free space before the pair. */
+#vm-dia-crumb .vm-dia-icon svg { width: 28px; height: 28px; }
+#vm-dia-crumb .vm-dia-icon:hover,
+#vm-dia-crumb .vm-dia-shield[aria-expanded="true"] { background: color-mix(in srgb, currentColor 8%, transparent); }
 #vm-dia-crumb .vm-dia-translate[hidden] { display: none; }
-#vm-dia-crumb .vm-dia-translate:not([hidden]) + .vm-dia-share { margin-left: 0; }
+#vm-dia-crumb .vm-dia-translate[data-state="translated"] { background: color-mix(in srgb, currentColor 14%, transparent); }
+#vm-dia-crumb .vm-dia-translate[data-state="translating"] svg { animation: vm-dia-pulse 1.2s ease-in-out infinite; }
+@keyframes vm-dia-pulse { 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) { #vm-dia-crumb .vm-dia-translate[data-state="translating"] svg { animation: none; opacity: 0.6; } }
 /* With the breadcrumb in the row, it is the row's free space (and its drag area): Copy link then sits by the window
    buttons, as in Dia. Vivaldi's spacer stays for a row without it. */
 #browser.vm-on.vm-dia .toolbar-mainbar:has(#vm-dia-crumb) > .toolbar-spacer-flexible { display: none !important; }
@@ -1053,8 +1060,8 @@
    padding the row reserves for them; nothing of ours may reach them. Measured at 744px wide, the crumb shrank to its
    padding but Copy link (flex: none) still spilled out of it, over them, and at 600px and 480px the row's own buttons did.
    The row's buttons never shrink. The crumb sizes by the row's free space alone (inline-size containment: its content
-   no longer takes part) and clips, and container queries on it read that width. As it narrows: Copy link loses its
-   label (its tooltip still says Copy link), the title is gone, Translate hides, Copy link hides. Then 15-dia.js (rowFit)
+   no longer takes part) and clips, and container queries on it read that width. As it narrows (GIVE_WAY in 15-dia.js): the
+   title is gone, Translate hides, Copy link hides, the Shield hides. Then 15-dia.js (rowFit)
    drops Forward and then Reload through data-vm-dia-fit on #browser. Never dropped: Vivaldi's menu, the sidebar button,
    Back, the window buttons; if even those do not fit ("tight": a very narrow window with a wide sidebar) the row slides left over the sidebar's top
    strip by what is missing, so none is lost or overlapped. */
@@ -1065,13 +1072,33 @@
   left: min(var(--vm-dia-left, 0px), calc(100% - var(--vm-dia-right, 0px) - var(--vm-dia-need, 0px)));
 }
 #vm-dia-crumb { container-type: inline-size; flex: 1 1 0; overflow: hidden; }
-@container (max-width: 240px) { #vm-dia-crumb .vm-dia-share span { display: none; } #vm-dia-crumb .vm-dia-share { padding: 5px 8px; } }
-@container (max-width: 340px) { #vm-dia-crumb:has(.vm-dia-translate:not([hidden])) .vm-dia-share span { display: none; }
-  #vm-dia-crumb:has(.vm-dia-translate:not([hidden])) .vm-dia-share { padding: 5px 8px; } }
-@container (max-width: 110px) { #vm-dia-crumb .vm-dia-text { display: none; } }
-@container (max-width: 200px) { #vm-dia-crumb:has(.vm-dia-translate:not([hidden])) .vm-dia-text { display: none; } }
-@container (max-width: 140px) { #vm-dia-crumb .vm-dia-translate { display: none; } }
-@container (max-width: 31px) { #vm-dia-crumb .vm-dia-share { display: none; } }
+/* Widths are the crumb's content box: each button is 34px and 3px apart, the title needs about 60px beside them. */
+@container (max-width: 139px) { #vm-dia-crumb .vm-dia-text { display: none; } }
+@container (max-width: 176px) { #vm-dia-crumb:has(.vm-dia-translate:not([hidden])) .vm-dia-text { display: none; } }
+@container (max-width: 107px) { #vm-dia-crumb .vm-dia-translate { display: none; } }
+@container (max-width: 70px) { #vm-dia-crumb .vm-dia-share { display: none; } }
+@container (max-width: 33px) { #vm-dia-crumb .vm-dia-shield { display: none; } }
+/* The Shield's popup (15-dia.js): Vivaldi's own site-info popup, opened from the collapsed address field and shown alone,
+   fixed under the Shield, while the field stays collapsed (vm-shield-open on #browser, set only while that popup is the
+   one open). The field and its toolbar keep no height; only the popup is visible and clickable. Vivaldi's arrow points
+   at its own button, so it goes. The sidebar's blur would make it the popup's containing block and clip it, so it is
+   off meanwhile (nothing is behind the sidebar to blur). */
+#browser.vm-on.vm-dia.vm-shield-open #tabs-tabbar-container :is(.toolbar-tabbar-before, .UrlBar-AddressField) {
+  position: static !important; height: 0 !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important;
+  border: 0 !important; box-shadow: none !important; overflow: hidden !important; opacity: 1 !important;
+  visibility: hidden; pointer-events: none;
+}
+#browser.vm-on.vm-dia.vm-shield-open #tabs-tabbar-container .UrlBar-AddressField .SiteInfoButton > .SiteInfo.button-popup {
+  position: fixed !important; top: var(--vm-shield-y, 52px) !important; left: var(--vm-shield-x, 8px) !important;
+  right: auto !important; bottom: auto !important; z-index: 50; visibility: visible; pointer-events: auto;
+}
+#browser.vm-on.vm-dia.vm-shield-open #tabs-tabbar-container .UrlBar-AddressField .SiteInfoButton > .SiteInfo.button-popup::before { display: none; }
+#browser.vm-on.vm-dia.vm-shield-open #tabs-tabbar-container { backdrop-filter: none !important; z-index: 3 !important; }
+/* A Vivarc space colour gives the sidebar its own text colour (--colorFg, 40-theme.js), which the popup, inside the sidebar,
+   would take over Vivaldi's popup background: it keeps Vivaldi's (set inline on #browser). */
+#browser.vm-on.vm-themed { --vm-vivaldi-fg: var(--colorFg); }
+#browser.vm-on.vm-dia.vm-shield-open.vm-themed #tabs-tabbar-container .SiteInfoButton > .SiteInfo.button-popup { --colorFg: var(--vm-vivaldi-fg); color: var(--vm-vivaldi-fg); }
+
 /* A drag region wins over anything drawn on top of it: while one of Vivaldi's popups is open (as Vivaldi itself does
    for its own drag areas), or the toolbar is being edited, the row is not title bar. */
 #browser.vm-on.vm-dia:is(:has(.OmniDropdown, .CustomizePanelPopup, .extension-popup, .button-popup:not(.vm-site-carded)), .toolbar-edit-mode) #vm-dia-crumb {

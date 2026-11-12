@@ -1,6 +1,6 @@
 // Vivarc's Dia layout (setting "Dia layout"): a slim row over the page (Vivaldi's menu, a hide-sidebar button, back, forward, reload, a
-// "site / title" breadcrumb, translate (on a page not in English), copy link, extensions and the window buttons) with
-// the sidebar up to the window's top.
+// "site / title" breadcrumb, three icon buttons: a Shield (Vivaldi's site info and blocker), Copy link and Translate (on a
+// page not in English), then extensions and the window buttons) with the sidebar up to the window's top.
 // Vivaldi draws that row, and its own window buttons in it, once its address row is on (and, on Windows, its own window
 // frame instead of the system's). Turning the layout on keeps the user's values for those prefs; off puts them back.
 // The page column's left edge is tracked in --vm-dia-left, so the row follows a resized or hidden (Ctrl+S) sidebar.
@@ -70,12 +70,14 @@
   // has determined, and is not English, gets it; a translated page gets "Show original" instead, whatever its language.
   // "Translating…" stays clickable: a translation asked for while the tab was hidden stays at that step, and a new
   // click is what finishes it.
+  // The button is an icon: `label` is its tooltip and accessible name, `state` ("translated", "translating" or "idle") its look.
   const translateOf = (url, state) => {
     if (!/^https?:/i.test(url || "")) return null;
-    if (state?.isTranslated) return { revert: true, label: "Show original" };
+    if (state?.isTranslated) return { revert: true, label: "Show original", state: "translated" };
     const from = state?.pageLanguage || "";
     if (!from || from === "und" || /^en(-|$)/i.test(from)) return null;
-    return { revert: false, from, label: state.translateStep === "translating" ? "Translating…" : "Translate" };
+    const translating = state.translateStep === "translating";
+    return { revert: false, from, label: translating ? "Translating…" : "Translate", state: translating ? "translating" : "idle" };
   };
 
   // Vivaldi's translation state per tab lives in its own store, which its address-bar button reads. A mod has no API
@@ -148,7 +150,24 @@
     return "tight";
   };
 
-  window.__vm.dia = { target, plan, inherits, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, sidebarLabel, rowFit, ROW_ITEMS };
+  // The breadcrumb's icon buttons, left to right, each Vivaldi's 28-unit toolbar grid with its 1.2 stroke in currentColor
+  // (so they follow the theme like the row's own buttons). Translate is 文 and A with two arrows between them.
+  const CRUMB_BUTTONS = ["shield", "share", "translate"];
+  const svg = (paths) => `<svg viewBox="0 0 28 28" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+  const ICONS = {
+    shield: svg('<path d="M14 5 21 7.6v5.6c0 4.4-2.9 7.9-7 9.8-4.1-1.9-7-5.4-7-9.8V7.6Z"/>'),
+    share: svg('<path d="M14 5.5v10"/><path d="m10.5 9 3.5-3.5L17.5 9"/><path d="M9 13v7a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 19 20v-7"/>'),
+    translate: svg('<path d="M5 8h8"/><path d="M9 5.5V8"/><path d="M6.5 9.5c1 2.6 2.8 4.6 6 5.5"/><path d="M11.5 9.5c-1 2.6-2.8 4.6-6 5.5"/>' +
+      '<path d="m14.5 23 3.5-9 3.5 9"/><path d="M15.8 20h4.4"/><path d="M16 5.5c3 0 5.5 1.8 5.5 4.5"/><path d="m19.8 8.6 1.7 1.6 1.6-1.7"/>' +
+      '<path d="M12 22.5c-3 0-5.5-1.8-5.5-4.5"/><path d="m8.2 19.4-1.7-1.6-1.6 1.7"/>'),
+  };
+  // What gives way first as the page column narrows (vivarc.css, container queries on the breadcrumb): the title, then
+  // Translate, then Copy link (Ctrl+Shift+C does the same), then the Shield, last of Vivarc's because with the address field
+  // collapsed it is the only way to the site's info. After them rowFit drops Forward, then Reload.
+  const GIVE_WAY = ["title", "translate", "share", "shield"];
+
+  window.__vm.dia = { target, plan, inherits, crumbOf, columnEdges, translateOf, findTranslation, translatorCode, findCodes, sidebarLabel, rowFit, ROW_ITEMS,
+    CRUMB_BUTTONS, ICONS, GIVE_WAY };
   if (!window.__vm.store) return;
 
   const { store, settings } = window.__vm;
@@ -230,8 +249,12 @@
     const action = translateOf(tab.url, translationOf(tab.id));
     translateNode.hidden = !action;
     if (!action) return;
-    translateNode.lastChild.textContent = action.label;
-    translateNode.title = action.revert ? "Show the page in its own language" : "Translate this page into English";
+    const tip = action.revert ? "Show original (this page is translated into English)"
+      : action.state === "translating" ? "Translating… (click to finish)" : "Translate this page into English";
+    translateNode.title = tip;
+    translateNode.setAttribute("aria-label", action.label);
+    translateNode.dataset.state = action.state;
+    translateNode.setAttribute("aria-pressed", String(action.revert));
   };
   const translate = async () => {
     const tab = await activeTab();
@@ -259,6 +282,16 @@
     crumb.title = tab.url || "";
     showTranslate(tab);
   };
+  // An icon button of the row: a tooltip and an accessible name, and a press never takes the cursor from the page.
+  const iconButton = (name, label) => {
+    const b = el("button", `vm-dia-icon vm-dia-${name}`);
+    b.type = "button";
+    b.title = label;
+    b.setAttribute("aria-label", label);
+    b.innerHTML = ICONS[name];
+    b.addEventListener("mousedown", (e) => e.preventDefault());
+    return b;
+  };
   const make = () => {
     crumb = el("div");
     crumb.id = "vm-dia-crumb";
@@ -267,22 +300,129 @@
     const text = el("button", "vm-dia-text");
     text.append(siteNode, el("span", "vm-dia-sep", "/"), titleNode);
     text.addEventListener("click", () => window.dispatchEvent(new CustomEvent("vm-edit-url")));
-    translateNode = el("button", "vm-dia-translate");
-    translateNode.hidden = true;
-    translateNode.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg><span>Translate</span>';
-    translateNode.addEventListener("click", translate);
-    const share = el("button", "vm-dia-share");
-    share.title = "Copy link";
-    share.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6"/></svg><span>Copy link</span>';
+    shieldNode = iconButton("shield", "Site info and tracker blocking");
+    shieldNode.setAttribute("aria-haspopup", "dialog");
+    shieldNode.setAttribute("aria-expanded", "false");
+    shieldNode.addEventListener("click", shieldClick);
+    const share = iconButton("share", "Copy link");
     share.addEventListener("click", async () => {
       const tab = await activeTab();
       if (!tab?.url) return;
       const copied = await navigator.clipboard?.writeText(tab.url).then(() => true, () => false);
       window.dispatchEvent(new CustomEvent("vm-toast", { detail: copied ? "Copied link" : "Could not copy the link" }));
     });
-    crumb.append(text, translateNode, share);
+    translateNode = iconButton("translate", "Translate");
+    translateNode.hidden = true;
+    translateNode.addEventListener("click", translate);
+    const actions = el("span", "vm-dia-actions");
+    actions.append(shieldNode, share, translateNode);
+    crumb.append(text, actions);
     activeTab().then(fill);
   };
+
+  // ---- Shield: Vivaldi's own site-info popup (security, cookies, site settings, JavaScript, the Ad and Tracker Blocker
+  // level, Privacy Report), opened by pressing Vivaldi's site-info button in the collapsed address field the way
+  // 16-site-requests.js presses a permission icon (window.__vm.press, marked as Vivarc's own). Measured on 8.3: the popup is
+  // a `.SiteInfo.button-popup` inside that button (not an .addressfield-popup-container), it takes the focus, a second press
+  // of the button closes it, and so do Escape (the focus then goes back to the page) and any press outside it.
+  // While it is open #browser has vm-shield-open: the CSS keeps the field collapsed and shows the popup alone, fixed under
+  // the Shield. Anything else Vivaldi opens there (unrecognised) drops the mark, so it floats as before.
+  const SITE_INFO_BUTTON = "#tabs-tabbar-container .UrlBar-AddressField .SiteInfoButton button.ToolbarButton-Button";
+  const SITE_INFO = "#tabs-tabbar-container .UrlBar-AddressField .SiteInfoButton > .SiteInfo.button-popup";
+  const SHIELD_OPEN = "vm-shield-open";
+  let shieldNode = null;
+  let shieldWatch = null;
+  let shieldClosedAt = 0;
+  let shieldWasOpen = false;
+  const siteInfo = () => {
+    const pop = document.querySelector(SITE_INFO);
+    return pop?.querySelector(".SiteInfo-Content, .SiteInfo-Header") ? pop : null;
+  };
+  // Another popup of the address field than the site info (a carded permission question does not count: it is shown as a card).
+  const otherPopup = () => [...document.querySelectorAll("#tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container, .button-popup)")]
+    .some((p) => !p.matches(".SiteInfo.button-popup, .vm-site-carded"));
+  const shieldWarn = (what, error) => console.warn(`[vivarc] Dia layout: shield ${what}:`, error);
+  // Under the Shield, right-aligned to it and kept inside the window. Measured, then corrected by any offset a containing
+  // block other than the window gives a fixed box.
+  const shieldPlace = () => {
+    try {
+      const pop = siteInfo();
+      const browser = document.querySelector("#browser");
+      if (!pop || !browser || !shieldNode?.isConnected) return;
+      const b = shieldNode.getBoundingClientRect();
+      const w = pop.offsetWidth || 330;
+      let x = Math.round(Math.max(8, Math.min(b.right - w, window.innerWidth - w - 8)));
+      let y = Math.round(b.bottom + 6);
+      browser.style.setProperty("--vm-shield-x", `${x}px`);
+      browser.style.setProperty("--vm-shield-y", `${y}px`);
+      const at = pop.getBoundingClientRect();
+      if (Math.abs(at.left - x) > 1 || Math.abs(at.top - y) > 1) {
+        x -= Math.round(at.left - x);
+        y -= Math.round(at.top - y);
+        browser.style.setProperty("--vm-shield-x", `${x}px`);
+        browser.style.setProperty("--vm-shield-y", `${y}px`);
+      }
+    } catch (error) { shieldWarn("place", error); }
+  };
+  // The popup is gone (or something else opened): the mark goes. `refocus`: the cursor is left nowhere useful (the popup
+  // that had it is gone), so the page gets it, as Escape does.
+  const shieldEnd = (refocus) => {
+    try {
+      shieldWatch?.disconnect();
+      shieldWatch = null;
+      shieldClosedAt = Date.now();
+      document.querySelector("#browser")?.classList.remove(SHIELD_OPEN);
+      shieldNode?.setAttribute("aria-expanded", "false");
+      const a = document.activeElement;
+      if (refocus && (!a || a === document.body || a.closest?.(".UrlBar-AddressField"))) {
+        activeTab().then((tab) => {
+          const view = tab && document.getElementById(String(tab.id));
+          if (view?.tagName === "WEBVIEW" && (document.activeElement === document.body || !document.activeElement)) view.focus();
+        }, () => {});
+      }
+    } catch (error) { shieldWarn("close", error); }
+  };
+  const shieldOpen = () => {
+    const button = document.querySelector(SITE_INFO_BUTTON);
+    const browser = document.querySelector("#browser");
+    if (!button || !browser) { toast("Site info is not available for this page"); return; }
+    browser.classList.add(SHIELD_OPEN);
+    shieldNode.setAttribute("aria-expanded", "true");
+    const started = Date.now();
+    let seen = false;
+    const check = () => {
+      try {
+        if (!shieldWatch) return;
+        if (otherPopup()) { shieldEnd(false); return; } // not ours to hide: it floats as before
+        if (siteInfo()) { seen = true; document.querySelector("#browser")?.classList.add(SHIELD_OPEN); shieldPlace(); return; }
+        if (seen || Date.now() - started > 800) shieldEnd(true);
+      } catch (error) { shieldWarn("watch", error); shieldEnd(false); }
+    };
+    shieldWatch = new MutationObserver(check);
+    shieldWatch.observe(document.querySelector("#tabs-tabbar-container") || document.body, { childList: true, subtree: true });
+    window.__vm.press(button);
+    check();
+    setTimeout(check, 850); // nothing opened at all: the mark must not stay
+  };
+  // Closes the popup the way Escape does (never a second press of Vivaldi's button: that toggles, and could open it again).
+  const shieldClose = () => {
+    const pop = siteInfo();
+    pop?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true, cancelable: true }));
+  };
+  // A press on the Shield while the popup is open closes it (Vivaldi closes it on any press outside it, the Shield too): the
+  // click that follows must not open it again. Read at the press, before Vivaldi's own handlers run.
+  const shieldClick = () => {
+    try {
+      if (shieldWasOpen) {
+        shieldWasOpen = false;
+        shieldClose();
+        shieldEnd(true);
+        return;
+      }
+      shieldOpen();
+    } catch (error) { shieldWarn("click", error); shieldEnd(false); }
+  };
+
 
   // The hide-sidebar button: hides and shows this window's sidebar (12-sidebar-hide.js), and its tooltip follows that
   // state, so the key (Ctrl+S) changes it too.
@@ -386,7 +526,7 @@
   // The row is Vivaldi's and is re-rendered by it: the breadcrumb goes back after Reload whenever it goes missing.
   const place = () => {
     const browser = document.querySelector("#browser");
-    if (!browser?.classList.contains("vm-dia")) { crumb?.remove(); sideNode?.remove(); delete browser?.dataset.vmDiaFit; return; }
+    if (!browser?.classList.contains("vm-dia")) { if (shieldWatch) shieldEnd(false); crumb?.remove(); sideNode?.remove(); delete browser?.dataset.vmDiaFit; return; }
     const container = document.querySelector("#webview-container");
     if (container && container !== page) {
       if (page) pageEdges.unobserve(page);
@@ -416,6 +556,22 @@
       requestAnimationFrame(() => { queued = false; place(); });
     }).observe(document.body, { childList: true, subtree: true });
     window.__vm.onMark(place);
+    // Vivaldi re-renders #browser's classes: the Shield's mark goes back while its popup is open.
+    window.__vm.onMark((browser) => { if (shieldWatch && siteInfo()) browser.classList.add(SHIELD_OPEN); });
+    window.addEventListener?.("pointerdown", (e) => {
+      if (!e.target?.closest?.(".vm-dia-shield")) return;
+      shieldWasOpen = !!shieldWatch || !!siteInfo() || Date.now() - shieldClosedAt < 300;
+    }, true);
+    window.addEventListener?.("resize", () => { if (shieldWatch) shieldPlace(); });
+    // A click on the page does not reach Vivaldi's outside-press closer (measured on 8.3: the popup loses the focus to the
+    // page, no focusin follows in this document, and Vivaldi's own popup stays open), so the page taking the focus from
+    // the Shield's popup closes it. Another app taking the focus leaves document.activeElement on the popup: it stays.
+    document.addEventListener?.("focusout", (e) => {
+      try {
+        if (!shieldWatch || !e.target?.closest?.(".SiteInfo")) return;
+        setTimeout(() => { if (document.activeElement?.tagName === "WEBVIEW" && siteInfo()) shieldClose(); }, 0);
+      } catch (error) { shieldWarn("page focus", error); }
+    }, true);
     chrome.windows.getCurrent().then((win) => { ownWindow = win.id; }, () => {});
     chrome.tabs.onActivated.addListener(({ windowId }) => { if (windowId === ownWindow) activeTab().then(fill); });
     // A load that ends (or is abandoned: a download, a 204) settles a pending address back to the page's own.

@@ -67,17 +67,8 @@
   // The events a real click makes; Vivaldi's icon button only answers to the whole sequence (a bare .click() does nothing).
   // Marked as Vivarc's own (window.__vm.synthetic, 00-core.js), so Vivarc's outside-press closers (its menus and popovers) and
   // the address-field focus guard of 20-command-bar.js do not take it for the user's; the focus Vivaldi's popup then takes
-  // is marked for a moment too.
-  const press = (button) => {
-    const vm = window.__vm;
-    vm.synthUntil = Date.now() + 1500;
-    vm.synthNow = true;
-    try {
-      for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click"]) {
-        button.dispatchEvent(new (type.startsWith("pointer") ? PointerEvent : MouseEvent)(type, { bubbles: true, cancelable: true, button: 0, view: window }));
-      }
-    } finally { vm.synthNow = false; }
-  };
+  // is marked for a moment too. The Dia layout's Shield (15-dia.js) presses the same way.
+  const press = (button) => window.__vm.press(button);
   // Whether the user is busy in something of Vivarc's own: a menu or popover, an inline name field, the command bar, or the cursor in
   // any other text entry outside the card. The reopened popup would take the cursor (its Deny button is autofocused), and an
   // inline rename ends, unchanged, when its field loses focus. A menu stays "open" for a moment after it closes: the item

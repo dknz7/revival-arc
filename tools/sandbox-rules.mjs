@@ -62,6 +62,9 @@ const startServer = async () => {
       return;
     }
     // /long-<label>: a page tall enough to have a scrollbar (PE. cases).
+    // /de-<label>, /en-<label>: a page whose language Chromium can determine (Task 8v: Translate shows on the German one only).
+    if (req.url.startsWith("/de-")) { res.end(`<html lang="de"><title>DE-${req.url.slice(4)}</title><body>${"<p>Berlin ist die Hauptstadt und ein Land der Bundesrepublik Deutschland. Die Stadt ist mit rund 3,7 Millionen Einwohnern die bevölkerungsreichste und mit 891 Quadratkilometern die flächengrößte Gemeinde Deutschlands. Neben den Flüssen Spree, Havel und Dahme befinden sich im Stadtgebiet kleinere Fließgewässer sowie zahlreiche Seen und Wälder.</p>".repeat(6)}</body></html>`); return; }
+    if (req.url.startsWith("/en-")) { res.end(`<html lang="en"><title>EN-${req.url.slice(4)}</title><body>${"<p>Berlin is the capital and largest city of Germany, by both area and population. With almost four million inhabitants it is the most populous city of the European Union. The city is also one of the states of Germany, and lies on the banks of the Spree river.</p>".repeat(6)}</body></html>`); return; }
     if (req.url.startsWith("/long-")) { res.end(`<title>LONG-${req.url.slice(6)}</title><body style="margin:0">${"<p>line</p>".repeat(600)}</body>`); return; }
     res.end(`<title>page${req.url}</title>page ${req.url}`);
   });
@@ -747,6 +750,159 @@ def("D.private-window-inherits-arc", {
   },
   expect: (s, b, r) => r.error ? [r.error] : [r.privDia === false && r.privSetting === false ? null : `the private window is in the Dia layout (${J([r.privDia, r.privSetting])})`,
     ...Object.keys(r.start).map((p) => J(r.start[p]) === J(r.end[p]) ? null : `${p} changed: ${J(r.start[p])} -> ${J(r.end[p])}`)],
+});
+// Task 8v: the breadcrumb's icon buttons, left to right Shield, Copy link, Translate (on a page not in English only): icons with a
+// tooltip and an accessible name and no text, the size of Vivaldi's own row buttons, inside the window. Translate's states
+// show through its tooltip, aria-pressed and data-state. Translating needs Vivaldi's translation service (the network).
+const ICONS_OF = (win) => h.ev(`(() => { const back = document.querySelector("#main > .mainbar .toolbar-mainbar [data-name='Back']")?.closest(".button-toolbar")?.querySelector("button")?.getBoundingClientRect();
+  return { back: back ? [Math.round(back.width), Math.round(back.height)] : null, W: innerWidth, H: innerHeight,
+    buttons: [...document.querySelectorAll("#vm-dia-crumb .vm-dia-actions > button")].map((b) => { const r = b.getBoundingClientRect();
+      return { name: b.className.replace("vm-dia-icon vm-dia-", ""), hidden: b.hidden || getComputedStyle(b).display === "none", title: b.title, label: b.getAttribute("aria-label"), text: b.textContent.trim(),
+        size: [Math.round(r.width), Math.round(r.height)], box: [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)], state: b.dataset.state ?? null, pressed: b.getAttribute("aria-pressed") }; }) }; })()`, win);
+const goTo = (win, url) => h.ev(`chrome.tabs.query({ active: true, windowId: ${win} }).then(([t]) => chrome.tabs.update(t.id, { url: ${J(url)} })).then(() => 1)`, ctx.H);
+const translateBtn = (r) => r.buttons.find((b) => b.name === "translate");
+def("D.row-icons", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await goTo(ctx.W, `${origin}/en-1`); await sleep(1500); },
+  ready: () => waitFor(() => h.ev(`!!document.querySelector("#vm-dia-crumb .vm-dia-shield")`, ctx.W), 6000),
+  act: async () => {
+    const r = { en: await ICONS_OF(ctx.W) };
+    await goTo(ctx.W, `${origin}/de-1`);
+    r.de = await waitFor(async () => { const x = await ICONS_OF(ctx.W); return translateBtn(x) && !translateBtn(x).hidden ? x : null; }, 12000, 300) || await ICONS_OF(ctx.W);
+    await shot(ctx.W, "row-icons-german");
+    r.c1 = await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-translate");
+    r.translated = await waitFor(async () => { const x = await ICONS_OF(ctx.W); return translateBtn(x)?.state === "translated" ? x : null; }, 20000, 300) || await ICONS_OF(ctx.W);
+    await shot(ctx.W, "row-icons-translated");
+    r.c2 = await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-translate");
+    r.back = await waitFor(async () => { const x = await ICONS_OF(ctx.W); return translateBtn(x)?.state === "idle" ? x : null; }, 10000, 300) || await ICONS_OF(ctx.W);
+    r.toast = await h.ev(`document.querySelector("#vm-copied")?.textContent || null`, ctx.W);
+    return r;
+  },
+  expect: (s, b, r) => {
+    const bad = [];
+    for (const [what, x] of [["English page", r.en], ["German page", r.de]]) {
+      const names = x.buttons.map((t) => t.name);
+      if (J(names) !== J(["shield", "share", "translate"])) bad.push(`${what}: buttons ${J(names)}, want shield, share, translate`);
+      for (const t of x.buttons.filter((t) => !t.hidden)) {
+        if (!t.title || !t.label) bad.push(`${what}: ${t.name} has no tooltip or name`);
+        if (t.text) bad.push(`${what}: ${t.name} shows text ${J(t.text)}`);
+        if (J(t.size) !== J(x.back)) bad.push(`${what}: ${t.name} is ${J(t.size)}, Back is ${J(x.back)}`);
+        if (t.box[0] < 0 || t.box[1] < 0 || t.box[2] > x.W || t.box[3] > x.H) bad.push(`${what}: ${t.name} outside the window ${J(t.box)}`);
+      }
+    }
+    if (!translateBtn(r.en)?.hidden) bad.push("Translate shows on the English page");
+    const de = translateBtn(r.de);
+    if (!de || de.hidden) bad.push("no Translate on the German page");
+    else if (de.label !== "Translate" || de.state !== "idle" || de.pressed !== "false") bad.push(`Translate on the German page: ${J(de)}`);
+    const tr = translateBtn(r.translated);
+    if (tr?.state !== "translated" || tr.label !== "Show original" || tr.pressed !== "true" || !/^Show original/.test(tr.title)) bad.push(`after a click: ${J(tr)} (toast ${J(r.toast)})`);
+    const bk = translateBtn(r.back);
+    if (bk?.state !== "idle" || bk.hidden || bk.label !== "Translate") bad.push(`after Show original: ${J(bk)}`);
+    return bad;
+  },
+});
+// The Shield opens Vivaldi's own site-info popup, alone and under the Shield, with the address field collapsed; the blocker
+// level it sets is Vivaldi's (read back from vivaldi.contentBlocking); Escape, a second click on the Shield and a click on the
+// page each close it; the page keeps or gets back the cursor; something else opening in the field floats it as before.
+const SHIELD_STATE = (win) => h.ev(`(() => { const p = document.querySelector(".SiteInfo.button-popup"), f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"), s = document.querySelector(".vm-dia-shield");
+  const r = p?.getBoundingClientRect(), sr = s?.getBoundingClientRect(), fr = f?.getBoundingClientRect(); const at = r ? document.elementFromPoint(r.x + r.width / 2, r.y + 30) : null;
+  return { open: !!p, mark: document.querySelector("#browser").classList.contains("vm-shield-open"), pop: r ? [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)] : null,
+    shield: sr ? [Math.round(sr.left), Math.round(sr.bottom), Math.round(sr.right)] : null, W: innerWidth, fieldH: fr ? Math.round(fr.height) : null, onTop: at ? !!at.closest(".SiteInfo") : null,
+    active: document.activeElement?.tagName ?? null, inField: !!document.activeElement?.closest?.(".UrlBar-AddressField") && !document.activeElement.closest(".SiteInfo"), expanded: s?.getAttribute("aria-expanded") ?? null,
+    level: document.querySelector(".SiteInfo-Field-ContentBlocker select")?.selectedIndex ?? null, bar: !!document.querySelector("#vm-cmd") }; })()`, win);
+const pressKey = async (win, key, code, vk) => { for (const type of ["rawKeyDown", "keyUp"]) await h.cdp(win).send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: vk }); };
+const overrideOf = (win, host) => h.ev(`new Promise((r) => vivaldi.contentBlocking.getAllBlockingCategoryOverrides("ad_blocking", (list) => r((list || []).find((o) => o.domain === ${J(host)})?.selected_category?.blocking_category ?? null)))`, win);
+const pageClick = async (win) => { const p = await h.ev(`(() => { const r = document.querySelector("#webview-container").getBoundingClientRect(); return [r.left + 80, r.bottom - 80]; })()`, win);
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.cdp(win).send("Input.dispatchMouseEvent", { type, x: p[0], y: p[1], button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 }); };
+const shieldOpenOk = (x, what) => !x ? [`${what}: no state`] : [x.open && x.mark ? null : `${what}: popup ${x.open}, mark ${x.mark}`, x.fieldH === 0 ? null : `${what}: the address field is ${x.fieldH}px tall`,
+  x.onTop ? null : `${what}: the popup is not on top`, x.expanded === "true" ? null : `${what}: aria-expanded ${x.expanded}`,
+  x.pop && x.shield && x.pop[1] >= x.shield[1] && x.pop[1] - x.shield[1] < 20 && x.pop[2] <= x.W && Math.abs(x.pop[2] - x.shield[2]) <= 2 ? null : `${what}: popup ${J(x.pop)} not under the Shield ${J(x.shield)}`];
+const shieldShutOk = (x, what) => !x ? [`${what}: no state`] : [!x.open && !x.mark ? null : `${what}: still open (popup ${x.open}, mark ${x.mark})`, x.expanded === "false" ? null : `${what}: aria-expanded ${x.expanded}`,
+  x.inField ? `${what}: the cursor is in the address field` : null, x.fieldH === 0 ? null : `${what}: the address field is ${x.fieldH}px tall`, x.bar ? `${what}: the command bar opened` : null];
+def("D.shield-panel", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await goTo(ctx.W, "https://example.com/"); await sleep(2500); },
+  ready: () => waitFor(() => h.ev(`!!document.querySelector("#vm-dia-crumb .vm-dia-shield") && !!document.querySelector("#tabs-tabbar-container .SiteInfoButton")`, ctx.W), 8000),
+  act: async () => {
+    const r = {};
+    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900);
+    r.open1 = await SHIELD_STATE(ctx.W);
+    await shot(ctx.W, "shield-open");
+    r.levelBefore = await overrideOf(ctx.W, "example.com");
+    const from = r.open1.level;
+    const to = from === 2 ? 3 : 2; // Strong, or Aggressive when it is already Strong
+    r.pick = await cdpClick(ctx.W, `.SiteInfo-Field-ContentBlocker option:nth-child(${to + 1})`); await sleep(1200);
+    r.levelSet = await overrideOf(ctx.W, "example.com"); r.afterPick = await SHIELD_STATE(ctx.W);
+    r.pickBack = await cdpClick(ctx.W, `.SiteInfo-Field-ContentBlocker option:nth-child(${from + 1})`); await sleep(1200);
+    r.levelBack = await overrideOf(ctx.W, "example.com"); r.to = to; r.from = from;
+    await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(800);
+    r.esc = await SHIELD_STATE(ctx.W);
+    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.open2 = await SHIELD_STATE(ctx.W);
+    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.toggled = await SHIELD_STATE(ctx.W);
+    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.open3 = await SHIELD_STATE(ctx.W);
+    await pageClick(ctx.W); await sleep(900); r.page = await SHIELD_STATE(ctx.W);
+    // Something else opening in the address field while the popup is up: the mark goes, so it floats as before.
+    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.open4 = await SHIELD_STATE(ctx.W);
+    r.other = await h.ev(`(async () => { const f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"); const d = document.createElement("div"); d.className = "addressfield-popup-container vm-8v-test"; d.textContent = "test";
+      f.append(d); await new Promise((r) => setTimeout(r, 400)); const out = { mark: document.querySelector("#browser").classList.contains("vm-shield-open"), fieldH: Math.round(f.getBoundingClientRect().height) }; d.remove(); return out; })()`, ctx.W);
+    await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(600);
+    r.end = await SHIELD_STATE(ctx.W);
+    return r;
+  },
+  expect: (s, b, r) => [...shieldOpenOk(r.open1, "first click"), r.open1?.active === "DIV" ? null : `first click: the cursor is on ${r.open1?.active}, not the popup`,
+    r.levelSet === `ad_blocking_${r.to}` ? null : `the level picked (${r.to}) did not reach Vivaldi: override ${J(r.levelSet)} (before ${J(r.levelBefore)})`,
+    r.afterPick?.open && r.afterPick?.level === r.to ? null : `after picking the level: ${J(r.afterPick)}`,
+    r.levelBack === `ad_blocking_${r.from}` ? null : `the level did not go back to ${r.from}: ${J(r.levelBack)}`,
+    ...shieldShutOk(r.esc, "Escape"), r.esc?.active === "WEBVIEW" ? null : `after Escape the cursor is on ${r.esc?.active}`,
+    ...shieldOpenOk(r.open2, "second open"), ...shieldShutOk(r.toggled, "a click on the open Shield"),
+    ...shieldOpenOk(r.open3, "third open"), ...shieldShutOk(r.page, "a click on the page"),
+    ...shieldOpenOk(r.open4, "fourth open"), r.other && !r.other.mark && r.other.fieldH > 0 ? null : `another popup in the field did not float it: ${J(r.other)}`,
+    ...shieldShutOk(r.end, "the end")],
+});
+// The rest of the Shield's popup does what it does in Vivaldi: Secure Connection and Cookies open their pages in the popup,
+// the JavaScript switch sets the site's setting (read back from chrome.contentSettings), Site Settings opens Vivaldi's
+// settings window and Privacy Report its dialog (each closes the popup, which takes the Shield's mark with it).
+def("D.shield-panel-controls", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await goTo(ctx.W, "https://example.com/"); await sleep(2500); },
+  ready: () => waitFor(() => h.ev(`!!document.querySelector("#vm-dia-crumb .vm-dia-shield") && !!document.querySelector("#tabs-tabbar-container .SiteInfoButton")`, ctx.W), 8000),
+  act: async () => {
+    const r = {};
+    const open = async () => { if (!(await SHIELD_STATE(ctx.W)).open) { await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); } };
+    const content = () => h.ev(`document.querySelector(".SiteInfo-Content")?.className.replace("SiteInfo-Content", "").trim() ?? null`, ctx.W);
+    const esc = async () => { await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(700); };
+    const js = () => h.ev(`new Promise((r) => chrome.contentSettings.javascript.get({ primaryUrl: "https://example.com/" }, (d) => r(d?.setting ?? null)))`, ctx.W);
+    try {
+      await open(); await cdpClick(ctx.W, ".SiteInfo-Field-Security li:nth-child(1) button"); await sleep(900);
+      r.secure = { content: await content(), ...(await SHIELD_STATE(ctx.W)) }; await esc();
+      await open(); await cdpClick(ctx.W, ".SiteInfo-Field-Security li:nth-child(2) button"); await sleep(900);
+      r.cookies = { content: await content(), ...(await SHIELD_STATE(ctx.W)) }; await esc();
+      await open(); r.jsBefore = await js();
+      await cdpClick(ctx.W, ".SiteInfo .Switch-Button"); await sleep(1000); r.jsOff = await js(); r.afterSwitch = await SHIELD_STATE(ctx.W);
+      await cdpClick(ctx.W, ".SiteInfo .Switch-Button"); await sleep(1000); r.jsOn = await js(); await esc();
+      await open(); await cdpClick(ctx.W, ".SiteInfo-Field-Permissions li:nth-child(1) button"); await sleep(2000);
+      r.settings = { ...(await SHIELD_STATE(ctx.W)), wins: await h.ev(`chrome.windows.getAll().then((ws) => ws.map((w) => JSON.parse(w.vivExtData || "{}").windowType || w.type))`, ctx.H) };
+      await h.ev(`chrome.windows.getAll().then((ws) => Promise.all(ws.filter((w) => JSON.parse(w.vivExtData || "{}").windowType === "settings").map((w) => chrome.windows.remove(w.id)))).then(() => 1)`, ctx.H); await sleep(800);
+      await focus(ctx.W); await open(); await cdpClick(ctx.W, ".SiteInfo-Footer .FormButton--WithIcon"); await sleep(1500);
+      r.report = { ...(await SHIELD_STATE(ctx.W)), modal: await h.ev(`(document.querySelector(".modal-wrapper")?.innerText || "").split(String.fromCharCode(10))[0]`, ctx.W) };
+      await shot(ctx.W, "shield-privacy-report");
+      // Vivaldi's dialog is closed with its own button (measured: Escape does not close it; the dialog is Vivaldi's, outside the
+      // address field, so the Shield has no part in that).
+      await h.ev(`(document.querySelector(".modal-wrapper button[aria-label=Close], .modal-wrapper .close, .modal-wrapper button")?.click(), 1)`, ctx.W); await sleep(700);
+      r.modalAfter = await h.ev(`!!document.querySelector(".modal-wrapper")`, ctx.W);
+      return r;
+    } finally {
+      await h.ev(`new Promise((r) => chrome.contentSettings.javascript.clear({}, () => r(1)))`, ctx.W).catch(() => {});
+      await h.ev(`chrome.windows.getAll().then((ws) => Promise.all(ws.filter((w) => JSON.parse(w.vivExtData || "{}").windowType === "settings").map((w) => chrome.windows.remove(w.id)))).then(() => 1)`, ctx.H).catch(() => {});
+    }
+  },
+  expect: (s, b, r) => [r.secure?.content === "certificate" && r.secure.open && r.secure.mark ? null : `Secure Connection: ${J(r.secure)}`,
+    r.cookies?.content === "cookies" && r.cookies.open && r.cookies.mark ? null : `Cookies and Site Data: ${J(r.cookies)}`,
+    r.jsBefore === "allow" && r.jsOff === "block" && r.jsOn === "allow" ? null : `JavaScript switch: ${J([r.jsBefore, r.jsOff, r.jsOn])}`,
+    r.afterSwitch?.open && r.afterSwitch?.mark ? null : `the popup closed on the JavaScript switch: ${J(r.afterSwitch)}`,
+    r.settings?.wins?.includes("settings") ? null : `Site Settings opened no settings window: ${J(r.settings?.wins)}`, ...shieldShutOk(r.settings, "Site Settings"),
+    r.report?.modal === "Privacy Report" ? null : `Privacy Report: dialog ${J(r.report?.modal)}`, !r.report?.mark ? null : "Privacy Report: the mark stayed",
+    r.modalAfter ? "the Privacy Report dialog did not close" : null],
 });
 // Full screen: Vivaldi turns its address row off (address-top-off), and the Dia row goes with it, so nothing of it pokes out
 // at the top-left over the page; back from full screen it is whole again, with nothing dropped (it was not measured at 0 px).

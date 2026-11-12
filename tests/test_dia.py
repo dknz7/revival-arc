@@ -133,7 +133,7 @@ class Translate(unittest.TestCase):
         return js("window.__vm.dia.translateOf(url, state)", url=url, state=state)
 
     def test_a_page_in_another_language_is_translated_from_it_into_english(self):
-        self.assertEqual(self.button(GERMAN), {"revert": False, "from": "de", "label": "Translate"})
+        self.assertEqual(self.button(GERMAN), {"revert": False, "from": "de", "label": "Translate", "state": "idle"})
         self.assertEqual(self.button({"pageLanguage": "zh-CN", "translateStep": "idle"})["from"], "zh-CN")
 
     def test_an_english_page_has_no_button(self):
@@ -152,16 +152,17 @@ class Translate(unittest.TestCase):
             self.assertIsNone(self.button(GERMAN, url=url), url)
 
     def test_a_translated_page_offers_its_original_back(self):
-        self.assertEqual(self.button(TRANSLATED), {"revert": True, "label": "Show original"})
+        self.assertEqual(self.button(TRANSLATED), {"revert": True, "label": "Show original", "state": "translated"})
         # translated by Vivaldi's own popup from English into another language: still one click back
         self.assertEqual(self.button({**TRANSLATED, "pageLanguage": "en", "originalLang": "en", "translatedLang": "fr"})["revert"], True)
 
     def test_after_show_original_it_offers_translate_again(self):
         # measured: a revert leaves translateStep at "after_translate" and turns isTranslated off
-        self.assertEqual(self.button({**TRANSLATED, "isTranslated": False}), {"revert": False, "from": "de", "label": "Translate"})
+        self.assertEqual(self.button({**TRANSLATED, "isTranslated": False}), {"revert": False, "from": "de", "label": "Translate", "state": "idle"})
 
     def test_while_translating_it_says_so(self):
         self.assertEqual(self.button({**GERMAN, "translateStep": "translating"})["label"], "Translating\u2026")
+        self.assertEqual(self.button({**GERMAN, "translateStep": "translating"})["state"], "translating")
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the Dia layout's JavaScript")
@@ -386,6 +387,50 @@ class NarrowRow(unittest.TestCase):
             self.assertNotIn("Back", r)
             self.assertNotIn("vivaldi", r)
             self.assertNotIn("vm-dia-sidebar", r)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the Dia layout's JavaScript")
+class IconButtons(unittest.TestCase):
+    """The breadcrumb's buttons are icons: Shield, Copy link, Translate, in that order, each on Vivaldi's 28-unit toolbar
+    grid in currentColor; as the page column narrows the title goes first, then Translate, Copy link and the Shield."""
+
+    CSS = open(os.path.join(os.path.dirname(__file__), "..", "src", "css", "vivarc.css"), encoding="utf-8").read()
+
+    def test_the_order_is_shield_copy_link_translate(self):
+        self.assertEqual(js("window.__vm.dia.CRUMB_BUTTONS"), ["shield", "share", "translate"])
+
+    def test_each_icon_is_vivaldis_grid_and_weight_in_the_themes_colour(self):
+        icons = js("window.__vm.dia.ICONS")
+        self.assertEqual(sorted(icons), ["share", "shield", "translate"])
+        for name, svg in icons.items():
+            self.assertIn('viewBox="0 0 28 28"', svg, name)
+            self.assertIn('stroke="currentColor"', svg, name)
+            self.assertIn('stroke-width="1.2"', svg, name)
+            self.assertIn('fill="none"', svg, name)
+            self.assertNotRegex(svg, r"#[0-9a-fA-F]{3,6}|rgb", name)
+
+    def test_the_give_way_order_matches_the_css(self):
+        import re
+        order = js("window.__vm.dia.GIVE_WAY")
+        self.assertEqual(order, ["title", "translate", "share", "shield"])
+        width = {}
+        for size, body in re.findall(r"@container \(max-width: (\d+)px\) \{(.*?)\}\s*\}", self.CSS):
+            for cls, name in ((".vm-dia-text", "title"), (".vm-dia-translate", "translate"), (".vm-dia-share", "share"), (".vm-dia-shield", "shield")):
+                if f"{cls} {{ display: none" in body:
+                    width[name] = max(width.get(name, 0), int(size))
+        self.assertEqual(sorted(width, key=width.get, reverse=True), order, width)
+
+    def test_rowfit_still_drops_forward_then_reload_after_the_crumb(self):
+        sizes = {"fixed": 130, "forward": 37, "reload": 37}
+        self.assertEqual(js("window.__vm.dia.rowFit(204, s)", s=sizes), "")
+        self.assertEqual(js("window.__vm.dia.rowFit(203, s)", s=sizes), "nofwd")
+        self.assertEqual(js("window.__vm.dia.rowFit(166, s)", s=sizes), "noreload")
+
+    def test_no_text_label_is_left_in_the_buttons(self):
+        source = open(os.path.join(os.path.dirname(__file__), "..", "src", "js", "15-dia.js"), encoding="utf-8").read()
+        self.assertNotIn("<span>Copy link</span>", source)
+        self.assertNotIn("<span>Translate</span>", source)
+        self.assertNotIn(".vm-dia-share span", self.CSS)
 
 
 class AddressRowOff(unittest.TestCase):
