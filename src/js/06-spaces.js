@@ -57,7 +57,9 @@
   };
 
   // Every profile gets the Downloads button; the account button gives way to the profile chips.
+  // Not from a private window: the bar is a profile pref, and the normal windows keep it (as with 05-bootstrap.js's setup).
   const syncBottomBar = async (wantAccount) => {
+    if (globalThis.chrome?.extension?.inIncognitoContext) return;
     const read = async (path) => (await vivaldi.prefs.get(path))?.value;
     const path = "vivaldi.toolbars.tabbar_after";
     const list = await read(path);

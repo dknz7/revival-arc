@@ -24,6 +24,11 @@
 
   const cfg = window.__vm.config;
   if (!cfg || cfg.autoConfigureProfiles === false) return;
+  // A private window runs on its own off-the-record profile, whose Vivarc store starts empty, but vivaldi.prefs is the real
+  // profile's: deciding from that store that "the profile is new" re-ran the whole setup against the real profile (Task 8u:
+  // the address row turned off in every window, the sidebar width back to 323, the auto-hide choices reset). The setup is
+  // the normal windows' job, so a private window does none of it.
+  if (chrome.extension?.inIncognitoContext) return;
 
   const get = async (path) => (await vivaldi.prefs.get(path))?.value;
   const set = (path, value) => vivaldi.prefs.set({ path, value });

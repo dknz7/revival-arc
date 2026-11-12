@@ -626,6 +626,99 @@ def("D.no-button-in-arc", {
   expect: (s, b, n) => [n === 0 ? null : `${n} sidebar buttons in the Arc layout`],
 });
 
+// Task 8v: private windows. A private window runs on an off-the-record profile with an empty Vivarc store of its own, but
+// vivaldi.prefs is the profile's (task 8u). Its first window of a private session must not set the profile up again
+// (05-bootstrap.js), and it shows the Dia layout when the normal windows do (01-settings.js, 15-dia.js), without writing.
+// Every private window of the sandbox is closed first, so the one opened is the first of its private session.
+const PROFILE_PREFS = ["vivaldi.address_bar.visible", "vivaldi.tabs.bar.width", "vivaldi.panels.position", "vivaldi.status_bar.display",
+  "vivaldi.address_bar.extensions.render_in_dropdown", "vivaldi.toolbars.navigation", "vivaldi.windows.use_native_decoration",
+  ...["enabled", "panel", "tab_bar", "address_bar", "status_bar", "bookmarks_bar", "show_introduction"].map((k) => `vivaldi.auto_hide.${k}`)];
+const readPrefs = (win) => h.ev(`Promise.all(${J(PROFILE_PREFS)}.map((p) => vivaldi.prefs.get(p).then((r) => [p, r?.value ?? null]))).then(Object.fromEntries)`, win);
+const writePrefs = (win, values) => h.ev(`Promise.all(Object.entries(${J(values)}).map(([path, value]) => vivaldi.prefs.set({ path, value }))).then(() => 1)`, win);
+const privateWins = async () => { await h.refresh(); const out = []; for (const [win, e] of h.byWin) if (await e.cdp.eval("chrome.extension.inIncognitoContext", 5000).catch(() => false)) out.push(win); return out; };
+const closePrivate = async () => {
+  for (const win of await privateWins()) await h.cdp(win).eval(`chrome.windows.getAll().then((a) => Promise.all(a.map((w) => chrome.windows.remove(w.id).catch(() => 0)))).then(() => 1)`, 10000).catch(() => {});
+  await sleep(1200); await h.refresh();
+};
+const openPrivate = async () => {
+  await closePrivate();
+  const pid = await h.ev(`new Promise((r) => vivaldi.windowPrivate.create({ incognito: true, focused: true, bounds: { left: 300, top: 60, width: 1100, height: 700 } }, (w) => r(w)))`, ctx.H);
+  if (typeof pid !== "number") return null;
+  await h.waitForWin(pid);
+  return pid;
+};
+// The Dia row of a window: its height, whether Vivarc's buttons and the window buttons are inside the window and the row.
+const DIA_ROW = (win) => h.ev(`(() => { const b = document.querySelector("#browser"), row = document.querySelector("#main > .mainbar .toolbar-mainbar");
+  const r = row?.getBoundingClientRect(), H = innerHeight, W = innerWidth;
+  const ours = [...document.querySelectorAll("#vm-dia-sidebar, #vm-dia-crumb button")].filter((e) => getComputedStyle(e).display !== "none" && !e.hidden && e.getBoundingClientRect().width > 0)
+    .map((e) => { const q = e.getBoundingClientRect(); return [e.className || e.id, Math.round(q.top), Math.round(q.bottom), Math.round(q.left), Math.round(q.right)]; });
+  const groups = [...document.querySelectorAll(".window-buttongroup")].filter((g) => g.getBoundingClientRect().width > 0).map((g) => g.closest("#titlebar") ? "titlebar" : g.closest(".toolbar-mainbar") ? "row" : "other");
+  return { dia: b.classList.contains("vm-dia"), off: b.classList.contains("address-top-off"), rowH: r ? Math.round(r.height) : null,
+    ours, outside: ours.filter(([, t, bt, l, rt]) => t < 0 || bt > H || l < 0 || rt > W).map((o) => o[0]), groups }; })()`, win);
+const rowHealthy = (r, what) => [r.dia ? null : `${what}: not in the Dia layout`, r.rowH === 46 ? null : `${what}: the row is ${r.rowH}px tall, want 46`,
+  r.ours.length >= 2 ? null : `${what}: only ${r.ours.length} of Vivarc's row buttons shown`, r.outside.length ? `${what}: ${J(r.outside)} outside the window` : null,
+  r.groups.includes("row") ? null : `${what}: the window buttons are not in the row (${J(r.groups)})`];
+def("D.private-window-keeps-profile", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(800); },
+  ready: () => waitFor(() => h.ev(`!!document.querySelector("#vm-dia-crumb")`, ctx.W), 6000),
+  act: async () => {
+    const original = await readPrefs(ctx.W);
+    // Values the old profile setup would have reset (sidebar width 323, status bar auto-hide off), set as a user might.
+    await writePrefs(ctx.W, { "vivaldi.tabs.bar.width": 400, "vivaldi.auto_hide.status_bar": true });
+    await sleep(500);
+    const r = { start: await readPrefs(ctx.W), rowBefore: await DIA_ROW(ctx.W), flips: [] };
+    try {
+      const pid = await openPrivate();
+      if (pid == null) return { error: "no private window" };
+      // The address row's pref, every 50 ms for 5 s: a flip and back would not show in a read at the end.
+      for (const end = Date.now() + 5000; Date.now() < end; await sleep(50)) {
+        const v = await h.ev(`vivaldi.prefs.get("vivaldi.address_bar.visible").then((r) => r?.value ?? null)`, ctx.W);
+        if (r.flips.at(-1) !== v) r.flips.push(v);
+      }
+      r.end = await readPrefs(ctx.W);
+      r.rowAfter = await DIA_ROW(ctx.W);
+      r.privStore = await h.cdp(pid).eval(`window.__vm.store.get("bootstrap", 0)`, 10000).catch((e) => `err ${e.message}`);
+      return r;
+    } finally {
+      await closePrivate();
+      await writePrefs(ctx.W, original);
+      await sleep(800);
+    }
+  },
+  expect: (s, b, r) => r.error ? [r.error] : [
+    ...Object.keys(r.start).map((p) => J(r.start[p]) === J(r.end[p]) ? null : `${p} changed: ${J(r.start[p])} -> ${J(r.end[p])}`),
+    r.flips.length === 1 && r.flips[0] === true ? null : `the address row's pref went ${J(r.flips)} in the normal window`,
+    ...rowHealthy(r.rowBefore, "before"), ...rowHealthy(r.rowAfter, "after the private window opened"),
+    r.privStore === 0 ? null : `the private window recorded a profile setup (bootstrap ${J(r.privStore)})`],
+});
+// Full screen: Vivaldi turns its address row off (address-top-off), and the Dia row goes with it, so nothing of it pokes out
+// at the top-left over the page; back from full screen it is whole again, with nothing dropped (it was not measured at 0 px).
+def("D.fullscreen-row", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(800); },
+  ready: () => waitFor(() => h.ev(`!!document.querySelector("#vm-dia-crumb")`, ctx.W), 6000),
+  act: async () => {
+    const r = {};
+    try {
+      await h.ev(`chrome.windows.update(${ctx.W}, { state: "fullscreen" }).then(() => 1)`, ctx.H);
+      await sleep(2000);
+      r.full = await h.ev(`(() => { const b = document.querySelector("#browser"), bar = document.querySelector("#main > .mainbar");
+        const seen = [...document.querySelectorAll("#vm-dia-sidebar, #vm-dia-crumb, #vm-dia-crumb button")].filter((e) => { const q = e.getBoundingClientRect(); return q.width > 0 && q.height > 0; }).map((e) => e.id || e.className);
+        return { fs: b.classList.contains("fullscreen"), off: b.classList.contains("address-top-off"), bar: bar ? getComputedStyle(bar).display : null, seen, fit: b.dataset.vmDiaFit ?? null }; })()`, ctx.W);
+      await shot(ctx.W, "fullscreen");
+    } finally {
+      await h.ev(`chrome.windows.update(${ctx.W}, { state: "normal" }).then(() => 1)`, ctx.H);
+      await sleep(2000);
+    }
+    r.back = await DIA_ROW(ctx.W);
+    r.fitBack = await h.ev(`document.querySelector("#browser").dataset.vmDiaFit ?? null`, ctx.W);
+    return r;
+  },
+  expect: (s, b, r) => [r.full.fs && r.full.off ? null : `setup: not in full screen with the address row off (${J(r.full)})`, r.full.bar === "none" ? null : `the row is ${r.full.bar} in full screen`,
+    r.full.seen.length ? `${J(r.full.seen)} still shown in full screen` : null, ...rowHealthy(r.back, "after full screen"), r.fitBack === null ? null : `after full screen the row dropped buttons (${r.fitBack})`],
+});
+
 // Task 8f: a tab row dragged out of the sidebar past the window opens in a new window, as a plain tab of that window's
 // default space. The drag is a real HTML5 one driven through CDP (Input.setInterceptDrags + dispatchMouseEvent, then
 // dispatchDragEvent to end it at x,y): dragstart and dragend are the browser's own events, but the drop point is not an

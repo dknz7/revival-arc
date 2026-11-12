@@ -346,7 +346,9 @@
   const fitRow = () => {
     const browser = document.querySelector("#browser");
     const row = document.querySelector("#main > .mainbar .toolbar-mainbar");
-    if (!browser || !row) return;
+    // Not while Vivaldi has the address row off (the row is display: none then, vivarc.css): everything in it measures 0,
+    // and 0 would be remembered as Forward's and Reload's natural widths. It is measured again once it shows (rowSize).
+    if (!browser || !row || browser.classList.contains("address-top-off")) return;
     const style = getComputedStyle(row);
     const reserved = (parseFloat(style.paddingLeft) || 0) + (parseFloat(style.paddingRight) || 0);
     // The page column's own width, from its edges rather than the row's (a row that has slid left over the sidebar, see

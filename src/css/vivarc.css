@@ -985,6 +985,10 @@
 #browser.vm-on.vm-dia #main > .mainbar .toolbar-mainbar {
   height: var(--vm-dia-bar); background: transparent !important; border: 0 !important; box-shadow: none !important;
 }
+/* Vivaldi's address row turned off (full screen, or the pref off for the profile): Vivaldi collapses the row to
+   max-height 0 and hides its own buttons in it, and moves its window buttons to its auto-hiding title bar. Ours would
+   centre on that 0px row, half above the window (Task 8u), so the row goes altogether until Vivaldi shows it again. */
+#browser.vm-on.vm-dia.address-top-off #main > .mainbar { display: none !important; }
 #browser.vm-on.vm-dia #main > .inner { height: 100% !important; }
 #browser.vm-on.vm-dia:not(.fullscreen) #webview-container {
   margin: var(--vm-dia-bar) 8px 8px 0 !important;

@@ -388,5 +388,19 @@ class NarrowRow(unittest.TestCase):
             self.assertNotIn("vm-dia-sidebar", r)
 
 
+class AddressRowOff(unittest.TestCase):
+    """Vivaldi's address row off (full screen, or the pref off): the Dia row goes, rather than centring on a 0 px row."""
+
+    CSS = open(os.path.join(os.path.dirname(__file__), "..", "src", "css", "vivarc.css"), encoding="utf-8").read()
+
+    def test_the_row_is_taken_out_while_vivaldi_has_it_off(self):
+        self.assertIn("#browser.vm-on.vm-dia.address-top-off #main > .mainbar { display: none !important; }", self.CSS)
+
+    def test_the_row_is_not_measured_while_it_is_out(self):
+        source = open(os.path.join(os.path.dirname(__file__), "..", "src", "js", "15-dia.js"), encoding="utf-8").read()
+        fit = source[source.index("const fitRow = () => {"):source.index("const refit = ")]
+        self.assertIn('browser.classList.contains("address-top-off")) return;', fit)
+
+
 if __name__ == "__main__":
     unittest.main()
