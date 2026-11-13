@@ -70,5 +70,40 @@ class MarkerClasses(unittest.TestCase):
         self.assertFalse(self.classes({"spaceBar": True})["vm-no-space-bar"])
 
 
+CORE_HARNESS = r"""
+const fs = require("fs"), vm = require("vm"), path = require("path");
+const warns = [];
+let shortcut = null;
+global.console = { log() {}, warn: (...a) => warns.push(a.map(String).join(" ")) };
+global.indexedDB = { open: () => ({}) };
+global.vivaldi = { tabsPrivate: { onKeyboardShortcut: { addListener: (fn) => { shortcut = fn; } } } };
+global.document = { querySelector: () => null, documentElement: {} };
+global.MutationObserver = class { observe() {} disconnect() {} };
+global.window = {};
+vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], "00-core.js"), "utf8"));
+const heard = [];
+window.__vm.onShortcut((key) => heard.push(["first", key]));
+window.__vm.onShortcut(() => { throw new Error("broken subscriber"); });
+window.__vm.onShortcut((key, combo, win) => heard.push(["third", key, win]));
+shortcut("ctrl+l", 7);
+shortcut("f6", 7);
+process.stdout.write(JSON.stringify({ heard, warns }));
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class ShortcutSubscribers(unittest.TestCase):
+    """00-core.js hands every key to every module that subscribed; one that throws must not keep it from the rest."""
+
+    def test_a_subscriber_that_throws_does_not_stop_the_others_and_is_warned_once(self):
+        import json
+        import os
+        import subprocess
+        from jsrun import JS_DIR
+        out = json.loads(subprocess.run(["node", "-e", CORE_HARNESS, os.path.abspath(JS_DIR)], capture_output=True, text=True, check=True).stdout)
+        self.assertEqual(out["heard"], [["first", "ctrl+l"], ["third", "ctrl+l", 7], ["first", "f6"], ["third", "f6", 7]])
+        self.assertEqual(len([w for w in out["warns"] if "shortcut subscriber" in w]), 1, out["warns"])
+
+
 if __name__ == "__main__":
     unittest.main()

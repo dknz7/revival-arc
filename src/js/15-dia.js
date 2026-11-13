@@ -44,10 +44,15 @@
   // Whether the profile has the layout on, from Vivaldi's prefs alone: they hold the layout's own values (target) only
   // while it is on, since off puts the address row back off. A private window reads it this way (01-settings.js): the
   // normal windows' store and settings channel are not reachable from its off-the-record profile.
-  // The top row's contents count only as far as the layout's own row has no address field: the user may have edited the
-  // Dia row in Vivaldi's toolbar editor since.
+  // The top row's contents count only as far as they tell the Dia row from the user's own: an Arc-layout profile with
+  // Vivaldi's address row switched on by hand (the frame off is Vivaldi's own default on Windows) shows the user's row,
+  // which is Vivaldi's default one or an edit of it. Vivaldi's default row (measured on 8.3) has an address field, a
+  // PanelWidthSpacer and a plain Spacer, and no FlexibleSpacer. The Dia row may have been edited in Vivaldi's toolbar
+  // editor since, so it counts while it has no address field, keeps the layout's FlexibleSpacer and has no
+  // PanelWidthSpacer.
   const inherits = (current, windows) => current?.[ADDRESS] === true && (!windows || current?.[FRAME] === false) &&
-    Array.isArray(current?.[ROW]) && !current[ROW].includes("AddressField");
+    Array.isArray(current?.[ROW]) && !current[ROW].includes("AddressField") && current[ROW].includes("FlexibleSpacer") &&
+    !current[ROW].includes("PanelWidthSpacer");
 
   // What the breadcrumb shows for a tab: its site (a web page's host) and its title.
   const crumbOf = (tab) => {
@@ -407,7 +412,9 @@
       } catch (error) { shieldWarn("watch", error); shieldEnd(false); }
     };
     watch = shieldWatch = new MutationObserver(check);
-    watch.observe(document.querySelector("#tabs-tabbar-container") || document.body, { childList: true, subtree: true });
+    // The whole UI, not the tab bar found now: Vivaldi may put up a new tab bar (and a new popup in it) while the popup is
+    // open, and a watch left on the old one would keep the mark with no popup to show.
+    watch.observe(document.body, { childList: true, subtree: true });
     window.__vm.press(button);
     check();
     setTimeout(check, 850); // nothing opened at all: the mark must not stay

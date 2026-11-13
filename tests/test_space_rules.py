@@ -65,7 +65,11 @@ globalThis.chrome = {
 // Vivaldi's tabsPrivate.move. As 8.2 by default: an empty move with "target-is-tab" answers "nothing to move". With
 // globalThis.vivaldi83 it rejects that tweak in its argument check, as 8.3 does, and a move with a workspaceId puts the
 // tab in that window and space, unless globalThis.spaceMoveFails (it then answers as 8.3 does, success: false).
+globalThis.probes = 0;
 globalThis.vivaldi = { tabsPrivate: { move: async (args) => {
+  if (!args.tabIds.length) globalThis.probes++;
+  // globalThis.probeWording: the probe is refused with an error worded as no Vivaldi seen so far words it
+  if (globalThis.probeWording && !args.tabIds.length) throw new Error(globalThis.probeWording);
   if (globalThis.vivaldi83 && (args.tweaks || []).includes("target-is-tab")) {
     throw new Error("Error at parameter 'moveProperties': Value must be one of above, below, into");
   }
@@ -882,6 +886,26 @@ class SetSpace(unittest.TestCase):
         self.assertIn("ambiguous windowId", status)
         self.assertEqual([c[0] for c in calls], ["tabsPrivate.move", "update"], "the 8.2 write is tried as the fallback")
 
+    def test_an_unknown_answer_to_the_probe_moves_the_8_3_way_asks_once_and_warns_once(self):
+        # A Vivaldi that words its refusal differently: no rethrow on every call (that would break Move to Space,
+        # folders, tear-off, drop, bring and restore together); the safe answer is kept and said once.
+        status, calls, tabs, probes, warns, again = native_js(f"""globalThis.vivaldi83 = true; globalThis.probeWording = "Error at parameter 'moveProperties': something new";
+          fakeTabs.push(...{json.dumps([ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42)])});
+          let status = "ok"; try {{ await native.setSpace(2, 50); }} catch (e) {{ status = "threw " + e.message; }}
+          const again = [await native.movesByTab(), await native.movesByTab()];
+          return [status, calls, fakeTabs, probes, warns, again]""")
+        self.assertEqual(status, "ok")
+        self.assertEqual(calls[0][0], "tabsPrivate.move", "moved with the space, the 8.3 way")
+        self.assertEqual(json.loads(tabs[1]["vivExtData"]).get("workspaceId"), 50)
+        self.assertEqual(again, [True, True])
+        self.assertEqual(probes, 1, "asked once, then the answer is kept")
+        self.assertEqual(len([w for w in warns if "not seen before" in w]), 1, warns)
+
+    def test_the_known_8_3_refusal_is_not_warned(self):
+        _, _, _, warns = native_js(f"""globalThis.vivaldi83 = true; fakeTabs.push(...{json.dumps([ws_tab(2, 7, 42)])});
+          await native.setSpace(2, 50); return [1, 2, 3, warns]""")
+        self.assertEqual(warns, [])
+
     def test_8_2_a_write_that_does_not_take_throws(self):
         status, _, _ = native_js(f"""globalThis.chrome.tabs.update = async () => {{}}; fakeTabs.push(...{json.dumps([ws_tab(2, 7, 0)])});
           try {{ await native.setSpace(2, 50); }} catch (e) {{ return ["threw " + e.message, calls, fakeTabs]; }} return ["ok", calls, fakeTabs]""")
@@ -980,16 +1004,27 @@ class TearOff(unittest.TestCase):
 class CrossWindowDrop(unittest.TestCase):
     """A tab dragged from another window's sidebar into this one moves here (Byron, 2026-11-08)."""
 
-    def take(self, raw, here=2):
-        return js("workspaces.crossDrop({ raw, here })", raw=raw, here=here)
+    PASS = {"pass": "3f2a-real-drag", "tabId": 41}  # what the dragging window left on the background page
+
+    def take(self, raw, here=2, live=PASS):
+        return js("workspaces.crossDrop({ raw, here, pass: live })", raw=raw, here=here, live=live)
 
     def payload(self, **over):
-        data = {"kind": "tab", "tabId": 41, "windowId": 1}
+        data = {"kind": "tab", "tabId": 41, "windowId": 1, "pass": "3f2a-real-drag"}
         data.update(over)
-        return json.dumps(data)
+        return json.dumps({k: v for k, v in data.items() if v is not Ellipsis})
 
     def test_a_tab_from_another_window_is_accepted(self):
         self.assertEqual(self.take(self.payload()), {"tabId": 41, "windowId": 1})
+
+    def test_a_forged_drag_is_refused(self):
+        # Anything can put the type on a drag (a web page, another app); only a sidebar's own drag has the live pass
+        self.assertIsNone(self.take(self.payload(**{"pass": ...})), "no pass at all")
+        self.assertIsNone(self.take(self.payload(**{"pass": "guessed"})), "a pass that is not the live one")
+        self.assertIsNone(self.take(self.payload(), live=None), "no drag going on: no pass on the background page")
+        self.assertIsNone(self.take(self.payload(), live={"pass": "3f2a-real-drag", "tabId": 99}), "the live pass is for another tab")
+        self.assertIsNone(self.take(self.payload(**{"pass": ""}), live={"pass": "", "tabId": 41}), "an empty pass is no pass")
+        self.assertIsNone(self.take(self.payload(), live={"pass": None, "tabId": 41}))
 
     def test_a_tab_from_this_window_is_left_to_the_in_window_drop(self):
         self.assertIsNone(self.take(self.payload(windowId=2)))

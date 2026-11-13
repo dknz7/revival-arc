@@ -48,6 +48,7 @@
 
   const normalise = (combo) => String(combo).toLowerCase().split("+").map((s) => s.trim()).sort().join("+");
   let last = { key: "", at: 0 };
+  const warned = new WeakSet(); // subscribers that have thrown
   const handler = (...args) => {
     const combo = args.find((a) => typeof a === "string");
     if (!combo) return;
@@ -58,7 +59,14 @@
     // Every window's listener hears every key; the number in the event is the Vivaldi window the key was pressed in
     // (measured on 8.2: it equals window.vivaldiWindowId there), handed on for the modules that act on one window only.
     const pressedIn = args.find((a) => typeof a === "number");
-    subscribers.forEach((fn) => fn(key, combo, pressedIn));
+    // Each subscriber on its own: one that throws does not keep the key from the rest (warned once per subscriber).
+    subscribers.forEach((fn) => {
+      try { fn(key, combo, pressedIn); } catch (error) {
+        if (warned.has(fn)) return;
+        warned.add(fn);
+        console.warn("[vivarc] shortcut subscriber:", error);
+      }
+    });
   };
   try {
     vivaldi.tabsPrivate.onKeyboardShortcut.addListener(handler);

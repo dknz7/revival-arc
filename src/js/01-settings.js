@@ -65,7 +65,8 @@
     values = resolve(SCHEMA, config, { ...saved, ...local });
     const browser = document.querySelector("#browser");
     if (browser) apply(browser);
-    listeners.forEach((fn) => fn(values));
+    // Each listener on its own: one that throws does not keep the change from the rest.
+    listeners.forEach((fn) => { try { fn(values); } catch (error) { console.warn("[vivarc] settings listener:", error); } });
   };
   const persist = () => { store.set("settings", saved); channel.postMessage(saved); };
   // The normal windows' value for each window-only key the user has not set here: whether any changed. Never throws.

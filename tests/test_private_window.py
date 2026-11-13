@@ -124,6 +124,18 @@ class PrivateDia(unittest.TestCase):
         out = settings_run(incognito=True, prefs={ADDRESS: True, ROW: ["Back", "Forward", "AddressField"], FRAME: False})
         self.assertFalse(out["atOpen"])
 
+    def test_an_arc_profile_with_vivaldis_address_row_on_by_hand_is_not_the_dia_layout(self):
+        # Vivaldi's default top row (measured on 8.3), and that row with the address field taken out by hand
+        default = ["PanelToggle", "PanelWidthSpacer", "Back", "Forward", "Reload", "AddressField", "Spacer", "Extensions",
+                   "VPNButton", "UpdateButton", "AccountButton"]
+        for row in (default, [item for item in default if item != "AddressField"], ["Back", "Forward", "Reload", "Spacer", "Extensions"]):
+            out = settings_run(incognito=True, prefs={ADDRESS: True, ROW: row, FRAME: False})
+            self.assertFalse(out["atOpen"], row)
+
+    def test_a_dia_row_with_buttons_added_still_counts(self):
+        out = settings_run(incognito=True, prefs={**DIA_ON, ROW: ["PanelToggle", "Back", "Forward", "Reload", "Home", "FlexibleSpacer", "Extensions", "Bookmarks"]})
+        self.assertTrue(out["atOpen"])
+
     def test_reset_in_a_private_window_keeps_the_normal_windows_layout(self):
         out = settings_run(incognito=True, prefs=DIA_ON, then=[["diaLayout", False], ["__reset", None]])
         self.assertTrue(out["now"])

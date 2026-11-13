@@ -1258,7 +1258,7 @@ tearCase("D.tear-off-favorite-stays", {
 // getData); and Vivaldi's tab move. SYNTHETIC: the hand-over between the two windows (the OS would do it), and W's dragend,
 // which is ended by a drop at OUT (outside W): that gives the worst case for the interplay, a source reporting
 // dropEffect "none" beyond its edge after another window took the tab. What a real source reports then is Byron's check.
-async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishAt = OUT, settleMs = 1500, race = false, fresh = true, churn = false } = {}) {
+async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishAt = OUT, settleMs = 1500, race = false, fresh = true, churn = false, forge = null } = {}) {
   const grab = (win, finder, f) => waitFor(() => h.ev(`(() => { const r = ${finder}; if (!r) return null; r.scrollIntoView({ block: "center" }); const b = r.getBoundingClientRect(); const x = b.left + b.width / 2;
     const top = document.elementFromPoint(x, b.top + b.height / 2); return r.contains(top) ? { x, y: b.top + b.height * ${f} } : null; })()`, win), 8000);
   const from = await grab(src, srcFinder, 0.5), to = await grab(dst, dstFinder, frac);
@@ -1275,10 +1275,12 @@ async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishA
     await sleep(500);
     if (!data) return "the drag never started";
     ctx.dragData = data;
+    if (forge) data = forge(data); // task 8w: the same drag, carrying data the sidebar did not write
     // keep what the two sidebars warn while the drop runs, so a failure can say why
     const hook = `(window.__w8g = [], console.warn = ((o) => (...a) => { window.__w8g.push(a.map(String).join(" ").slice(0, 200)); o.apply(console, a); })(console.warn), 1)`;
     await h.ev(hook, dst).catch(() => {}); if (dst !== src) await h.ev(hook, src).catch(() => {});
     const finish = async () => {
+      if (finishAt === "cancel") { await cs.send("Input.cancelDragging"); return; } // the drag ends where the pointer is, inside the source
       const none = { items: [], dragOperationsMask: 1 };
       await cs.send("Input.dispatchDragEvent", { type: "dragEnter", x: finishAt.x, y: finishAt.y, data: none });
       await cs.send("Input.dispatchDragEvent", { type: "drop", x: finishAt.x, y: finishAt.y, data: none });
@@ -1424,6 +1426,45 @@ acrossCase("D.drag-across-new-tab-row", {
     ...shownStill(s), noStranger(s)],
 });
 // The same-window drag still reorders as before (the custom type is ignored when the source is this window).
+// Task 8w: a drag that only SAYS it is a sidebar's tab (the type and a tab of another window, as a web page or another app
+// could put on a drag) is refused: dropped on O's row, nothing moves. Then the same drop carrying the pass a real sidebar
+// drag leaves on the background page moves the tab, so the case can see a move (the control). Both are real drag events
+// on O's own page (Input.dispatchDragEvent); no source window is involved.
+def("D.drag-across-forged-refused", {
+  gesture: true, setup: SET_ACROSS, ready: () => waitFor(() => h.ev(`!!(${tabRowOf("X2")})`, ctx.W), 8000).then((ok) => ok && waitFor(() => h.ev(`!!(${tabRowOf("Y2")})`, ctx.O), 8000)),
+  act: () => sampled(async () => {
+    const TYPE = "application/x-vivarc-tab";
+    const withPass = (pass) => (data) => ({ ...data, items: data.items.map((it) => {
+      if (it.mimeType !== TYPE) return it;
+      const v = JSON.parse(it.data); if (pass === undefined) delete v.pass; else v.pass = pass;
+      return { ...it, data: J(v) };
+    }) });
+    const spy = () => h.ev(`(window.__w8wDrops = 0, window.__w8wSpy || (window.__w8wSpy = true, document.addEventListener("drop", (e) => { if (e.dataTransfer?.types?.includes(${J(TYPE)})) window.__w8wDrops++; }, true)), 1)`, ctx.O);
+    const drag = async (forge) => {
+      await spy();
+      const done = await dragAcross(ctx.W, tabRowOf("X2"), ctx.O, tabRowOf("Y2"), { frac: 0.25, finishAt: "cancel", forge });
+      const drops = await h.ev(`window.__w8wDrops`, ctx.O);
+      return done !== "dropped" ? done : drops >= 1 ? "dropped" : "the drop never reached O's sidebar";
+    };
+    const where = async () => (await h.ev(`chrome.tabs.get(${ctx.tabs.X2}).then((t) => t.windowId)`, ctx.H)) === ctx.O ? "O" : "W";
+    const r = { typed: null };
+    r.forged = await drag(withPass("not-the-pass"));
+    r.typed = (ctx.dragData?.items || []).some((it) => it.mimeType === TYPE && "pass" in JSON.parse(it.data));
+    r.afterForged = await where();
+    r.noPass = await drag(withPass(undefined));
+    r.afterNoPass = await where();
+    await sleep(2500); // the earlier drags' passes are withdrawn
+    r.real = await drag(null); // the control: the same drag, untouched, moves the tab
+    r.afterReal = await where();
+    r.passLeft = await h.ev(`!!chrome.extension.getBackgroundPage().__vivarcDragPass`, ctx.W);
+    return r;
+  }),
+  expect: (s, b, r) => [r.forged === "dropped" && r.noPass === "dropped" && r.real === "dropped" ? null : `a drop did not happen (${J(r)})`,
+    r.typed ? null : "the sidebar's drag carries no pass",
+    r.afterForged === "W" ? null : "a drag with a wrong pass moved the tab into O", r.afterNoPass === "W" ? null : "a drag with no pass moved the tab into O",
+    r.afterReal === "O" ? null : "the control (an untouched drag) did not move the tab: the case cannot see a move", r.passLeft ? "the pass stayed after the drop that used it" : null,
+    noStranger(s)],
+});
 def("D.drag-across-same-window-unchanged", {
   gesture: true, setup: SET_ACROSS, ready: () => waitFor(() => h.ev(`!!(${tabRowOf("X2")}) && !!(${tabRowOf("X1")})`, ctx.W), 8000),
   act: () => sampled(() => dragAcross(ctx.W, tabRowOf("X1"), ctx.W, tabRowOf("X2"), { frac: 0.25, finishAt: null })),

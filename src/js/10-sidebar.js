@@ -306,6 +306,21 @@
   // ---- drag and drop ----
   let drag = null;
   let refreshAfterDrag = false;
+  // The pass of this window's tab drag (see dragstart). It is withdrawn a little after the drag ends: the other window's
+  // drop and this window's dragend are separate events, and the drop must still find it. The window that takes the drop
+  // withdraws it at once.
+  let dragPass = null;
+  const endPass = () => {
+    const pass = dragPass;
+    dragPass = null;
+    if (!pass) return;
+    setTimeout(() => {
+      try {
+        const bg = chrome.extension?.getBackgroundPage?.();
+        if (bg?.[spacesOf.DRAG_PASS]?.pass === pass) delete bg[spacesOf.DRAG_PASS];
+      } catch (_) {}
+    }, 2000);
+  };
   const clearDrop = () => {
     for (const n of panel?.querySelectorAll(".drop-before, .drop-after, .drop-into") ?? []) {
       n.classList.remove("drop-before", "drop-after", "drop-into");
@@ -319,9 +334,17 @@
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", payload.url || "");
       // Tab rows also say which tab and window they are, so another window's sidebar can take the drop (HTML5 drag data
-      // crosses windows). Pins, favorites, bookmarks and folders are not tabs and carry nothing.
+      // crosses windows). Pins, favorites, bookmarks and folders are not tabs and carry nothing. With a fresh random pass,
+      // also left on the background page every window of the profile shares: the drop is taken only with it
+      // (workspaces.crossDrop), so a drag that only says it is one of ours (a web page's, another app's) moves nothing.
       if (payload.type === "tab") {
-        try { e.dataTransfer.setData(spacesOf.DRAG_TYPE, JSON.stringify({ kind: "tab", tabId: payload.tab.id, windowId: payload.tab.windowId })); } catch (_) {}
+        try {
+          const pass = crypto.randomUUID();
+          const bg = chrome.extension?.getBackgroundPage?.();
+          if (bg) bg[spacesOf.DRAG_PASS] = { pass, tabId: payload.tab.id };
+          e.dataTransfer.setData(spacesOf.DRAG_TYPE, JSON.stringify({ kind: "tab", tabId: payload.tab.id, windowId: payload.tab.windowId, pass }));
+          dragPass = pass;
+        } catch (_) {}
       }
       closeMenu();
       // Changing the layout inside dragstart makes Chrome cancel the drag, so it waits a frame.
@@ -333,6 +356,7 @@
     });
     node.addEventListener("dragend", (e) => {
       drag = null;
+      endPass();
       if (refreshAfterDrag) refresh(true);
       node.classList.remove("dragging");
       document.querySelector("#browser")?.classList.remove("vm-dragging");
@@ -525,8 +549,13 @@
     node.addEventListener("drop", async (e) => {
       if (fromElsewhere(e)) {
         let info = null;
-        try { info = spacesOf.crossDrop({ raw: e.dataTransfer.getData(spacesOf.DRAG_TYPE), here: myWindow() }); } catch (_) {}
-        if (!info) return; // not a tab of another window: nothing here takes it
+        try {
+          const bg = chrome.extension?.getBackgroundPage?.();
+          info = spacesOf.crossDrop({ raw: e.dataTransfer.getData(spacesOf.DRAG_TYPE), here: myWindow(), pass: bg?.[spacesOf.DRAG_PASS] ?? null });
+          if (info) delete bg[spacesOf.DRAG_PASS]; // one drop per drag
+        } catch (_) {}
+        // Not a tab another window's sidebar is dragging: refused here (it said it was, so it goes no further either).
+        if (!info) { e.preventDefault(); e.stopPropagation(); clearDrop(); return; }
         e.preventDefault();
         e.stopPropagation();
         const zone = zoneOf(e, true);
@@ -1292,10 +1321,14 @@
     const listed = stacksOf.entries(open);
     return { blank, listed, loose: listed.filter((e) => e.type === "tab").map((e) => e.tab) };
   };
+  // Everything listed going: a new tab first, so the window stays open. If that tab cannot be made nothing is closed
+  // (closing them all could close the window). Either failure throws, for the caller to say so.
   const closeLoose = async (loose, blank) => {
     if (!loose.length) return;
-    if (loose.length + blank.length === state.tabs.length) await chrome.tabs.create({});
-    chrome.tabs.remove(loose.map((t) => t.id));
+    if (loose.length + blank.length === state.tabs.length) {
+      try { await chrome.tabs.create({}); } catch (error) { throw new Error(`no new tab to keep the window open, nothing closed (${error?.message || error})`); }
+    }
+    await chrome.tabs.remove(loose.map((t) => t.id));
   };
 
   // ---- the New Tab row's dropdown (Task 8k) ----
@@ -1487,7 +1520,7 @@
     shownStacks = listed.filter((e) => e.type === "stack").map((e) => e.id);
     const divider = el("div", "vm-divider");
     const clear = el("span", "vm-clear", "Clear");
-    clear.addEventListener("click", () => closeLoose(loose, blank));
+    clear.addEventListener("click", () => closeLoose(loose, blank).catch((error) => { console.warn("[vivarc] clear:", error); say("Could not close the tabs"); }));
     divider.append(clear);
     wireDrop(divider, { accept: isBookmark, onDrop: (_zone, data) => unpin(data) });
     body.append(divider);
