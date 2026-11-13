@@ -115,9 +115,10 @@ python vivarc.py install
 
 #### Shortcuts and limitations
 
-Ctrl+T opens the command bar, Ctrl+S hides or shows the sidebar in the window you press it in, Ctrl+Shift+C copies the
-URL, Ctrl+Left/Right switches spaces, and Ctrl+Alt+N creates a space. Alt+Left/Right
-stay Back/Forward; Vivaldi's second Back/Forward pair, Ctrl+Left/Right, goes to spaces.
+Ctrl+T opens the command bar, Ctrl+S hides or shows the sidebar in the window you press it in (while it is
+hidden, Ctrl+L edits the address in the command bar), Ctrl+Shift+C copies the URL, Ctrl+Left/Right switches
+spaces, and Ctrl+Alt+N creates a space. Alt+Left/Right stay Back/Forward; Vivaldi's second Back/Forward
+pair, Ctrl+Left/Right, goes to spaces.
 Ctrl+Shift+Left/Right or Ctrl+Shift+1..9 switches profiles. F2 opens Vivaldi's
 Quick Commands. Conflicting Vivaldi shortcuts are replaced; uninstall restores
 the saved preferences.
@@ -194,11 +195,11 @@ python3 ~/.vivarc/app/vivarc.py status      # what is installed
 
 **Site requests.** When a site asks for notifications, your location, the camera or the microphone, the question shows as a card at the top right with the site's own options, and the address bar stays collapsed. Close the card and a small **Site request pending** pill keeps it one click away. A prompt Vivarc cannot read still opens the address bar, so a question is never hidden.
 
-**Hiding the sidebar.** Cmd+S (Ctrl+S on Windows), and in the Dia layout the button between Vivaldi's menu and Back, hide or show the sidebar in this window only. Vivarc takes the key over from Vivaldi once per profile, so restart Vivaldi once after the first start on a new version. A hidden sidebar does not slide back in on hover.
+**Hiding the sidebar.** Cmd+S (Ctrl+S on Windows), and in the Dia layout the button between Vivaldi's menu and Back, hide or show the sidebar in this window only. Vivarc takes the key over from Vivaldi once per profile, so restart Vivaldi once after the first start on a new version. A hidden sidebar does not slide back in on hover. While it is hidden, Cmd+L (Ctrl+L, F6 or Alt+D on Windows) opens the command bar to edit the address, and a question Vivaldi asks in its address field that Vivarc does not show as a card (a device list, for one) floats over the page with the address field until you answer it.
 
 **The Dia layout.** Switch it on in Vivarc Settings (Cmd+T, `settings`, _Dia layout_) for a slim row over the page: Vivaldi's menu, the sidebar button, Back, Forward and Reload, the page as `site / title`, the Shield, Copy link and Translate icons, and the window buttons. In a narrow window the other items give way (the title first, then Translate, Copy link and the Shield) and the window buttons stay. On a Mac the row starts after the traffic lights. Settings are per profile, so a profile still on the Arc layout can look like Vivarc is missing: check _Dia layout_ there. A private window follows your normal windows' layout; switching it there changes that window only.
 
-**Also:** Vivaldi's right-hand panel slides in when the pointer pauses at the window's right edge, on any monitor. Switching tabs no longer pops the hidden address field open.
+**Also:** Vivaldi's right-hand panel slides in when the pointer pauses at the window's right edge, including on a monitor whose right edge meets another screen (one monitor with nothing to its right, where it also failed, is still to be checked). Switching tabs no longer pops the hidden address field open. On a Mac, when you Cmd+drag toolbar or extension icons to rearrange them, let go of ⌘ before the mouse button: Vivaldi drops nothing if ⌘ is still held.
 
 **Shortcuts**
 
@@ -207,7 +208,7 @@ python3 ~/.vivarc/app/vivarc.py status      # what is installed
 | Cmd+T                 | Ctrl+T                | Command bar                                                              |
 | Cmd+S                 | Ctrl+S                | Hide this window's sidebar, or show it again. Other windows keep theirs. |
 | Cmd+Shift+C           | Ctrl+Shift+C          | Copy the page URL (with a toast)                                         |
-| Cmd+L                 | Ctrl+L                | Edit the address                                                         |
+| Cmd+L                 | Ctrl+L                | Edit the address (in the command bar while the sidebar is hidden)        |
 | Cmd+E                 | F2                    | Vivaldi's own Quick Commands                                             |
 | Cmd+Option+Left/Right | Ctrl+Left/Right       | Previous or next space                                                   |
 | Ctrl+Cmd+N            | Ctrl+Alt+N            | Create a space                                                           |
