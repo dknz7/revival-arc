@@ -776,6 +776,11 @@ def("D.row-icons", {
     r.c2 = await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-translate");
     r.back = await waitFor(async () => { const x = await ICONS_OF(ctx.W); return translateBtn(x)?.state === "idle" ? x : null; }, 10000, 300) || await ICONS_OF(ctx.W);
     r.toast = await h.ev(`document.querySelector("#vm-copied")?.textContent || null`, ctx.W);
+    // Task 8w: from the German page to an English one in the same tab, Translate goes again
+    await goTo(ctx.W, `${origin}/en-3`);
+    r.enAgain = await waitFor(async () => { const x = await ICONS_OF(ctx.W); return translateBtn(x)?.hidden ? x : null; }, 12000, 300) || await ICONS_OF(ctx.W);
+    r.enAgainTab = await h.ev(`chrome.tabs.query({ active: true, windowId: ${ctx.W} }).then(([t]) => t.url)`, ctx.H);
+    await shot(ctx.W, "row-icons-english-after-german");
     return r;
   },
   expect: (s, b, r) => {
@@ -798,6 +803,8 @@ def("D.row-icons", {
     if (tr?.state !== "translated" || tr.label !== "Show original" || tr.pressed !== "true" || !/^Show original/.test(tr.title)) bad.push(`after a click: ${J(tr)} (toast ${J(r.toast)})`);
     const bk = translateBtn(r.back);
     if (bk?.state !== "idle" || bk.hidden || bk.label !== "Translate") bad.push(`after Show original: ${J(bk)}`);
+    if (!r.enAgainTab?.endsWith("/en-3")) bad.push(`setup: the tab did not go to the English page (${J(r.enAgainTab)})`);
+    else if (!translateBtn(r.enAgain)?.hidden) bad.push(`Translate still shows after going from the German page to an English one in the same tab: ${J(translateBtn(r.enAgain))}`);
     return bad;
   },
 });
@@ -1125,8 +1132,11 @@ async function dragRow(win, finder, to) {
     const data = { items: [], dragOperationsMask: 1 };
     await c.send("Input.dispatchDragEvent", { type: "dragEnter", x: to.x, y: to.y, data });
     await c.send("Input.dispatchDragEvent", { type: "drop", x: to.x, y: to.y, data });
+  } finally {
+    // the button always goes up again, whatever failed on the way (task 8w: a press left down is suspected in the input-ack hang)
     await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: to.x, y: to.y, button: "left", buttons: 0, clickCount: 1 }).catch(() => {});
-  } finally { await c.send("Input.setInterceptDrags", { enabled: false }).catch(() => {}); }
+    await c.send("Input.setInterceptDrags", { enabled: false }).catch(() => {});
+  }
   return "dropped";
 }
 const tabRowOf = (label) => `[...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes(${J(label)}))`;
@@ -1309,8 +1319,11 @@ async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishA
     if (finishAt && !race) await finish();
     await sleep(600);
     ctx.warns = { dst: await h.ev(`window.__w8g`, dst).catch(() => null), src: dst !== src ? await h.ev(`window.__w8g`, src).catch(() => null) : null };
+  } finally {
+    // the button always goes up again, also when the drag never started (task 8w)
     await cs.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: from.x, y: from.y, button: "left", buttons: 0, clickCount: 1 }).catch(() => {});
-  } finally { cs.ws.removeEventListener("message", onMsg); await cs.send("Input.setInterceptDrags", { enabled: false }).catch(() => {}); }
+    cs.ws.removeEventListener("message", onMsg); await cs.send("Input.setInterceptDrags", { enabled: false }).catch(() => {});
+  }
   return rebuilt > 0 ? "dropped" : "the forced list rebuild never happened before the drop (nothing was tested)";
 }
 // Runs the act while counting normal windows every ~30 ms, then a while after it (a tear-off that wrongly fires comes
@@ -1482,7 +1495,7 @@ const NT_LABELS = ["Search Tabs…", "Start Page", "Open Tabs", "Recently Closed
 const mouse = (win, type, x, y) => h.cdp(win).send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1 });
 const centre = (win, expr) => h.ev(`(() => { const e = ${expr}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const b = e.getBoundingClientRect(); return b.width && b.height ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null; })()`, win);
 const hoverOn = async (win, expr) => { const p = await waitFor(() => centre(win, expr), 6000); if (!p) return false; await mouse(win, "mouseMoved", p.x, p.y); return p; };
-const clickOn = async (win, expr) => { const p = await hoverOn(win, expr); if (!p) return false; await mouse(win, "mousePressed", p.x, p.y); await mouse(win, "mouseReleased", p.x, p.y); return true; };
+const clickOn = async (win, expr) => { const p = await hoverOn(win, expr); if (!p) return false; try { await mouse(win, "mousePressed", p.x, p.y); } finally { await mouse(win, "mouseReleased", p.x, p.y); } return true; };
 const labelOfRow = `((n.querySelector(".vm-menu-label") || n).textContent.trim())`;
 const menuRow = (label) => `[...document.querySelectorAll(${J(NT_MENU + " .vm-menu-item")})].find((n) => ${labelOfRow} === ${J(label)})`;
 const flyRow = (label) => `[...document.querySelectorAll(".vm-menu-flyout .vm-menu-item")].find((n) => ${labelOfRow} === ${J(label)})`;
@@ -1669,6 +1682,7 @@ const FAST_QUERY = `(() => { if (window.__slowQ) { chrome.tabs.query = window.__
 ntCase("N.press-during-refresh", {
   act: async () => {
     const win = ctx.W, r = {};
+    let down = false;
     await mouse(win, "mouseMoved", 600, 500); await sleep(150);
     if (!(await hoverOn(win, NT_ROW))) return { error: "no New Tab row" };
     await sleep(250);
@@ -1680,12 +1694,17 @@ ntCase("N.press-during-refresh", {
       await h.ev(NT_SPY, win);
       await h.ev(`chrome.tabs.create({ windowId: ${win}, url: ${J(tabUrl("BG1"))}, active: false }).then(() => 1)`, ctx.H);
       await sleep(250); // the refresh has started and is waiting for its tabs
+      down = true;
       await mouse(win, "mousePressed", p.x, p.y);
       await sleep(1100); // past the moment it would render
+      down = false;
       await mouse(win, "mouseReleased", p.x, p.y);
       r.menu = !!(await waitFor(() => hasEl(win, NT_MENU), 3000));
       r.spy = await h.ev(NT_SPY_READ, win);
-    } finally { await h.ev(FAST_QUERY, win).catch(() => {}); await escapeAll(win).catch(() => {}); }
+    } finally {
+      if (down) await mouse(win, "mouseReleased", p.x, p.y).catch(() => {}); // never leave the button down (task 8w)
+      await h.ev(FAST_QUERY, win).catch(() => {}); await escapeAll(win).catch(() => {});
+    }
     return r;
   },
   expect: (s, b, r) => r.error ? [r.error] : [r.menu ? null : `the menu did not open: the click was lost (spy ${J(r.spy)})`,
@@ -1697,6 +1716,7 @@ ntCase("N.press-during-refresh", {
 ntCase("N.press-during-replace", {
   act: async () => {
     const win = ctx.W, r = {};
+    let down = false;
     await mouse(win, "mouseMoved", 600, 500); await sleep(150);
     if (!(await hoverOn(win, NT_ROW))) return { error: "no New Tab row" };
     await sleep(250);
@@ -1705,16 +1725,21 @@ ntCase("N.press-during-replace", {
     await mouse(win, "mouseMoved", p.x, p.y); await sleep(150);
     try {
       await h.ev(NT_SPY, win);
+      down = true;
       await mouse(win, "mousePressed", p.x, p.y);
       await sleep(100);
       r.moved = await h.ev(`(() => { const panel = document.querySelector("#vm-panel"); const d = document.createElement("div"); d.id = "vm-8t-stand-in"; panel.after(d); return panel.nextElementSibling === d; })()`, win);
       await sleep(400); // place() has run (a mutation, then a frame)
       r.orderDuring = await h.ev(`document.querySelector("#vm-panel").nextElementSibling?.id ?? null`, win);
+      down = false;
       await mouse(win, "mouseReleased", p.x, p.y);
       r.menu = !!(await waitFor(() => hasEl(win, NT_MENU), 3000));
       r.spy = await h.ev(NT_SPY_READ, win);
       r.orderAfter = await h.ev(`document.querySelector("#vm-panel").nextElementSibling?.id ?? "anchor"`, win);
-    } finally { await h.ev(`(document.getElementById("vm-8t-stand-in")?.remove(), 1)`, win).catch(() => {}); await escapeAll(win).catch(() => {}); }
+    } finally {
+      if (down) await mouse(win, "mouseReleased", p.x, p.y).catch(() => {}); // never leave the button down (task 8w)
+      await h.ev(`(document.getElementById("vm-8t-stand-in")?.remove(), 1)`, win).catch(() => {}); await escapeAll(win).catch(() => {});
+    }
     return r;
   },
   expect: (s, b, r) => r.error ? [r.error] : [r.moved ? null : "setup: the stand-in did not go after the panel", r.menu ? null : `the menu did not open: the click was lost (spy ${J(r.spy)})`,
@@ -3174,6 +3199,36 @@ for (const layout of ["dia", "arc"]) {
     expect: (s, b, r) => r.setup ? [r.setup] : afQuiet(r, "a carded popup in the field"),
   });
 }
+// Task 8w: the Dia layout's Shield pressed while a question is carded. The press closes Vivaldi's question popup (a press
+// outside it), which the card would re-open at once and so close the Shield's popup again; instead the question waits in
+// its pill while the Shield's popup is open, and comes back once it closes, still answerable.
+def("SR.the-shield-waits-for-a-pending-question", {
+  layout: "dia", setup: srSetup,
+  act: async () => {
+    const a = await srTab(ctx.W, "A");
+    const asked = await srAskAndWait(a, "notif");
+    if (!asked.first) return { error: "no card for the question" };
+    const pill = () => h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W);
+    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(1500);
+    const r = { open1: await SHIELD_STATE(ctx.W), sr1: await srState(ctx.W), pill1: await pill() };
+    await sleep(1500);
+    r.open2 = await SHIELD_STATE(ctx.W);
+    await shot(ctx.W, "shield-with-a-pending-question");
+    await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(300);
+    r.closed = await SHIELD_STATE(ctx.W);
+    r.back = await srWait(ctx.W, (s) => s.cards.length === 1, 6000);
+    r.ready = await srWait(ctx.W, (s) => s.cards.length === 1 && !s.cards[0].opts.some((o) => o.endsWith("(disabled)")), 4000);
+    r.click = await srClick(ctx.W, srOpt(1));
+    r.after = await srWait(ctx.W, (s) => s.cards.length === 0 && s.popups === 0);
+    r.perm = await srPerm(a, "notif");
+    return r;
+  },
+  expect: (s, b, r) => r.error ? [r.error] : [...shieldOpenOk(r.open1, "the Shield with a question pending"), r.open2?.open && r.open2?.mark ? null : `the Shield's popup closed by itself (${J(r.open2)})`,
+    r.sr1?.cards.length === 0 && r.pill1 ? null : `while the Shield is open the question should wait in its pill (cards ${r.sr1?.cards.length}, pill ${r.pill1})`,
+    r.closed && !r.closed.open && !r.closed.mark ? null : `Escape did not close the Shield (${J(r.closed)})`,
+    r.back ? null : "the question did not come back after the Shield closed", r.ready ? null : "Allow never woke on the card that came back",
+    r.click === "clicked" && r.after ? null : `Allow on the card that came back: ${r.click}, card gone ${!!r.after}`, r.perm === "granted" ? null : `the permission is ${r.perm}, want granted`],
+});
 
 // Task 8m: Vivaldi's panel, on the right and auto-hidden, reveals when the pointer pauses in the window's right-edge gap
 // (14-panel-edge.js), whichever monitor the window is on. Vivaldi's own edge test is native and never sees CDP's mouse; these cases see Vivarc's: a move onto
@@ -3301,9 +3356,10 @@ for (const layout of ["dia", "arc"]) {
         const under = await h.ev(`document.elementFromPoint(${x}, ${y})?.tagName`, ctx.W);
         const cdp = h.cdp(ctx.W);
         await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, button: "none", buttons: 0 });
-        await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
-        for (let k = 1; k <= 6; k++) { await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: y + k * 40, button: "left", buttons: 1 }); await sleep(30); }
-        await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: y + 240, button: "left", buttons: 0, clickCount: 1 });
+        try {
+          await cdp.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1 });
+          for (let k = 1; k <= 6; k++) { await cdp.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y: y + k * 40, button: "left", buttons: 1 }); await sleep(30); }
+        } finally { await cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y: y + 240, button: "left", buttons: 0, clickCount: 1 }); } // never left down (task 8w)
         await sleep(300);
         return { sb, x, gap: s.gap, under, scrolled: await p.eval("scrollY"), sends: await peSends(), shown: (await peState(ctx.W)).shown };
       } finally { p.close(); }
@@ -3343,36 +3399,6 @@ for (const layout of ["dia", "arc"]) {
     });
   }
 }
-// Task 8w: the Dia layout's Shield pressed while a question is carded. The press closes Vivaldi's question popup (a press
-// outside it), which the card would re-open at once and so close the Shield's popup again; instead the question waits in
-// its pill while the Shield's popup is open, and comes back once it closes, still answerable.
-def("SR.the-shield-waits-for-a-pending-question", {
-  layout: "dia", setup: srSetup,
-  act: async () => {
-    const a = await srTab(ctx.W, "A");
-    const asked = await srAskAndWait(a, "notif");
-    if (!asked.first) return { error: "no card for the question" };
-    const pill = () => h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W);
-    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(1500);
-    const r = { open1: await SHIELD_STATE(ctx.W), sr1: await srState(ctx.W), pill1: await pill() };
-    await sleep(1500);
-    r.open2 = await SHIELD_STATE(ctx.W);
-    await shot(ctx.W, "shield-with-a-pending-question");
-    await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(300);
-    r.closed = await SHIELD_STATE(ctx.W);
-    r.back = await srWait(ctx.W, (s) => s.cards.length === 1, 6000);
-    r.ready = await srWait(ctx.W, (s) => s.cards.length === 1 && !s.cards[0].opts.some((o) => o.endsWith("(disabled)")), 4000);
-    r.click = await srClick(ctx.W, srOpt(1));
-    r.after = await srWait(ctx.W, (s) => s.cards.length === 0 && s.popups === 0);
-    r.perm = await srPerm(a, "notif");
-    return r;
-  },
-  expect: (s, b, r) => r.error ? [r.error] : [...shieldOpenOk(r.open1, "the Shield with a question pending"), r.open2?.open && r.open2?.mark ? null : `the Shield's popup closed by itself (${J(r.open2)})`,
-    r.sr1?.cards.length === 0 && r.pill1 ? null : `while the Shield is open the question should wait in its pill (cards ${r.sr1?.cards.length}, pill ${r.pill1})`,
-    r.closed && !r.closed.open && !r.closed.mark ? null : `Escape did not close the Shield (${J(r.closed)})`,
-    r.back ? null : "the question did not come back after the Shield closed", r.ready ? null : "Allow never woke on the card that came back",
-    r.click === "clicked" && r.after ? null : `Allow on the card that came back: ${r.click}, card gone ${!!r.after}`, r.perm === "granted" ? null : `the permission is ${r.perm}, want granted`],
-});
 
 // Part 3 decisions that are the same check as a row above.
 const ALIASES = { "P3.1": ["T.parked-other.click"], "P3.2": ["R.D8", "R.D2"] };

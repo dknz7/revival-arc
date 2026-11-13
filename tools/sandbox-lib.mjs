@@ -52,18 +52,21 @@ export class Cdp {
     };
   }
   // A reply that never comes (a connection gone quiet without closing: task 8v's final Dia sweep waited 15 minutes on
-  // one) rejects after 90 s, so a case fails instead of the sweep stalling for good.
-  send(method, params = {}) {
+  // one) rejects after `deadlineMs` (90 s unless the caller waits longer itself), so a case fails instead of the sweep
+  // stalling for good.
+  send(method, params = {}, deadlineMs = 90000) {
     if (this.closed) return Promise.reject(new Error("closed"));
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { if (this.pending.delete(id)) reject(new Error(`no reply to ${method} in 90 s`)); }, 90000);
+      const timer = setTimeout(() => { if (this.pending.delete(id)) reject(new Error(`no reply to ${method} in ${Math.round(deadlineMs / 1000)} s`)); }, deadlineMs);
       this.pending.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
       this.ws.send(JSON.stringify({ id, method, params }));
     });
   }
+  // The reply's deadline is never shorter than the caller's own timeout (CU.over-the-cap evaluates for up to 120 s): the
+  // eval's own timeout is the one that reports.
   async eval(expr, timeoutMs = 15000) {
-    const p = this.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true });
+    const p = this.send("Runtime.evaluate", { expression: expr, awaitPromise: true, returnByValue: true }, Math.max(90000, timeoutMs + 5000));
     const r = await Promise.race([p, sleep(timeoutMs).then(() => { throw new Error("eval timeout: " + expr.slice(0, 80)); })]);
     if (r.exceptionDetails) throw new Error("eval exception: " + (r.exceptionDetails.exception?.description || r.exceptionDetails.text));
     return r.result.value;
