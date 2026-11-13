@@ -69,18 +69,21 @@
   // the address-field focus guard of 20-command-bar.js do not take it for the user's; the focus Vivaldi's popup then takes
   // is marked for a moment too. The Dia layout's Shield (15-dia.js) presses the same way.
   const press = (button) => window.__vm.press(button);
-  // Whether the user is busy in something of Vivarc's own: a menu or popover, an inline name field, the command bar, or the cursor in
-  // any other text entry outside the card. The reopened popup would take the cursor (its Deny button is autofocused), and an
-  // inline rename ends, unchanged, when its field loses focus. A menu stays "open" for a moment after it closes: the item
-  // picked in it (Rename...) opens its field a tick later.
+  // Whether the user is busy in something of Vivarc's own: a menu or popover, an inline name field, the command bar, the Dia
+  // layout's Shield popup (Vivaldi's site info, 15-dia.js), or the cursor in any other text entry outside the card. The
+  // reopened popup would take the cursor (its Deny button is autofocused), an inline rename ends, unchanged, when its field
+  // loses focus, and pressing the question's icon is a press outside the Shield's popup, which closes it. A menu stays
+  // "open" for a moment after it closes: the item picked in it (Rename...) opens its field a tick later.
   let busyAt = 0;
   const busy = () => {
     const a = document.activeElement;
     const typing = !!a && !a.closest?.(`#${HOST}, ${POPUP}`) && (a.matches?.("input, textarea, [contenteditable]") || a.isContentEditable);
-    if (document.querySelector(".vm-menu, .vm-theme-pop, .vm-set-card, .vm-rename, .vm-rename-float, .vm-space-input, #vm-cmd") || typing) busyAt = Date.now();
+    if (document.querySelector(".vm-menu, .vm-theme-pop, .vm-set-card, .vm-rename, .vm-rename-float, .vm-space-input, #vm-cmd, #browser.vm-shield-open, .UrlBar-AddressField .SiteInfo.button-popup") || typing) busyAt = Date.now();
     return Date.now() - busyAt < 500;
   };
   const menuOpen = busy;
+  // The Shield's popup has no time limit: while it is open the question waits in its pill however long that is.
+  const shieldUp = () => !!document.querySelector("#browser.vm-shield-open, .UrlBar-AddressField .SiteInfo.button-popup");
   const moved = () => { stackMovedAt = Date.now(); }; // something clickable has just appeared or gone where the pointer may be
 
   // Vivaldi's popup takes the cursor when it opens (its Deny button is autofocused). That would leave a hidden button
@@ -307,7 +310,7 @@
   // come back. If it will not, or keeps closing, the pill takes over.
   // `force`: the user asked (the pill): it always opens, and does not count toward the automatic limit. Nothing re-opens
   // while one of Vivarc's own menus is open (the press that closed the popup may be the one that opened it): the pill
-  // holds the question until the menu is gone.
+  // holds the question until the menu is gone. The Shield's popup holds it the same way, for as long as it stays open.
   const reopen = async (tab, first = 150, force = false) => {
     const token = ++reopenToken;
     try {
@@ -316,7 +319,7 @@
         await wait(i === 0 ? first : 150);
         if (token !== reopenToken || activeTab !== tab) return;
         if (cards.size) { owed.delete(tab); return; }
-        if (!force && menuOpen()) { dismissed.add(tab); syncPill(); continue; }
+        if (!force && menuOpen()) { dismissed.add(tab); syncPill(); if (shieldUp()) i--; continue; }
         tries++;
         const button = document.querySelector(ICON);
         if (!button) continue;

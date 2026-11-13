@@ -3163,6 +3163,36 @@ for (const layout of ["dia", "arc"]) {
     });
   }
 }
+// Task 8w: the Dia layout's Shield pressed while a question is carded. The press closes Vivaldi's question popup (a press
+// outside it), which the card would re-open at once and so close the Shield's popup again; instead the question waits in
+// its pill while the Shield's popup is open, and comes back once it closes, still answerable.
+def("SR.the-shield-waits-for-a-pending-question", {
+  layout: "dia", setup: srSetup,
+  act: async () => {
+    const a = await srTab(ctx.W, "A");
+    const asked = await srAskAndWait(a, "notif");
+    if (!asked.first) return { error: "no card for the question" };
+    const pill = () => h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W);
+    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(1500);
+    const r = { open1: await SHIELD_STATE(ctx.W), sr1: await srState(ctx.W), pill1: await pill() };
+    await sleep(1500);
+    r.open2 = await SHIELD_STATE(ctx.W);
+    await shot(ctx.W, "shield-with-a-pending-question");
+    await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(300);
+    r.closed = await SHIELD_STATE(ctx.W);
+    r.back = await srWait(ctx.W, (s) => s.cards.length === 1, 6000);
+    r.ready = await srWait(ctx.W, (s) => s.cards.length === 1 && !s.cards[0].opts.some((o) => o.endsWith("(disabled)")), 4000);
+    r.click = await srClick(ctx.W, srOpt(1));
+    r.after = await srWait(ctx.W, (s) => s.cards.length === 0 && s.popups === 0);
+    r.perm = await srPerm(a, "notif");
+    return r;
+  },
+  expect: (s, b, r) => r.error ? [r.error] : [...shieldOpenOk(r.open1, "the Shield with a question pending"), r.open2?.open && r.open2?.mark ? null : `the Shield's popup closed by itself (${J(r.open2)})`,
+    r.sr1?.cards.length === 0 && r.pill1 ? null : `while the Shield is open the question should wait in its pill (cards ${r.sr1?.cards.length}, pill ${r.pill1})`,
+    r.closed && !r.closed.open && !r.closed.mark ? null : `Escape did not close the Shield (${J(r.closed)})`,
+    r.back ? null : "the question did not come back after the Shield closed", r.ready ? null : "Allow never woke on the card that came back",
+    r.click === "clicked" && r.after ? null : `Allow on the card that came back: ${r.click}, card gone ${!!r.after}`, r.perm === "granted" ? null : `the permission is ${r.perm}, want granted`],
+});
 
 // Part 3 decisions that are the same check as a row above.
 const ALIASES = { "P3.1": ["T.parked-other.click"], "P3.2": ["R.D8", "R.D2"] };
