@@ -585,8 +585,10 @@
     }, true);
     // The keys that ask for the address field (as 20-command-bar.js counts them) while the popup is open: the field is
     // hidden then and cannot take the cursor, so the mark goes first and the field gets it (Vivaldi's own try may have
-    // come first and failed).
+    // come first and failed). With this window's sidebar hidden the field has nowhere to show: the popup closes, and the
+    // command bar takes the key instead (12-sidebar-hide.js).
     const toField = () => {
+      if (document.querySelector("#browser.vm-sidebar-hidden")) { shieldClose(); shieldEnd(false); return; }
       shieldEnd(false);
       setTimeout(() => {
         try {

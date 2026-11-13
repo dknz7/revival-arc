@@ -942,6 +942,145 @@ def("D.shield-hidden-and-keys", {
     r.fieldFocused && r.fieldFocused.active === "urlFieldInput" && !r.fieldFocused.mark && r.fieldFocused.fieldH > 0 && r.fieldFocused.vis === "visible" ? null : `Ctrl+L with the popup open: ${J(r.fieldFocused)}, want the field open with the cursor`,
     r.end && !r.end.mark ? null : `the end: ${J(r.end)}`],
 });
+// Task 8w: this window's sidebar hidden (Ctrl+S) puts the tab bar, and Vivaldi's address field in it, out of the layout
+// (display: none), so the field can neither take the cursor nor show a popup. The address keys (Ctrl+L, F6, Alt+D) open
+// the command bar to edit the address instead, the sidebar staying hidden; Enter there navigates the same tab. Sent as
+// the keyboard sends them (native key codes: Vivaldi's shortcut handling reads them), with the cursor in the page and in
+// the UI. The field must never take the cursor meanwhile (a focusin spy), nor float once the sidebar is back.
+const keyCombo = async (c, key, code, vk, mods = 0) => {
+  const mod = mods & 2 ? { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 } : mods & 1 ? { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 18 } : null;
+  if (mod) await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...mod, modifiers: mods });
+  await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
+  await sleep(60);
+  await c.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
+  if (mod) await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...mod, modifiers: 0 });
+};
+const focusPage = (win) => h.ev(`chrome.tabs.query({ active: true, windowId: ${win} }).then(([t]) => { document.getElementById(String(t.id))?.focus(); return document.activeElement?.tagName; })`, win);
+const focusUi = (win) => h.ev(`(document.activeElement?.blur?.(), document.body.focus(), document.activeElement?.tagName)`, win);
+const FIELD_SPY = `(() => { window.__fieldSpy = []; if (!window.__fieldSpyOn) { window.__fieldSpyOn = true; document.addEventListener("focusin", (e) => { if (e.target?.id === "urlFieldInput") window.__fieldSpy?.push(Date.now()); }, true); } return 1; })()`;
+const BAR_STATE = (win) => h.ev(`(() => { const i = document.querySelector("#vm-cmd input"), bar = document.querySelector("#tabs-tabbar-container"), f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField");
+  return { bar: !!i, value: i?.value ?? null, selected: i ? i.selectionStart === 0 && i.selectionEnd === i.value.length && i.value.length > 0 : null, inBar: document.activeElement === i && !!i,
+    hidden: document.querySelector("#browser").classList.contains("vm-sidebar-hidden"), barW: Math.round(bar.getBoundingClientRect().width), fieldH: f ? Math.round(f.getBoundingClientRect().height) : null,
+    fieldFocused: document.activeElement?.id === "urlFieldInput", spy: (window.__fieldSpy || []).length }; })()`, win);
+const escBar = async (win) => { await h.ev(`(document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), 1)`, win); await sleep(400); };
+const activeUrl = (win) => h.ev(`chrome.tabs.query({ active: true, windowId: ${win} }).then(([t]) => ({ id: t.id, url: t.pendingUrl || t.url }))`, ctx.H);
+for (const layout of ["dia", "arc"]) {
+  def(`D.hidden-sidebar-address-keys-${layout}`, {
+    layout,
+    setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await goTo(ctx.W, `${origin}/en-1`); await sleep(1500); },
+    ready: () => waitFor(() => h.ev(`!!document.querySelector("#tabs-tabbar-container .UrlBar-AddressField")`, ctx.W), 6000),
+    act: async () => {
+      const r = {};
+      const c = h.cdp(ctx.W);
+      try {
+        await ctrlS(ctx.W); r.hidden = await sideState(ctx.W);
+        await h.ev(FIELD_SPY, ctx.W);
+        r.before = await activeUrl(ctx.W);
+        r.pageFocus = await focusPage(ctx.W); await sleep(200);
+        await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900);
+        r.ctrlL = await BAR_STATE(ctx.W);
+        await shot(ctx.W, "hidden-sidebar-ctrl-l");
+        // Enter on a new address navigates the same tab, the sidebar still hidden
+        if (r.ctrlL.inBar) {
+          await c.send("Input.insertText", { text: `${origin}/en-2` }); await sleep(300);
+          await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: String.fromCharCode(13) });
+          await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+          r.after = await waitFor(async () => { const t = await activeUrl(ctx.W); return t.url.endsWith("/en-2") ? t : null; }, 6000, 200) || await activeUrl(ctx.W);
+          r.tabs = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
+          r.enter = await BAR_STATE(ctx.W);
+        }
+        await escBar(ctx.W);
+        // F6 with the cursor in the UI (Vivaldi's own UI document): its key event is the one that would focus the field
+        r.uiFocus = await focusUi(ctx.W); await sleep(200);
+        await keyCombo(c, "F6", "F6", 117, 0); await sleep(900);
+        r.f6 = await BAR_STATE(ctx.W);
+        await escBar(ctx.W);
+        await focusPage(ctx.W); await sleep(200);
+        await keyCombo(c, "d", "KeyD", 68, 1); await sleep(900);
+        r.altD = await BAR_STATE(ctx.W);
+        await escBar(ctx.W);
+        await focusUi(ctx.W); await sleep(200);
+        await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900);
+        r.ctrlLui = await BAR_STATE(ctx.W);
+        await escBar(ctx.W);
+      } finally { if ((await sideState(ctx.W)).hidden) await ctrlS(ctx.W); }
+      await sleep(600);
+      r.shown = await BAR_STATE(ctx.W);
+      return r;
+    },
+    expect: (s, b, r) => {
+      const bad = [r.hidden?.hidden && r.hidden.barW === 0 ? null : `setup: the sidebar did not hide (${J(r.hidden)})`, r.pageFocus === "WEBVIEW" ? null : `setup: the page did not take the cursor (${r.pageFocus})`];
+      const opened = (x, what, url) => !x ? `${what}: no state` : !x.bar ? `${what}: no command bar (${J(x)})` : [!x.inBar ? `${what}: the bar has no cursor` : null,
+        url != null && x.value !== url ? `${what}: the bar holds ${J(x.value)}, want the page's address ${J(url)}` : null, url != null && !x.selected ? `${what}: the address is not selected` : null,
+        !x.hidden || x.barW !== 0 ? `${what}: the sidebar came back (${J(x)})` : null, x.fieldFocused ? `${what}: the address field has the cursor` : null].filter(Boolean).join("; ") || null;
+      bad.push(opened(r.ctrlL, "Ctrl+L from the page", r.before?.url));
+      bad.push(r.after?.url?.endsWith("/en-2") ? null : `Enter did not navigate to en-2 (${J(r.after)})`, r.after && r.after.id !== r.before?.id ? "Enter opened another tab" : null,
+        r.tabs === 1 || r.tabs == null ? null : `${r.tabs} tabs after Enter, want 1`, r.enter?.hidden ? null : `after Enter the sidebar is shown (${J(r.enter)})`);
+      bad.push(r.uiFocus === "BODY" ? null : `setup: the UI did not take the cursor (${r.uiFocus})`, opened(r.f6, "F6 from the UI", null), opened(r.altD, "Alt+D from the page", null), opened(r.ctrlLui, "Ctrl+L from the UI", null));
+      bad.push(r.shown?.spy === 0 ? null : `the hidden address field took the cursor ${r.shown?.spy} times`, r.shown && !r.shown.hidden && r.shown.fieldH === 0 && !r.shown.fieldFocused ? null : `the sidebar back: ${J(r.shown)}, want it shown with the field collapsed`);
+      return bad;
+    },
+  });
+  // A popup Vivaldi opens in the address field that Vivarc does not card (here a page's USB device chooser) floats the field
+  // over the page while the sidebar stays hidden, where it floats with the sidebar shown, and the page does not move. It is
+  // answered with Vivaldi's own Cancel (never Connect: the chooser lists this machine's real devices, read only); the float
+  // goes with it.
+  def(`D.hidden-sidebar-uncarded-popup-${layout}`, {
+    layout,
+    setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(900); },
+    ready: () => waitFor(() => h.ev(`!!document.querySelector("#tabs-tabbar-container .UrlBar-AddressField")`, ctx.W), 6000),
+    act: async () => {
+      const r = {};
+      const t = await srTab(ctx.W, "UC");
+      if (!t.page) return { error: "no page target" };
+      const box = (sel) => `(() => { const e = document.querySelector(${J(sel)}); if (!e) return null; const q = e.getBoundingClientRect(); return [q.left, q.top, q.width, q.height].map(Math.round); })()`;
+      const look = () => h.ev(`(() => { const f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"), p = [...document.querySelectorAll("#tabs-tabbar-container .addressfield-popup-container")].find((x) => !x.classList.contains("vm-site-carded"));
+        const q = p?.getBoundingClientRect(), at = q ? document.elementFromPoint(q.left + q.width / 2, q.top + q.height / 2) : null, fr = f?.getBoundingClientRect();
+        const cancel = p ? [...p.querySelectorAll("input, button")].find((b) => (b.value || b.textContent).trim() === "Cancel") : null, cr = cancel?.getBoundingClientRect();
+        return { popup: !!p, popupBox: q ? [q.left, q.top, q.right, q.bottom].map(Math.round) : null, onTop: at ? !!at.closest(".addressfield-popup-container") : null,
+          field: fr ? [fr.left, fr.top, fr.width, fr.height].map(Math.round) : null, fieldVis: f ? getComputedStyle(f).visibility : null, cancel: cr && cr.width ? [cr.left + cr.width / 2, cr.top + cr.height / 2] : null,
+          hidden: document.querySelector("#browser").classList.contains("vm-sidebar-hidden"), barW: Math.round(document.querySelector("#tabs-tabbar-container").getBoundingClientRect().width), W: innerWidth, H: innerHeight }; })()`, ctx.W);
+      try {
+        r.side = await h.ev(box("#tabs-tabbar-container"), ctx.W);
+        await ctrlS(ctx.W); r.hidden = await sideState(ctx.W);
+        r.pageBefore = await h.ev(box("#webview-container"), ctx.W);
+        await t.page.send("Runtime.evaluate", { expression: `navigator.usb.requestDevice({ filters: [] }).then(() => window.__r = "connected", (e) => window.__r = e.name)`, userGesture: true });
+        r.shown = await waitFor(async () => { const x = await look(); return x.popup ? x : null; }, 6000, 150);
+        await sleep(600);
+        r.during = await look();
+        r.pageDuring = await h.ev(box("#webview-container"), ctx.W);
+        await shot(ctx.W, "hidden-sidebar-uncarded-popup");
+        if (r.during.cancel) {
+          for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.cdp(ctx.W).send("Input.dispatchMouseEvent", { type, x: r.during.cancel[0], y: r.during.cancel[1], button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+          r.gone = await waitFor(async () => { const x = await look(); return x.popup ? null : x; }, 5000, 150) || await look();
+        }
+        await sleep(400);
+        r.answer = await srVal(t, "window.__r ?? null");
+        r.pageAfter = await h.ev(box("#webview-container"), ctx.W);
+      } finally {
+        if (await h.ev(`!!document.querySelector("#tabs-tabbar-container .addressfield-popup-container:not(.vm-site-carded)")`, ctx.W).catch(() => false)) await pressKey(ctx.W, "Escape", "Escape", 27).catch(() => {});
+        if ((await sideState(ctx.W)).hidden) await ctrlS(ctx.W);
+        t.page.close();
+      }
+      return r;
+    },
+    expect: (s, b, r) => {
+      if (r.error) return [r.error];
+      const d = r.during, bad = [r.hidden?.hidden ? null : "setup: the sidebar did not hide", r.shown ? null : "no popup appeared for the USB request"];
+      if (!d?.popup) return [...bad, "the popup was gone before it was looked at"];
+      bad.push(d.field && d.field[3] > 0 && d.fieldVis === "visible" ? null : `the address field does not show for the popup (${J(d.field)}, ${d.fieldVis})`,
+        d.onTop ? null : `the popup is not on top (${J(d.popupBox)})`,
+        d.popupBox && d.popupBox[0] >= 0 && d.popupBox[1] >= 0 && d.popupBox[2] <= d.W && d.popupBox[3] <= d.H ? null : `the popup is outside the window (${J(d.popupBox)})`,
+        d.field && r.side && Math.abs(d.field[0] - (r.side[0] + 8)) <= 1 && Math.abs(d.field[1] - (r.side[1] + 8)) <= 1 ? null : `the field floats at ${J(d.field)}, want where it floats with the sidebar shown (${J(r.side)} + 8, 8)`,
+        d.hidden && d.barW === 0 ? null : `the sidebar came back for the popup (${J([d.hidden, d.barW])})`,
+        J(r.pageDuring) === J(r.pageBefore) ? null : `the page moved: ${J(r.pageBefore)} -> ${J(r.pageDuring)}`,
+        d.cancel ? null : "no Cancel button on the popup");
+      bad.push(r.gone && !r.gone.popup ? null : "Cancel did not close the popup", r.gone && !(r.gone.field && r.gone.field[3] > 0) ? null : `the field still floats after Cancel (${J(r.gone?.field)})`,
+        r.answer === "NotFoundError" ? null : `the page's request ended ${J(r.answer)}, want NotFoundError (Cancel)`, J(r.pageAfter) === J(r.pageBefore) ? null : `the page moved after: ${J(r.pageAfter)}`);
+      return bad;
+    },
+  });
+}
 // Full screen: Vivaldi turns its address row off (address-top-off), and the Dia row goes with it, so nothing of it pokes out
 // at the top-left over the page; back from full screen it is whole again, with nothing dropped (it was not measured at 0 px).
 def("D.fullscreen-row", {

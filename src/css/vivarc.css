@@ -9,6 +9,23 @@
 /* This window's sidebar hidden (12-sidebar-hide.js, Ctrl+S or the Dia button): the tab bar column goes and the page takes its
    width, as it does for Vivaldi's own hide, but for this window only (Vivaldi's is one pref for every window). */
 #browser.vm-on.vm-sidebar-hidden #tabs-tabbar-container { display: none !important; }
+/* ...except while Vivaldi shows a popup in its address field that Vivarc does not card (a device chooser, a decided
+   permission, anything unseen), which lives in that hidden tab bar. Then the tab bar is laid out again, invisible, at no
+   width and out of the page's way (the page does not move), and only the field and its popup show, floating where they
+   float with the sidebar shown: the tab bar's top-left, measured as it hid (--vm-side-*, 12-sidebar-hide.js), plus 8 px.
+   The float goes with the popup. The address keys open the command bar meanwhile (12-sidebar-hide.js). Glass's blur
+   would make the tab bar the field's containing block, so it is off (nothing behind it to blur). */
+#browser.vm-on.vm-sidebar-hidden #tabs-tabbar-container:has(.UrlBar-AddressField .addressfield-popup-container:not(.vm-site-carded)) {
+  display: flex !important; position: absolute !important; width: 0 !important; min-width: 0 !important; visibility: hidden;
+  backdrop-filter: none !important; z-index: 3 !important;
+}
+#browser.vm-on.vm-sidebar-hidden:not(.vm-launching) #tabs-tabbar-container .UrlBar-AddressField:has(.addressfield-popup-container:not(.vm-site-carded)) {
+  position: fixed !important; top: calc(var(--vm-side-top, 0px) + 8px) !important; left: calc(var(--vm-side-left, 0px) + 8px) !important; right: auto !important;
+  width: calc(var(--vm-side-width, 323px) - 16px) !important; visibility: visible;
+}
+#browser.vm-on.vm-sidebar-hidden:not(.vm-launching) #tabs-tabbar-container.right .UrlBar-AddressField:has(.addressfield-popup-container:not(.vm-site-carded)) {
+  left: auto !important; right: calc(var(--vm-side-right, 0px) + 8px) !important;
+}
 
 #browser.vm-hide-workspaces #tabs-tabbar-container .button-toolbar.workspace-popup { display: none; }
 #browser.vm-no-space-bar #vm-panel .vm-space-bar { display: none; }
