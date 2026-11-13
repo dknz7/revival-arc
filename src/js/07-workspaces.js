@@ -149,7 +149,7 @@
 
   // A tab row dragged from one window's sidebar into another's (Byron, 2026-11-08). dragstart writes DRAG_TYPE =
   // {kind:"tab", tabId, windowId, pass}; HTML5 drag data crosses windows. raw: what the type holds, here: this window's
-  // id, pass: the drag's pass as the dragging window left it on the shared background page ({ pass, tabId }, see
+  // id, pass: the drag's pass as the dragging window left it on the shared background page ("<tabId>:<pass>", see
   // DRAG_PASS) or null. -> { tabId, windowId } for a tab of ANOTHER window, else null (a drag from this window takes the
   // in-window path; anything malformed or not a tab is ignored). Anything can put that type on a drag (a web page, another
   // app), so the drop is taken only with the pass of a drag a sidebar really started, for that tab: a random value only
@@ -161,7 +161,7 @@
     try { data = JSON.parse(raw); } catch (_) { return null; }
     if (!data || typeof data !== "object" || data.kind !== "tab") return null;
     if (!Number.isInteger(data.tabId) || !Number.isInteger(data.windowId) || data.windowId === here) return null;
-    if (!pass || typeof pass.pass !== "string" || !pass.pass || data.pass !== pass.pass || pass.tabId !== data.tabId) return null;
+    if (typeof pass !== "string" || typeof data.pass !== "string" || !data.pass || pass !== `${data.tabId}:${data.pass}`) return null;
     return { tabId: data.tabId, windowId: data.windowId };
   };
   // Where a tab from another window lands beside `row` ({ index }): the list shows the highest index first, so above the

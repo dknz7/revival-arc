@@ -1010,6 +1010,14 @@ for (const layout of ["dia", "arc"]) {
         await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900);
         r.ctrlLui = await BAR_STATE(ctx.W);
         await escBar(ctx.W);
+        // Dia: the Shield's popup open while hidden (it has the cursor), then Ctrl+L: the popup closes, the bar opens
+        if (layout === "dia") {
+          await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900);
+          r.shieldOpen = await SHIELD_STATE(ctx.W);
+          await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900);
+          r.shieldCtrlL = { ...(await BAR_STATE(ctx.W)), shield: await SHIELD_STATE(ctx.W) };
+          await escBar(ctx.W);
+        }
       } finally { if ((await sideState(ctx.W)).hidden) await ctrlS(ctx.W); }
       await sleep(600);
       r.shown = await BAR_STATE(ctx.W);
@@ -1024,6 +1032,8 @@ for (const layout of ["dia", "arc"]) {
       bad.push(r.after?.url?.endsWith("/en-2") ? null : `Enter did not navigate to en-2 (${J(r.after)})`, r.after && r.after.id !== r.before?.id ? "Enter opened another tab" : null,
         r.tabs === 1 || r.tabs == null ? null : `${r.tabs} tabs after Enter, want 1`, r.enter?.hidden ? null : `after Enter the sidebar is shown (${J(r.enter)})`);
       bad.push(r.uiFocus === "BODY" ? null : `setup: the UI did not take the cursor (${r.uiFocus})`, opened(r.f6, "F6 from the UI", null), opened(r.altD, "Alt+D from the page", null), opened(r.ctrlLui, "Ctrl+L from the UI", null));
+      if (layout === "dia") bad.push(r.shieldOpen?.open && r.shieldOpen?.mark ? null : `setup: the Shield did not open with the sidebar hidden (${J(r.shieldOpen)})`,
+        opened(r.shieldCtrlL, "Ctrl+L with the Shield open", null), r.shieldCtrlL && !r.shieldCtrlL.shield.open && !r.shieldCtrlL.shield.mark ? null : `Ctrl+L with the Shield open left it open (${J(r.shieldCtrlL?.shield)})`);
       bad.push(r.shown?.spy === 0 ? null : `the hidden address field took the cursor ${r.shown?.spy} times`, r.shown && !r.shown.hidden && r.shown.fieldH === 0 && !r.shown.fieldFocused ? null : `the sidebar back: ${J(r.shown)}, want it shown with the field collapsed`);
       return bad;
     },
@@ -1290,7 +1300,8 @@ async function dragAcross(src, srcFinder, dst, dstFinder, { frac = 0.25, finishA
     const hook = `(window.__w8g = [], console.warn = ((o) => (...a) => { window.__w8g.push(a.map(String).join(" ").slice(0, 200)); o.apply(console, a); })(console.warn), 1)`;
     await h.ev(hook, dst).catch(() => {}); if (dst !== src) await h.ev(hook, src).catch(() => {});
     const finish = async () => {
-      if (finishAt === "cancel") { await cs.send("Input.cancelDragging"); return; } // the drag ends where the pointer is, inside the source
+      // "cancel": the intercepted drag is cancelled in the source, where it started (its dragend: "none", inside the window)
+      if (finishAt === "cancel") { await cs.send("Input.dispatchDragEvent", { type: "dragCancel", x: from.x, y: from.y, data: { items: [], dragOperationsMask: 1 } }); return; }
       const none = { items: [], dragOperationsMask: 1 };
       await cs.send("Input.dispatchDragEvent", { type: "dragEnter", x: finishAt.x, y: finishAt.y, data: none });
       await cs.send("Input.dispatchDragEvent", { type: "drop", x: finishAt.x, y: finishAt.y, data: none });
@@ -3209,8 +3220,19 @@ def("SR.the-shield-waits-for-a-pending-question", {
     const asked = await srAskAndWait(a, "notif");
     if (!asked.first) return { error: "no card for the question" };
     const pill = () => h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W);
-    await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(1500);
-    const r = { open1: await SHIELD_STATE(ctx.W), sr1: await srState(ctx.W), pill1: await pill() };
+    // A click as a hand makes it: the button held 300 ms (Vivaldi closes the question's popup on the press, the Shield
+    // opens on the click). A spy counts the cards drawn meanwhile: the question must not come back during the hold.
+    const p = await h.ev(`(() => { const r = document.querySelector("#vm-dia-crumb .vm-dia-shield").getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()`, ctx.W);
+    await h.ev(`(window.__w8wCards = 0, window.__w8wCardSpy?.disconnect(), window.__w8wCardSpy = new MutationObserver((ms) => { for (const m of ms) for (const n of m.addedNodes) if (n.nodeType === 1 && n.matches(".vm-site-card")) window.__w8wCards++; }),
+      window.__w8wCardSpy.observe(document.querySelector("#browser"), { childList: true, subtree: true }), 1)`, ctx.W);
+    const c = h.cdp(ctx.W);
+    await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] });
+    try {
+      await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: p[0], y: p[1], button: "left", buttons: 1, clickCount: 1 });
+      await sleep(300);
+    } finally { await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p[0], y: p[1], button: "left", buttons: 0, clickCount: 1 }); }
+    await sleep(1500);
+    const r = { open1: await SHIELD_STATE(ctx.W), sr1: await srState(ctx.W), pill1: await pill(), cardsDuring: await h.ev(`(window.__w8wCardSpy.disconnect(), window.__w8wCards)`, ctx.W) };
     await sleep(1500);
     r.open2 = await SHIELD_STATE(ctx.W);
     await shot(ctx.W, "shield-with-a-pending-question");
@@ -3225,6 +3247,7 @@ def("SR.the-shield-waits-for-a-pending-question", {
   },
   expect: (s, b, r) => r.error ? [r.error] : [...shieldOpenOk(r.open1, "the Shield with a question pending"), r.open2?.open && r.open2?.mark ? null : `the Shield's popup closed by itself (${J(r.open2)})`,
     r.sr1?.cards.length === 0 && r.pill1 ? null : `while the Shield is open the question should wait in its pill (cards ${r.sr1?.cards.length}, pill ${r.pill1})`,
+    r.cardsDuring === 0 ? null : `the question came back ${r.cardsDuring} time(s) while the Shield was pressed and opening`,
     r.closed && !r.closed.open && !r.closed.mark ? null : `Escape did not close the Shield (${J(r.closed)})`,
     r.back ? null : "the question did not come back after the Shield closed", r.ready ? null : "Allow never woke on the card that came back",
     r.click === "clicked" && r.after ? null : `Allow on the card that came back: ${r.click}, card gone ${!!r.after}`, r.perm === "granted" ? null : `the permission is ${r.perm}, want granted`],

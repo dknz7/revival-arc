@@ -317,7 +317,7 @@
     setTimeout(() => {
       try {
         const bg = chrome.extension?.getBackgroundPage?.();
-        if (bg?.[spacesOf.DRAG_PASS]?.pass === pass) delete bg[spacesOf.DRAG_PASS];
+        if (bg?.[spacesOf.DRAG_PASS]?.endsWith?.(`:${pass}`)) delete bg[spacesOf.DRAG_PASS];
       } catch (_) {}
     }, 2000);
   };
@@ -341,7 +341,8 @@
         try {
           const pass = crypto.randomUUID();
           const bg = chrome.extension?.getBackgroundPage?.();
-          if (bg) bg[spacesOf.DRAG_PASS] = { pass, tabId: payload.tab.id };
+          // a string, not an object of this window's: the background page outlives the window, and must not hold it
+          if (bg) bg[spacesOf.DRAG_PASS] = `${payload.tab.id}:${pass}`;
           e.dataTransfer.setData(spacesOf.DRAG_TYPE, JSON.stringify({ kind: "tab", tabId: payload.tab.id, windowId: payload.tab.windowId, pass }));
           dragPass = pass;
         } catch (_) {}

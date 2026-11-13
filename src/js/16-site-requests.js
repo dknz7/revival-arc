@@ -75,7 +75,9 @@
   // loses focus, and pressing the question's icon is a press outside the Shield's popup, which closes it. A menu stays
   // "open" for a moment after it closes: the item picked in it (Rename...) opens its field a tick later.
   let busyAt = 0;
+  let shieldHeld = false; // the Shield's button is pressed and not yet released (see the listeners at the end)
   const busy = () => {
+    if (shieldHeld) busyAt = Date.now();
     const a = document.activeElement;
     const typing = !!a && !a.closest?.(`#${HOST}, ${POPUP}`) && (a.matches?.("input, textarea, [contenteditable]") || a.isContentEditable);
     if (document.querySelector(".vm-menu, .vm-theme-pop, .vm-set-card, .vm-rename, .vm-rename-float, .vm-space-input, #vm-cmd, #browser.vm-shield-open, .UrlBar-AddressField .SiteInfo.button-popup") || typing) busyAt = Date.now();
@@ -83,7 +85,7 @@
   };
   const menuOpen = busy;
   // The Shield's popup has no time limit: while it is open the question waits in its pill however long that is.
-  const shieldUp = () => !!document.querySelector("#browser.vm-shield-open, .UrlBar-AddressField .SiteInfo.button-popup");
+  const shieldUp = () => shieldHeld || !!document.querySelector("#browser.vm-shield-open, .UrlBar-AddressField .SiteInfo.button-popup");
   const moved = () => { stackMovedAt = Date.now(); }; // something clickable has just appeared or gone where the pointer may be
 
   // Vivaldi's popup takes the cursor when it opens (its Deny button is autofocused). That would leave a hidden button
@@ -365,6 +367,10 @@
     for (const type of ["pointerdown", "mousedown", "touchstart"]) {
       window.addEventListener(type, (e) => { if (e.target?.closest?.(`#${HOST}`)) e.stopImmediatePropagation(); }, true);
     }
+    // The Shield's popup opens on the click, but Vivaldi closes the question's popup on the press: a press on the Shield
+    // counts as busy at once, so the question does not come back while the button is held (and spend an automatic reopen).
+    window.addEventListener("pointerdown", (e) => { if (e.target?.closest?.(".vm-dia-shield")) { shieldHeld = true; busyAt = Date.now(); } }, true);
+    for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, () => { if (shieldHeld) { shieldHeld = false; busyAt = Date.now(); } }, true);
     new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
     console.log("[vivarc] site requests started");
   } catch (error) {

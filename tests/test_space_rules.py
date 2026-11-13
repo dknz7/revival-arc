@@ -901,6 +901,17 @@ class SetSpace(unittest.TestCase):
         self.assertEqual(probes, 1, "asked once, then the answer is kept")
         self.assertEqual(len([w for w in warns if "not seen before" in w]), 1, warns)
 
+    def test_a_failure_that_is_not_an_argument_check_is_not_kept(self):
+        # e.g. a passing failure on 8.2: answered the 8.3 way for that call only, warned once, asked again next time
+        probes, warns, answers = native_js("""globalThis.probeWording = "Something went away";
+          const answers = [await native.movesByTab(), await native.movesByTab()];
+          globalThis.probeWording = null;
+          answers.push(await native.movesByTab(), await native.movesByTab());
+          return [probes, warns, answers]""")
+        self.assertEqual(answers, [True, True, False, False], "8.2 once the failure has passed, and kept")
+        self.assertEqual(probes, 3)
+        self.assertEqual(len([w for w in warns if "not seen before" in w]), 1, warns)
+
     def test_the_known_8_3_refusal_is_not_warned(self):
         _, _, _, warns = native_js(f"""globalThis.vivaldi83 = true; fakeTabs.push(...{json.dumps([ws_tab(2, 7, 42)])});
           await native.setSpace(2, 50); return [1, 2, 3, warns]""")
@@ -1004,7 +1015,7 @@ class TearOff(unittest.TestCase):
 class CrossWindowDrop(unittest.TestCase):
     """A tab dragged from another window's sidebar into this one moves here (Byron, 2026-11-08)."""
 
-    PASS = {"pass": "3f2a-real-drag", "tabId": 41}  # what the dragging window left on the background page
+    PASS = "41:3f2a-real-drag"  # what the dragging window left on the background page: "<tabId>:<pass>"
 
     def take(self, raw, here=2, live=PASS):
         return js("workspaces.crossDrop({ raw, here, pass: live })", raw=raw, here=here, live=live)
@@ -1022,9 +1033,9 @@ class CrossWindowDrop(unittest.TestCase):
         self.assertIsNone(self.take(self.payload(**{"pass": ...})), "no pass at all")
         self.assertIsNone(self.take(self.payload(**{"pass": "guessed"})), "a pass that is not the live one")
         self.assertIsNone(self.take(self.payload(), live=None), "no drag going on: no pass on the background page")
-        self.assertIsNone(self.take(self.payload(), live={"pass": "3f2a-real-drag", "tabId": 99}), "the live pass is for another tab")
-        self.assertIsNone(self.take(self.payload(**{"pass": ""}), live={"pass": "", "tabId": 41}), "an empty pass is no pass")
-        self.assertIsNone(self.take(self.payload(), live={"pass": None, "tabId": 41}))
+        self.assertIsNone(self.take(self.payload(), live="99:3f2a-real-drag"), "the live pass is for another tab")
+        self.assertIsNone(self.take(self.payload(**{"pass": ""}), live="41:"), "an empty pass is no pass")
+        self.assertIsNone(self.take(self.payload(), live={"pass": "3f2a-real-drag", "tabId": 41}), "not the string a sidebar leaves")
 
     def test_a_tab_from_this_window_is_left_to_the_in_window_drop(self):
         self.assertIsNone(self.take(self.payload(windowId=2)))

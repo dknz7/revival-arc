@@ -89,12 +89,14 @@
   // The keys that ask for the address field (Ctrl+L, Cmd+L, F6, Alt+D, as 20-command-bar.js counts them). With this
   // window's sidebar hidden the field is in the hidden tab bar and cannot take the cursor, so the command bar opens to
   // edit the address instead, as a click on the Dia layout's breadcrumb does (vm-edit-url), and the sidebar stays hidden.
-  // Measured on 8.3: Vivaldi's shortcut comes as onKeyboardShortcut in the window it was pressed in, wherever the cursor
-  // is. With the cursor in the UI the UI's keydown comes first, and preventDefault() there stops Vivaldi's own handling
+  // Measured on 8.3 on Windows (not on a Mac, where Cmd+L takes the same path): Vivaldi's shortcut comes as
+  // onKeyboardShortcut in the window it was pressed in, wherever the cursor is. With the cursor in the UI the UI's keydown
+  // comes first, and preventDefault() there stops Vivaldi's own handling
   // (it would try the hidden field); with the cursor in the page there is no such keydown, and Vivaldi's try on the
   // hidden field does nothing (no focus, then or once the sidebar is back). Vivaldi's own hide (its pref) is not this:
   // it then shows an address field in the top row, which Ctrl+L reaches. Nor is a field floating for one of its popups
-  // (vivarc.css): it can take the cursor, so the key is Vivaldi's.
+  // (vivarc.css): it can take the cursor, so the key is Vivaldi's. The keys are taken while hidden even if the user has
+  // bound them to something else in Vivaldi.
   const ASK = new Set(["ctrl+l", "l+meta", "f6", "alt+d"].map((k) => window.__vm.normalise(k)));
   const askKey = (e) => (e.key === "F6" && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) ||
     ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key?.toLowerCase() === "l") || (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key?.toLowerCase() === "d");

@@ -44,19 +44,31 @@
   // How Vivaldi's tab move (tabsPrivate.move) reads its target, found once with no side effects: an empty move with the
   // "target-is-tab" tweak, which Vivaldi 8.3 rejects in its argument check (there a number is always a tab id the tabs
   // land before, or "first" / "last") and 8.2 answers with "nothing to move" (a number is an index). True on 8.3.
-  // Shared by tab folders (10-sidebar.js) and setSpace. Any other error (a Vivaldi whose wording is new) gives the safe
-  // answer, true, kept like a real one and warned once: a newer Vivaldi is more likely to move like 8.3 than like 8.2, and
-  // setSpace's 8.3 path still falls back to the 8.2 write when its move does not take. Rethrowing instead would fail every
-  // caller on every call (Move to Space, folders, tear-off, drop, bring and restore together).
+  // Shared by tab folders (10-sidebar.js) and setSpace. Rethrowing on an error not seen before would fail every caller on
+  // every call (Move to Space, folders, tear-off, drop, bring and restore together), so it never throws:
+  // - another argument-check error (Chromium's "Error at parameter ..." / "Error in invocation ...": a Vivaldi whose
+  //   wording is new rejects the old tweak too) is kept as 8.3's answer, warned once. A newer Vivaldi is more likely to
+  //   move like 8.3, and setSpace's 8.3 path still falls back to the 8.2 write when its move does not take;
+  // - anything else (a failure that says nothing about the arguments) answers 8.3's way for this call only, warned once,
+  //   and the question is asked again next time, so a passing failure cannot fix 8.2 on 8.3's way for good (8.3's
+  //   way on 8.2 would read folder targets as tab ids).
   let byTab = null;
+  let probeWarned = false;
+  const probeWarn = (error) => {
+    if (probeWarned) return;
+    probeWarned = true;
+    console.warn("[vivarc] Vivaldi's tab move answered in a way not seen before; moving tabs the Vivaldi 8.3 way:", error);
+  };
   const movesByTab = async () => {
     if (byTab !== null) return byTab;
     try {
       await vivaldi.tabsPrivate.move({ tabIds: [], target: 0, tweaks: ["target-is-tab"], debug: "Vivarc.probe" });
       byTab = false;
     } catch (error) {
-      if (!/Value must be one of/.test(String(error))) console.warn("[vivarc] Vivaldi's tab move answered in a way not seen before; moving tabs the Vivaldi 8.3 way:", error);
-      byTab = true;
+      const text = String(error?.message ?? error);
+      if (/Value must be one of/.test(text)) byTab = true;
+      else if (/Error at parameter|Error in invocation/.test(text)) { probeWarn(error); byTab = true; }
+      else { probeWarn(error); return true; }
     }
     return byTab;
   };

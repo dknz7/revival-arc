@@ -411,9 +411,15 @@
         if (seen || Date.now() - started > 800) shieldEnd(true);
       } catch (error) { shieldWarn("watch", error); shieldEnd(false); }
     };
-    watch = shieldWatch = new MutationObserver(check);
     // The whole UI, not the tab bar found now: Vivaldi may put up a new tab bar (and a new popup in it) while the popup is
-    // open, and a watch left on the old one would keep the mark with no popup to show.
+    // open, and a watch left on the old one would keep the mark with no popup to show. At most one check a frame: the whole
+    // UI changes often (titles, the sidebar, a pending question's pill), and each check measures. Until the popup is first
+    // seen every change is checked at once, so it is placed before it is ever painted.
+    let queued = 0;
+    watch = shieldWatch = new MutationObserver(() => {
+      if (!seen) { check(); return; }
+      if (!queued) queued = requestAnimationFrame(() => { queued = 0; check(); });
+    });
     watch.observe(document.body, { childList: true, subtree: true });
     window.__vm.press(button);
     check();
