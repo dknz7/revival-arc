@@ -167,16 +167,19 @@
       const old = notes.get(spec.id);
       if (old) { clearTimeout(old.timer); if (old.el !== spec.el) old.el.remove(); }
       const card = spec.el || build(spec);
-      const note = { id: spec.id, tab: spec.tab ?? null, type: spec.type || "message", el: card, at: old?.at ?? Date.now(), onClose: spec.onClose };
+      const tab = spec.tab === "active" ? activeTab : spec.tab ?? null;
+      const note = { id: spec.id, tab, type: spec.type || "message", el: card, at: old?.at ?? Date.now(), onClose: spec.onClose };
       if (old && spec.fresh) note.at = Date.now();
       card.dataset.vmNote = spec.id;
       card.classList.add("vm-note-item");
       if (!spec.el) {
         card.querySelectorAll(".vm-note-btn").forEach((b, i) => b.addEventListener("click", (e) => {
           if (e.detail > 1) return;
-          let keep = false;
-          try { keep = spec.actions[i].run() === false; } catch (error) { warn("action", error); }
-          if (!keep) remove(spec.id);
+          let result;
+          try { result = spec.actions[i].run(); } catch (error) { warn("action", error); }
+          if (result && typeof result.then === "function") {
+            result.then((done) => { if (done !== false && notes.get(spec.id)?.el === card) remove(spec.id); }, (error) => warn("action", error));
+          } else if (result !== false) remove(spec.id);
         }));
         card.querySelector(".vm-note-x")?.addEventListener("click", (e) => {
           if (e.detail > 1) return;
@@ -276,13 +279,12 @@
   const renderFly = () => {
     try {
       if (!bar?.fly?.isConnected) return;
-      const page = bar.tab();
-      const tab = page ?? activeTab;
+      const tab = bar.tab() ?? activeTab;
       const items = flyFor([...notes.values()], tab).map((n) => n.el);
-      // The page's own rows (its state and actions) only when the bar edits that page (Ctrl+L, the crumb, the URL bar), not
-      // over a new tab or a private window's introduction page.
+      // The page's own rows (its state and actions) whenever the bar is over a page (editing it, or Ctrl+T's bar over it),
+      // not over a blank tab or a private window's introduction; read from the field, which shows the active tab's.
       const rows = [];
-      if (page != null) for (const source of rowSources) { try { rows.push(...(source(tab, bar) || [])); } catch (error) { warn("row", error); } }
+      if (bar.rows?.() !== false && tab === activeTab) for (const source of rowSources) { try { rows.push(...(source(tab, bar) || [])); } catch (error) { warn("row", error); } }
       const nodes = [...items, ...rows];
       const same = bar.fly.children.length === nodes.length && nodes.every((n, i) => bar.fly.children[i] === n);
       if (!same) bar.fly.replaceChildren(...nodes);
@@ -312,6 +314,7 @@
   // ---- the command bar (20-command-bar.js) ----
   const barOpened = (spec) => { bar = spec; render(); };
   const barClosed = () => {
+    rowCache.clear();
     if (!bar) return;
     // The notes go back to the stack before the bar's DOM goes (they would leave with it).
     const fly = bar.fly;
@@ -441,13 +444,19 @@
       zoomOf.set(tabId, newZoomFactor);
       if (tabId !== activeTab || Math.abs(oldZoomFactor - newZoomFactor) < 0.001) return;
       if ((await chrome.windows.getCurrent().catch(() => null))?.focused === false) return; // a site's zoom reaches other windows' tabs too
-      if (Date.now() - activatedAt < 1000 || Date.now() - (navigatedAt.get(tabId) || 0) < 1500) return;
+      // A zoom key just pressed is the user's whatever the timing; otherwise a change right after a switch or a navigation
+      // is the site's stored zoom coming back.
+      const byKey = Date.now() - zoomKeyAt < 1500;
+      if (!byKey && (Date.now() - activatedAt < 1000 || Date.now() - (navigatedAt.get(tabId) || 0) < 1500)) return;
       if (Math.abs(newZoomFactor - 1) < 0.001) { remove(`zoom-${tabId}`); render(); return; }
       add({ id: `zoom-${tabId}`, tab: tabId, type: "zoom", icon: ICONS.zoom, text: `Zoom ${pct(newZoomFactor)}`, ms: 2500, fresh: true,
         actions: [{ label: "Reset", run: () => { chrome.tabs.setZoom(tabId, 0).catch(() => {}); } }] });
     } catch (error) { warn("zoom", error); }
   };
   let bookmarkKeyAt = 0;
+  let zoomKeyAt = 0;
+  const ZOOM_KEYS = /^(?:ctrl|cmd|meta|command)\+(?:=|-|0|\+|plus|minus|add|subtract|numpad ?(?:\+|-|add|subtract|plus|minus))$/i;
+  const navSeq = new Map(); // tab -> its navigations, so a toast about a page knows it is still that page
   const onBookmark = async (_id, node) => {
     try {
       if (!node?.url || Date.now() - bookmarkKeyAt > 2500 || activeTab == null) return;
@@ -467,25 +476,36 @@
         if (activeTab == null || blockedTabs.has(activeTab) || !isPopupBlocker(b)) continue;
         blockedTabs.add(activeTab);
         const tab = activeTab;
+        const page = navSeq.get(tab) || 0;
         add({ id: `popup-${tab}`, tab, type: "popupBlocked", icon: ICONS.popup, text: "Pop-up blocked", ms: 6000, fresh: true,
-          actions: [{ label: "Allow", run: () => { allowPopups(b); } }] });
+          actions: [{ label: "Allow", run: () => allowPopups(tab, page) }] });
       }
     } catch (error) { warn("pop-up", error); }
   };
   // Allow: Vivaldi's own choice for the site (its popup's second radio, "Always Allow", so Vivaldi records it), and the
   // blocked page(s), listed as links in that popup, open in new tabs beside the page (a script click on Vivaldi's links
   // opens nothing: measured on 8.3).
-  const allowPopups = (button) => {
-    const tab = activeTab;
-    return quietly(button, async (popup) => {
-      const urls = [...popup.querySelectorAll("a[href]")].map((a) => a.href).filter((u) => /^https?:/i.test(u));
-      const radios = [...popup.querySelectorAll("input[type=radio]")];
-      if (radios.length === 2 && !radios[1].checked) radios[1].click();
-      const opener = tab != null ? await chrome.tabs.get(tab).catch(() => null) : null;
+  // The button is Vivaldi's current one, found when Allow is clicked (Vivaldi renders the field's buttons anew per visit), and
+  // only for the tab and page the toast is about. -> whether it worked; the toast stays if not.
+  const allowPopups = async (tab, page) => {
+    try {
+      const same = () => activeTab === tab && (navSeq.get(tab) || 0) === page;
+      const button = same() ? fieldButtons().find(isPopupBlocker) : null;
+      if (!button) return false;
+      let urls = [];
+      const drove = await quietly(button, async (popup) => {
+        if (!same()) return;
+        urls = [...popup.querySelectorAll("a[href]")].map((a) => a.href).filter((u) => /^https?:/i.test(u));
+        const radios = [...popup.querySelectorAll("input[type=radio]")];
+        if (radios.length === 2 && !radios[1].checked) radios[1].click();
+      });
+      if (!drove || !same() || !urls.length) return false;
+      const opener = await chrome.tabs.get(tab).catch(() => null);
       for (const [i, url] of urls.entries()) {
         await chrome.tabs.create({ url, active: i === urls.length - 1, ...(opener ? { windowId: opener.windowId, index: opener.index + 1 + i, openerTabId: opener.id } : {}) });
       }
-    }).catch((error) => warn("allow pop-up", error));
+      return true;
+    } catch (error) { warn("allow pop-up", error); return false; }
   };
 
   // ---- events ----
@@ -493,6 +513,7 @@
     if (myWindow == null || windowId !== myWindow) return;
     activeTab = tabId;
     activatedAt = Date.now();
+    rowCache.clear();
     chrome.tabs.getZoom?.(tabId).then((z) => { zoomOf.set(tabId, z); }, () => {});
     render();
   };
@@ -503,12 +524,14 @@
     }).then(([t]) => { if (activeTab == null && t) { activeTab = t.id; chrome.tabs.getZoom?.(t.id).then((z) => zoomOf.set(t.id, z), () => {}); } render(); }, () => {});
     chrome.tabs.onActivated.addListener(onActivated);
     chrome.tabs.onRemoved?.addListener((id) => {
-      zoomOf.delete(id); navigatedAt.delete(id); blockedTabs.delete(id);
+      zoomOf.delete(id); navigatedAt.delete(id); blockedTabs.delete(id); navSeq.delete(id);
       for (const n of [...notes.values()]) if (n.tab === id) remove(n.id);
     });
     chrome.tabs.onUpdated?.addListener((id, change) => {
       if (change.url !== undefined) {
         navigatedAt.set(id, Date.now());
+        navSeq.set(id, (navSeq.get(id) || 0) + 1);
+        if (id === activeTab) rowCache.clear();
         // A new page: the old one's blocked pop-up and bookmark toasts are about it no more.
         for (const kind of ["popup", "bookmarked"]) if (notes.get(`${kind}-${id}`)) remove(`${kind}-${id}`);
         blockedTabs.delete(id);
@@ -517,10 +540,11 @@
     chrome.tabs.onZoomChange?.addListener(onZoom);
     chrome.bookmarks?.onCreated?.addListener(onBookmark);
     const BOOKMARK_KEY = window.__vm.normalise(window.__vm.shortcut("meta+d"));
-    window.__vm.onShortcut((key, _combo, pressedIn) => {
-      if (key !== BOOKMARK_KEY) return;
+    window.__vm.onShortcut((key, combo, pressedIn) => {
       const here = window.__vm.sidebarHide?.pressedHere ?? ((a, b, f) => f);
-      if (here(pressedIn, window.vivaldiWindowId, document.hasFocus())) bookmarkKeyAt = Date.now();
+      if (!here(pressedIn, window.vivaldiWindowId, document.hasFocus())) return;
+      if (key === BOOKMARK_KEY) bookmarkKeyAt = Date.now();
+      if (ZOOM_KEYS.test(String(combo || "").replace(/\s+/g, ""))) zoomKeyAt = Date.now();
     });
     window.addEventListener("resize", () => { place(); });
     window.__vm.onMark?.(() => place());
@@ -537,12 +561,27 @@
       markPop();
     };
     window.__vm.onMark?.((browser) => markPop(browser));
+    // The watch is on the tab bar, where the field, its buttons and its popups live (Vivaldi re-renders it: the interval
+    // moves the watch to a new one), not on every change in the window.
     let queued = 0;
-    new MutationObserver(() => {
+    let watched = null;
+    const watcher = new MutationObserver(() => {
       if (queued) return;
       queued = requestAnimationFrame(() => { queued = 0; watchBlockers(); watchPop(); if (bar) renderFly(); });
-    }).observe(document.documentElement, { childList: true, subtree: true });
-    setInterval(() => { if (notes.size || document.querySelector(`${FIELD} :is(.button-popup, .addressfield-popup-container)`)) place(); }, 700);
+    });
+    const rewatch = () => {
+      const tabbar = document.querySelector("#tabs-tabbar-container");
+      if (!tabbar || tabbar === watched) return;
+      watcher.disconnect();
+      watched = tabbar;
+      watcher.observe(tabbar, { childList: true, subtree: true });
+      watchBlockers(); watchPop();
+    };
+    rewatch();
+    setInterval(() => {
+      rewatch();
+      if (notes.size || document.querySelector(`${FIELD} :is(.button-popup, .addressfield-popup-container)`)) place();
+    }, 700);
     place();
   };
 

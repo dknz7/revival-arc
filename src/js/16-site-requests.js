@@ -145,7 +145,7 @@
 
   // Another question of the same tab may still be pending (Vivaldi opens a popup per request; one answered leaves the rest).
   const nextQuestion = (tab) => {
-    try { if (activeTab === tab && !cards.size && !dismissed.has(tab) && document.querySelector(ICON)) reopen(tab, 0); } catch (error) { warn("next", error); }
+    try { if (activeTab === tab && !cards.size && !dismissed.has(tab) && document.querySelector(ICON)) reopen(tab, 0, false, barOpen()); } catch (error) { warn("next", error); }
   };
 
   // What Vivaldi does to dismiss: close the popup (Escape, or the icon again). The request stays pending, and the pill stays.
@@ -183,14 +183,6 @@
       text.append(el("span", "vm-site-ask", r.ask));
     };
     words(request);
-    // Vivaldi's raw permission names ("window-placement", "local-fonts", with no site) are written as a sentence with the
-    // tab's site (17-notify.js, plainRequest); the tab's address comes asynchronously.
-    if (!request.site && activeTab != null) {
-      chrome.tabs.get(activeTab).then((tab) => {
-        const plain = notify()?.plainRequest?.(request, tab?.url || tab?.pendingUrl || "");
-        if (plain && plain !== request) words(plain);
-      }, () => {});
-    }
     // Vivaldi's protocol-handler question is denied when its popup is closed: the close button says so, and so does the card.
     const close = el("button", "vm-site-x", request.closeDenies ? "Deny" : "×");
     close.type = "button";
@@ -208,12 +200,24 @@
       b.addEventListener("click", (e) => { try { if (e.detail <= 1) answer(popup, i, option.label); } finally { releaseFocus(); } });
       actions.append(b);
     });
-    // Two short buttons sit on the right of the message; longer ones, or more, under it (17-notify.js, buttonsFit).
-    const inline = !request.closeDenies && !!window.__vm.notifyLogic?.buttonsFit(request.options.map((o) => o.label), text.textContent);
-    card.classList.toggle("vm-site-inline", inline);
-    if (inline) head.insertBefore(actions, close);
+    // Two short buttons sit on the right of the message; longer ones, or more, under it (17-notify.js, buttonsFit). Decided
+    // again when the words change.
     card.append(head);
-    if (!inline) card.append(actions);
+    const layout = () => {
+      const inline = !request.closeDenies && !!window.__vm.notifyLogic?.buttonsFit(request.options.map((o) => o.label), text.textContent);
+      card.classList.toggle("vm-site-inline", inline);
+      if (inline) head.insertBefore(actions, close);
+      else head.after(actions);
+    };
+    layout();
+    // Vivaldi's raw permission names ("window-placement", "local-fonts", with no site) are written as a sentence with the
+    // tab's site (17-notify.js, plainRequest); the tab's address comes asynchronously.
+    if (!request.site && activeTab != null) {
+      chrome.tabs.get(activeTab).then((tab) => {
+        const plain = notify()?.plainRequest?.(request, tab?.url || tab?.pendingUrl || "");
+        if (plain && plain !== request) { words(plain); layout(); }
+      }, () => {});
+    }
     if (request.closeDenies) card.append(el("div", "vm-site-note", "Vivaldi denies this if it closes: closing it, a click elsewhere or another tab."));
     card.addEventListener("pointerup", () => setTimeout(releaseFocus, 0)); // a press that never became a click leaves the cursor on the button too
     card.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dismiss(popup); } });
@@ -339,7 +343,7 @@
     try {
       if (myWindow == null || info?.windowId !== myWindow) return;
       activeTab = info.tabId;
-      if (owed.has(info.tabId)) reopen(info.tabId);
+      if (owed.has(info.tabId)) reopen(info.tabId, 150, false, barOpen());
       syncPill();
     } catch (error) { warn("tab switch", error); }
   };
