@@ -75,7 +75,9 @@ const bg = { ...(input.bg || {}) };
 globalThis.chrome = {
   extension: { getBackgroundPage: () => bg },
   windows: { getCurrent: async () => ({ id: 1 }) },
-  sessions: { getRecentlyClosed: async () => (input.sessions || []).map((x) => ({ ...x, lastModified: x.lastModified === "now" ? Date.now() / 1000 : x.lastModified })) },
+  // globalThis.sessionsLater: the first look finds nothing (Chromium has not listed the closed tab yet)
+  sessions: { getRecentlyClosed: async () => { if (globalThis.sessionsLater) { globalThis.sessionsLater = false; return []; }
+    return (input.sessions || []).map((x) => ({ ...x, lastModified: x.lastModified === "now" ? Date.now() / 1000 : x.lastModified })); } },
   tabs: {
     get: async (id) => { const t = tabs.find((x) => x.id === id); if (!t) throw new Error("no tab"); return t; },
     query: async ({ windowId }) => tabs.filter((t) => t.windowId === windowId),
@@ -151,6 +153,19 @@ class PeekRuntime(unittest.TestCase):
                                                            {"lastModified": "now", "tab": {"url": "https://site.test/11", "sessionId": "b"}}])
         self.assertEqual(sorted(out["bg"]["__vivarcPeekClosed"]), ["a", "b"])
         self.assertIn("vm-peek-changed", out["events"], "the sidebar lists the promoted tab again")
+
+    def test_an_entry_listed_late_is_still_claimed(self):
+        # Chromium lists the closed tab only after the first look: the claim looks again
+        script = ("globalThis.sessionsLater = true;" + self.PROMOTE_THEN_DISPOSE.replace("600", "1800"))
+        out = peek_js(script, self.TABS, self.PREVIEW, sessions=[{"lastModified": "now", "tab": {"url": "https://site.test/11", "sessionId": "late"}}])
+        self.assertEqual(out["bg"].get("__vivarcPeekClosed"), ["late"])
+
+    def test_claim_later_only_when_fewer_entries_than_closed_tabs(self):
+        at = 1000 * 1000
+        s1 = [{"lastModified": 1000, "tab": {"url": "u", "sessionId": "1"}}]
+        self.assertEqual(js("[workspaces.claimLater(c1, [], []), workspaces.claimLater(c1, s, []), workspaces.claimLater(c2, s, []), workspaces.claimLater(c0, s, [])]",
+                            c1={"url": "u", "at": at, "n": 1}, c2={"url": "u", "at": at, "n": 2}, c0={"url": "u", "at": at, "n": 0}, s=s1),
+                         [True, False, True, False])
 
     def test_an_ambiguous_closed_entry_is_not_claimed(self):
         out = peek_js(self.PROMOTE_THEN_DISPOSE, self.TABS, self.PREVIEW,

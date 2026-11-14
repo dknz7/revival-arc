@@ -402,6 +402,14 @@
       && Number.isFinite(s.lastModified) && Math.abs(s.lastModified * 1000 - closed.at) <= PEEK_CLOSED_MS);
     return hits.length === n ? hits.map((s) => s.tab.sessionId) : [];
   };
+  // Whether a claim that found nothing should look again: fewer matching entries than closed preview tabs (Chromium had
+  // not listed them all yet), never more (a user's tab among them).
+  const claimLater = (closed, sessions, taken) => {
+    const used = new Set(taken || []);
+    const hits = (sessions || []).filter((s) => s?.tab?.sessionId && !used.has(s.tab.sessionId) && s.tab.url === closed?.url
+      && Number.isFinite(s.lastModified) && Math.abs(s.lastModified * 1000 - closed.at) <= PEEK_CLOSED_MS);
+    return hits.length < (closed?.n ?? 1);
+  };
   // Where Peek's preloaded tab goes when a preview becomes a tab: beside its source (just after it) when the source is
   // in this window. others: this window's tabs but the preloaded one, sorted by index. -> setSpace's index, or undefined
   // (the end of the window).
@@ -819,5 +827,5 @@
     return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, deletedIds, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, claimClosed, PEEK_CLOSED_MS, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, deletedIds, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, claimClosed, claimLater, PEEK_CLOSED_MS, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

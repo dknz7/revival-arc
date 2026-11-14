@@ -3887,7 +3887,7 @@ const peekCase = (id, { button, space = "Y", active }) => def(id, {
   expect: (s, b, r) => {
     const mine = peekOf(ctx.peekUrl)(s), src = find(s, ctx.tabs[`${space}1`]);
     const t = mine[0];
-    return [r.error ?? null, r.during?.rows?.some((x) => /peek-/i.test(x)) ? `the preview's tabs were listed while previewing: ${J(r.during.rows)}` : null,
+    return [r.error ?? null, r.during?.rows?.some((x) => x.includes(new URL(ctx.peekUrl).pathname.slice(1))) ? `the preview's tabs were listed while previewing: ${J(r.during.rows)}` : null,
       mine.length === 1 ? null : `${mine.length} tabs of the previewed page, want 1 (${mine.map((x) => `${roleOf(x.win)}/${spaceName(x.ws)}`).join(", ")})`,
       t && t.win !== ctx.W ? `it is in ${roleOf(t.win)}` : null, t && t.space !== sp(space) ? `it is in ${spaceName(t.space)}, want ${space}` : null,
       t && t.active !== active ? (active ? "it is not on screen" : "it took the screen") : null,
@@ -3916,8 +3916,10 @@ def("PEEK.preview-hidden", {
     await shut();
     return { done: "ok", rows, open, closed };
   },
-  expect: (s, b, r) => [r.error ?? null, r.rows?.some((x) => /peek-/i.test(x)) ? `sidebar rows ${J(r.rows)}` : null, r.open?.some((x) => /peek-/i.test(x)) ? `Open Tabs ${J(r.open)}` : null,
-    r.closed?.some((x) => /peek-/i.test(x)) ? `Recently Closed ${J(r.closed)}` : null, peekOf(ctx.peekUrl)(s).length ? "a tab of the preview is still open" : null],
+  // this preview's own address only: an earlier case's promoted tab (a real tab, closed by the next reset) is rightly listed
+  expect: (s, b, r) => { const mine = (x) => x.includes(new URL(ctx.peekUrl).pathname.slice(1));
+    return [r.error ?? null, r.rows?.some(mine) ? `sidebar rows ${J(r.rows)}` : null, r.open?.some(mine) ? `Open Tabs ${J(r.open)}` : null,
+      r.closed?.some(mine) ? `Recently Closed ${J(r.closed)}` : null, peekOf(ctx.peekUrl)(s).length ? "a tab of the preview is still open" : null]; },
 });
 // #153: Copy Link in a tab row's right-click menu while the page has focus (a real click into the page, then a real
 // right-click on the row and on the item). Read from the system clipboard; what was on it before is put back.
@@ -4024,7 +4026,7 @@ def("PEEK.other-window-lists", {
     await focus(ctx.W); await peekButton("Close"); await sleep(1500);
     return { done: "ok", open };
   },
-  expect: (s, b, r) => [r.error ?? null, r.open?.some((x) => /peek-/i.test(x)) ? `O's Open Tabs lists the preview: ${J(r.open)}` : null],
+  expect: (s, b, r) => [r.error ?? null, r.open?.some((x) => x.includes(new URL(ctx.peekUrl).pathname.slice(1))) ? `O's Open Tabs lists the preview: ${J(r.open)}` : null],
 });
 // Recently Closed never hides a tab the user closed (Important 8): a preview of U closed (its two entries left out),
 // then the user opens U in a tab and closes it: that entry is listed.
@@ -4043,7 +4045,7 @@ def("PEEK.user-close-same-address", {
     await h.ev(`(window.dispatchEvent(new Event("blur")), 1)`, ctx.W);
     return { done: "ok", closed };
   },
-  expect: (s, b, r) => { const n = (r.closed || []).filter((x) => /peek-/i.test(x)).length;
+  expect: (s, b, r) => { const n = (r.closed || []).filter((x) => x.includes(new URL(ctx.peekUrl).pathname.slice(1))).length;
     return [r.error ?? null, n === 1 ? null : `${n} entries of the address in Recently Closed, want 1 (the user's): ${J(r.closed)}`]; },
 });
 

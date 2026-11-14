@@ -37,18 +37,25 @@
     try { const w = instance?.webviews; return w && typeof w.get === "function" ? w.get(webviewId) ?? null : null; } catch (_) { return null; }
   };
   const own = () => { const set = spacesOf.peekIds(previews()); for (const id of promoted) set.delete(id); return set; };
-  // This window's live preview tabs, onto the shared page so every window's lists see them.
+  // This window's live preview tabs, onto the shared page so every window's lists see them. Tab events come by the
+  // thousand while a window loads many tabs: without Peek nothing is done, and the shared page is written only when
+  // this window's set changed.
+  let published = "";
   const publish = () => {
+    if (!instance && !published) return;
     try {
+      const ids = [...own()].sort((a, b) => a - b);
+      const key = ids.join(",");
+      if (key === published) return;
       const page = shared();
       if (!page) return;
       const reg = page[LIVE_KEY] && typeof page[LIVE_KEY] === "object" ? page[LIVE_KEY] : (page[LIVE_KEY] = {});
-      const ids = [...own()];
       if (ids.length) reg[token] = ids; else delete reg[token];
+      published = key;
     } catch (_) {}
   };
   const ids = () => {
-    const set = own();
+    const set = instance ? own() : new Set();
     try {
       for (const list of Object.values(shared()?.[LIVE_KEY] || {})) for (const id of Array.isArray(list) ? list : []) if (Number.isInteger(id)) set.add(id);
     } catch (_) {}
@@ -66,18 +73,25 @@
   // This window's preview tabs while they live (a closed tab's address is gone), so the session entry each one leaves
   // can be claimed when it closes.
   const seen = new Map(); // tab id -> address
-  const note = (tab) => { if (tab?.id != null && !promoted.has(tab.id) && own().has(tab.id)) seen.set(tab.id, tab.pendingUrl || tab.url || ""); };
+  const note = (tab) => { if (instance && tab?.id != null && !promoted.has(tab.id) && own().has(tab.id)) seen.set(tab.id, tab.pendingUrl || tab.url || ""); };
   // Closes of one address are claimed together (Peek closes both of a preview's tabs at once): claimClosed takes them
   // only if exactly that many entries match, so a tab of the user's closed in the same moment keeps every entry shown.
   const pending = new Map(); // address -> { n, at, timer }
-  const claim = async (url, p) => {
-    pending.delete(url);
+  // Chromium can list a closed tab a moment after onRemoved (later under load): while fewer entries than closed preview
+  // tabs are listed, it looks again, up to 4 times over about 2 s. More entries than that: a user's tab may be among
+  // them, and nothing is claimed.
+  const CLAIM_TRIES = 4, CLAIM_RETRY_MS = 600;
+  const claim = async (url, p, tries = 1) => {
+    if (tries === 1) pending.delete(url);
     try {
       const page = shared();
       if (!page) return;
       const taken = Array.isArray(page[CLAIMED_KEY]) ? page[CLAIMED_KEY] : [];
-      const sids = spacesOf.claimClosed({ url, at: p.at, n: p.n }, await chrome.sessions.getRecentlyClosed({ maxResults: 25 }), taken);
+      const closed = { url, at: p.at, n: p.n };
+      const sessions = await chrome.sessions.getRecentlyClosed({ maxResults: 25 });
+      const sids = spacesOf.claimClosed(closed, sessions, taken);
       if (sids.length) page[CLAIMED_KEY] = [...taken, ...sids].slice(-CLAIMED_MAX);
+      else if (tries < CLAIM_TRIES && spacesOf.claimLater(closed, sessions, taken)) setTimeout(() => claim(url, p, tries + 1), CLAIM_RETRY_MS);
     } catch (error) { warn("match a closed preview tab", error); }
   };
   const closed = (id) => {
