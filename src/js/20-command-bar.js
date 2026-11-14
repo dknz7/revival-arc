@@ -151,6 +151,7 @@
     else await Promise.all(others.map((t, index) => setExtData(t, { tiling: { ...window.__vm.tilingOf(t), index } })));
   };
   const closeSplitView = (tab) => window.__vm.unsplit(tab); // shared with the sidebar's tear-off
+  window.__vm.splitView = splitView; // shared with the sidebar's tab menu (Split View rows)
 
   // Quick actions, matched against what is typed. `tab` actions apply to the page behind the bar.
   const ACTIONS = [

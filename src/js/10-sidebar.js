@@ -400,41 +400,46 @@
       // A short wait, then look again: a drop that is just landing in another window has its move still in flight.
       await new Promise((resolve) => setTimeout(resolve, 250));
       if (await gone()) return;
-      const tab = await chrome.tabs.get(payload.tab.id); // the row's copy may be stale
-      const origin = { windowId: tab.windowId, index: tab.index, space: spacesOf.of(tab), active: tab.active };
-      let fresh = null;
-      try {
-        fresh = await chrome.windows.create({ tabId: tab.id, left: place.left, top: place.top, focused: true });
-      } catch (error) {
-        console.warn("[vivarc] tab to a new window:", error);
-        window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not open the tab in a new window." }));
-        return;
-      }
-      try {
-        let now = await chrome.tabs.get(tab.id);
-        for (let i = 0; i < 20 && now.windowId !== fresh.id; i++) {
-          await new Promise((resolve) => setTimeout(resolve, 150));
-          now = await chrome.tabs.get(tab.id);
-        }
-        if (now.windowId !== fresh.id) throw new Error("the tab did not arrive in the new window");
-        await chrome.tabs.update(tab.id, { vivExtData: spacesOf.tornData(now) });
-        await window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] split view left behind by a tear-off:", error));
-        // Vivaldi 8.3 drops that write's workspaceId (08-space-native.js), but its windows.create({ tabId }) has already
-        // cleared the space, so this is a no-op there. Its own catch: a failure here still leaves the split broken and
-        // the Undo offered. On 8.2 a tab left in a space this window does not show is gathered home by repair 3.
-        await window.__vm.native.setSpace(tab.id, 0)
-          .catch((error) => console.warn("[vivarc] tab to a new window, not moved into the default space:", error));
-      } catch (error) {
-        // The tab did not arrive, or its rewrite failed: it is wherever Vivaldi put it, with its split view and folder.
-        // Vivaldi 8.3 already cleared its space when it made the window; on 8.2 it keeps its old space, which repair 3
-        // gathers home. No Undo is offered.
-        console.warn("[vivarc] tab to a new window, not rewritten (split view and folder kept):", error);
-        return;
-      }
-      offerUndo(tab.id, fresh.id, origin);
+      await toNewWindow(payload.tab.id, place);
     } catch (error) {
       console.warn("[vivarc] tab to a new window:", error);
     } finally { endBusy?.(); }
+  };
+  // The tear-off itself, for a drag past the window's edge and for the tab menu's Move to New Window: the caller holds
+  // the busy mark. `place`: where the new window opens ({ left, top }), or {} for the browser's own choice.
+  const toNewWindow = async (tabId, place = {}) => {
+    const tab = await chrome.tabs.get(tabId); // the row's copy may be stale
+    const origin = { windowId: tab.windowId, index: tab.index, space: spacesOf.of(tab), active: tab.active };
+    let fresh = null;
+    try {
+      fresh = await chrome.windows.create({ tabId: tab.id, ...(place.left != null ? { left: place.left, top: place.top } : {}), focused: true });
+    } catch (error) {
+      console.warn("[vivarc] tab to a new window:", error);
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not open the tab in a new window." }));
+      return;
+    }
+    try {
+      let now = await chrome.tabs.get(tab.id);
+      for (let i = 0; i < 20 && now.windowId !== fresh.id; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+        now = await chrome.tabs.get(tab.id);
+      }
+      if (now.windowId !== fresh.id) throw new Error("the tab did not arrive in the new window");
+      await chrome.tabs.update(tab.id, { vivExtData: spacesOf.tornData(now) });
+      await window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] split view left behind by a tear-off:", error));
+      // Vivaldi 8.3 drops that write's workspaceId (08-space-native.js), but its windows.create({ tabId }) has already
+      // cleared the space, so this is a no-op there. Its own catch: a failure here still leaves the split broken and
+      // the Undo offered. On 8.2 a tab left in a space this window does not show is gathered home by repair 3.
+      await window.__vm.native.setSpace(tab.id, 0)
+        .catch((error) => console.warn("[vivarc] tab to a new window, not moved into the default space:", error));
+    } catch (error) {
+      // The tab did not arrive, or its rewrite failed: it is wherever Vivaldi put it, with its split view and folder.
+      // Vivaldi 8.3 already cleared its space when it made the window; on 8.2 it keeps its old space, which repair 3
+      // gathers home. No Undo is offered.
+      console.warn("[vivarc] tab to a new window, not rewritten (split view and folder kept):", error);
+      return;
+    }
+    offerUndo(tab.id, fresh.id, origin);
   };
   // The toast goes to the new window, which has the user's eyes (it is focused); this window's if that one is not up.
   const offerUndo = async (tabId, newWindowId, origin) => {
@@ -480,14 +485,19 @@
   chrome.windows.getCurrent().then((win) => { myWindowId = win.id; }, () => {});
   const myWindow = () => myWindowId ?? state.allTabs[0]?.windowId ?? null;
   window.addEventListener("dragleave", (e) => { if (!drag && !e.relatedTarget) clearDrop(); });
-  const dropAcross = async (info, indexOf) => {
-    const here = myWindow();
+  const dropAcross = (info, indexOf) => intoWindow(info.tabId, myWindow(), indexOf);
+  // A tab of another window into window `here` (this one for a drop; the target for the tab menu's Move to Window), at
+  // `indexOf()`, into the space `here` shows, activated there. The same write as the cross-window drop, so its rules hold.
+  // `focusAfter`: bring `here` to the front afterwards (the menu's move; a drop is already under the pointer).
+  const intoWindow = async (tabId, here, indexOf, { focusAfter = false, failed = "Could not move the tab here." } = {}) => {
     const endBusy = window.__vm.spaceRepair?.gesture() ?? null; // before the first change; set at once, nothing awaited since
     try {
       if (here == null) return;
-      const tab = await chrome.tabs.get(info.tabId); // fresh: the payload's window may be stale
+      const tab = await chrome.tabs.get(tabId); // fresh: the payload's window may be stale
       if (tab.windowId === here) return; // it is already here
-      const shown = window.__vm.native?.record()?.activeIn(here) ?? state.active; // Vivaldi's record, read now
+      // Vivaldi's record, read now; without it, this window's own space, or the target's active tab's space (invariant 1)
+      const shown = window.__vm.native?.record()?.activeIn(here)
+        ?? (here === myWindow() ? state.active : spacesOf.activeId(await chrome.tabs.query({ windowId: here })));
       const index = await indexOf();
       // Into this window and its space in one go (08-space-native.js; it throws when the tab does not arrive), then the
       // rest of the "tab leaves its window" write.
@@ -496,9 +506,10 @@
       await chrome.tabs.update(tab.id, { vivExtData: spacesOf.tornData(now, shown) });
       await window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] split view left behind by a drop from another window:", error));
       await chrome.tabs.update(tab.id, { active: true });
+      if (focusAfter) await chrome.windows.update(here, { focused: true });
     } catch (error) {
       console.warn("[vivarc] tab from another window:", error);
-      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not move the tab here." }));
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: failed }));
     } finally {
       endBusy?.();
       refresh(false);
@@ -917,6 +928,46 @@
     }
   };
 
+  // ---- the tab menu's split view and window rows (ported from KASOGIT/vivarc#134 c580d8e and #136 9795bfd) ----
+  // Split view is the command bar's (20-command-bar.js): the tab and a new one become a fresh tile group.
+  // Move to New Window is the tear-off (the tab leaves its space for the new window's default one, with the Undo toast),
+  // and Move to Window the cross-window drop (the tab joins the space that window shows, activated there), so the space
+  // rules hold either way: upstream's bare chrome.tabs.move would leave the tab parked there (C1).
+  const otherWindows = async () => {
+    const here = myWindow();
+    try {
+      return (await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] })).filter((w) => w.type === "normal" && w.id !== here);
+    } catch (_) { return []; }
+  };
+  const cut = (text, max = 40) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
+  const windowTitle = (w) => {
+    const active = w.tabs?.find((t) => t.active);
+    return cut((active && (spacesOf.startTitle(active) || active.title || active.url)) || "Window");
+  };
+  const tearOffFromMenu = async (tab) => {
+    const endBusy = window.__vm.spaceRepair?.gesture() ?? null;
+    try { await toNewWindow(tab.id); } catch (error) {
+      console.warn("[vivarc] tab to a new window:", error);
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not open the tab in a new window." }));
+    } finally { endBusy?.(); refresh(false); }
+  };
+  const toWindow = (tab, w) => intoWindow(tab.id, w.id, async () => (await chrome.tabs.query({ windowId: w.id })).length,
+    { focusAfter: true, failed: "Could not move the tab to that window." });
+  // inWindow: how many tabs this window holds; its only tab cannot leave it (the window would close).
+  const windowItems = (tab, others, inWindow) => {
+    const split = window.__vm.splitView;
+    return [
+      ...(split ? [
+        ["Split View: Side by Side", () => Promise.resolve(split(tab, "row")).catch((error) => console.warn("[vivarc] split view:", error))],
+        ["Split View: Top and Bottom", () => Promise.resolve(split(tab, "column")).catch((error) => console.warn("[vivarc] split view:", error))],
+      ] : []),
+      ...(window.__vm.tilingOf(tab) ? [["Close Split View", () => window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] close split view:", error))]] : []),
+      ...(inWindow > 1 ? [["Move to New Window", () => tearOffFromMenu(tab)]] : []),
+      ...others.map((w) => [`Move to Window: ${windowTitle(w)}`, () => toWindow(tab, w)]),
+      [],
+    ];
+  };
+
   const tabRow = (tab, depth = 0) => {
     const row = el("div", "vm-row vm-tab");
     row.style.paddingLeft = `${8 + depth * 20}px`;
@@ -943,26 +994,36 @@
       const folder = state.tabs.filter((t) => stacksOf.stackOf(t) === stacksOf.stackOf(tab));
       return leaveFolder([tab], Math.max(...folder.map((t) => t.index)));
     }, "Could not take the tab out of its folder");
-    row.addEventListener("contextmenu", (e) => showMenu(e, [
-      ...(depth ? [["Remove from Folder", removeFromFolder], []] : []),
-      ...(state.space ? [
-        ["Pin Tab", async () => chrome.bookmarks.create({
-          parentId: (state.pinned || await ensureFolder("Pinned")).id, title: tab.title, url: tab.url })],
-        ["Add to Favorites", async () => chrome.bookmarks.create({
-          parentId: (await ensureFolder("Favorites")).id, title: tab.title, url: tab.url })],
+    // The menu lists the other windows, which takes a query: the browser's own menu is held back at once, and the menu
+    // opens where the click was once they are in.
+    row.addEventListener("contextmenu", async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const at = { clientX: e.clientX, clientY: e.clientY, preventDefault() {}, stopPropagation() {} };
+      const [others, inWindow] = await Promise.all([otherWindows(), chrome.tabs.query({ windowId: tab.windowId }).then((t) => t.length, () => 0)]);
+      showMenu(at, [
+        ...(depth ? [["Remove from Folder", removeFromFolder], []] : []),
+        ...(state.space ? [
+          ["Pin Tab", async () => chrome.bookmarks.create({
+            parentId: (state.pinned || await ensureFolder("Pinned")).id, title: tab.title, url: tab.url })],
+          ["Add to Favorites", async () => chrome.bookmarks.create({
+            parentId: (await ensureFolder("Favorites")).id, title: tab.title, url: tab.url })],
+          [],
+        ] : []),
+        ...moveTargets().flatMap((target, i, all) => [[`Move to ${target.name}`, () => moveTabToSpace(tab, target)], ...(i === all.length - 1 ? [[]] : [])]),
+        ["Reload Tab", () => chrome.tabs.reload(tab.id)],
+        ["Duplicate Tab", () => chrome.tabs.duplicate(tab.id)],
+        ["Copy Link", () => copy(tab.url)],
+        muteItem(tab),
         [],
-      ] : []),
-      ...moveTargets().flatMap((target, i, all) => [[`Move to ${target.name}`, () => moveTabToSpace(tab, target)], ...(i === all.length - 1 ? [[]] : [])]),
-      ["Duplicate Tab", () => chrome.tabs.duplicate(tab.id)],
-      ["Copy Link", () => copy(tab.url)],
-      muteItem(tab),
-      [],
-      ["Close Tab", () => chrome.tabs.remove(tab.id)],
-      ["Close Other Tabs", () => {
-        const ids = state.tabs.filter((t) => t.id !== tab.id && !t.pinned).map((t) => t.id);
-        if (ids.length) chrome.tabs.remove(ids);
-      }],
-    ]));
+        ...windowItems(tab, others, inWindow),
+        ["Close Tab", () => chrome.tabs.remove(tab.id)],
+        ["Close Other Tabs", () => {
+          const ids = state.tabs.filter((t) => t.id !== tab.id && !t.pinned).map((t) => t.id);
+          if (ids.length) chrome.tabs.remove(ids);
+        }],
+      ]);
+    });
     return row;
   };
 
