@@ -77,5 +77,25 @@ class Keys(unittest.TestCase):
         self.assertFalse(run_js("17-back-closes.js", "window.__vm.back.caretKey('[+meta', false)"))
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the Back behaviour's JavaScript")
+class ButtonClick(unittest.TestCase):
+    def click(self, **c):
+        return run_js("17-back-closes.js", "window.__vm.back.backClick(c)", c=c)
+
+    def test_a_real_click_on_the_greyed_out_back_slot_counts(self):
+        self.assertTrue(self.click(on=True, trusted=True, onSlot=True, disabled=True))
+
+    def test_a_click_on_something_over_the_button_does_not(self):
+        # a menu, the command bar's backdrop or the Ctrl+Tab row that sits over Back's coordinates
+        self.assertFalse(self.click(on=True, trusted=True, onSlot=False, disabled=True))
+
+    def test_a_script_made_click_does_not(self):
+        self.assertFalse(self.click(on=True, trusted=False, onSlot=True, disabled=True))
+
+    def test_a_back_with_history_or_the_option_off_does_not(self):
+        self.assertFalse(self.click(on=True, trusted=True, onSlot=True, disabled=False))
+        self.assertFalse(self.click(on=False, trusted=True, onSlot=True, disabled=True))
+
+
 if __name__ == "__main__":
     unittest.main()

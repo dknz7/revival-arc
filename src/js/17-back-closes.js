@@ -29,7 +29,12 @@
   // cursor is not in one.
   const caretKey = (key, windows) => !windows && /(^|\+)(left|right)(\+|$)/.test(key) && key.includes("meta");
 
-  window.__vm.back = { shouldClose, backKeys, caretKey, of };
+  // A click counts as a press of the greyed-out Back only when it is real (isTrusted) and landed on the Back button's own
+  // toolbar slot: with the button let through (pointer-events: none), the click lands on the slot behind it. A click on
+  // anything over it (a menu, the command bar's backdrop, the Ctrl+Tab row, a dialog) is that thing's.
+  // trusted: e.isTrusted; onSlot: the click's target is inside the Back button's slot; disabled: the button is greyed out.
+  const backClick = ({ on, trusted, onSlot, disabled }) => !!on && !!trusted && !!onSlot && !!disabled;
+  window.__vm.back = { shouldClose, backKeys, caretKey, backClick, of };
   if (!window.__vm.store || !globalThis.chrome?.tabs) return;
 
   const { settings } = window.__vm;
@@ -54,7 +59,8 @@
     const view = webviewOf(id);
     try { return typeof view?.canGoBack === "function" ? !!view.canGoBack() : null; } catch (_) { return null; }
   };
-  const kept = (tab) => window.__vm.pins?.pinOf?.(tab) !== undefined || !!window.__vm.tilingOf?.(tab);
+  // Kept: a pin's or favorite's tab, a split view's, and Peek's preview (window.__vm.peek where the module is loaded).
+  const kept = (tab) => window.__vm.pins?.pinOf?.(tab) !== undefined || !!window.__vm.tilingOf?.(tab) || !!window.__vm.peek?.isPeekTab?.(tab);
   const closing = new Set();
   const last = { at: 0, how: null, closed: null, why: null };
   window.__vm.back.last = last;
@@ -100,13 +106,16 @@
 
   // The page's own answer to "is the cursor in a text field" (a key that is Back for Vivaldi also moves the caret there).
   // null when the page cannot be asked (an internal page).
-  const EDITING = `(() => { const a = document.activeElement;
+  // Into open shadow roots; an iframe that has the cursor answers "iframe" (its own field cannot be read from here).
+  const EDITING = `(() => { let a = document.activeElement;
+    while (a && a.shadowRoot && a.shadowRoot.activeElement) a = a.shadowRoot.activeElement;
+    if (a && /^(IFRAME|FRAME)$/.test(a.tagName)) return "iframe";
     return !!a && (a.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)); })()`;
   const pageEditing = (tab) => new Promise((resolve) => {
     const view = webviewOf(tab.id);
     if (!view?.executeScript) return resolve(null);
     try {
-      view.executeScript({ code: EDITING }, (result) => resolve(chrome.runtime.lastError ? null : result?.[0] === true));
+      view.executeScript({ code: EDITING }, (result) => resolve(chrome.runtime.lastError ? null : result?.[0] === "iframe" ? "iframe" : result?.[0] === true));
     } catch (_) { resolve(null); }
   });
   const uiEditing = () => {
@@ -137,6 +146,8 @@
       const caret = caretKey(key, window.__vm.windows);
       onBack("key", async (tab) => {
         const editing = await pageEditing(tab);
+        // an iframe with the cursor may hold a text field: a caret key (Cmd+Left on a Mac) is left to it
+        if (editing === "iframe") return !caret;
         return editing === false || (editing === null && !caret);
       }, history);
     };
@@ -153,7 +164,10 @@
       const r = el.getBoundingClientRect();
       return r.width && e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
     });
-    if (!hit || !disabledBack(hit)) return;
+    if (!hit) return;
+    const slot = hit.closest(".button-toolbar") || hit.parentElement;
+    const onSlot = !!slot && e.target instanceof Node && (slot === e.target || slot.contains(e.target));
+    if (!backClick({ on: true, trusted: e.isTrusted, onSlot, disabled: disabledBack(hit) })) return;
     onBack("button");
   }, true);
 
@@ -176,6 +190,8 @@
   try {
     chrome.webNavigation.onCommitted.addListener(({ tabId, frameId }) => { if (frameId === 0) listen(tabId); });
   } catch (_) {}
+  // A tab opened in the background may have no webview here until it is shown: it gets the listener then.
+  chrome.tabs.onActivated.addListener(({ tabId }) => setTimeout(() => listen(tabId), 50));
   // Switched on while tabs a link opened are already open: they get the listener now.
   settings?.onChange?.(() => { if (on()) for (const id of openers.keys()) listen(id); });
   chrome.runtime.onMessage.addListener((message, sender) => {
