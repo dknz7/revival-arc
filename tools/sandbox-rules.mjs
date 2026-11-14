@@ -3987,7 +3987,8 @@ for (const layout of ["dia", "arc"]) {
       await h.ev(`(window.dispatchEvent(new CustomEvent("vm-open-command-bar")), 1)`, ctx.W);
       if (!(await waitFor(() => hasEl(ctx.W, "#vm-cmd"), 3000))) return { error: "Ctrl+T opened no bar" };
       await sleep(800);
-      const p = await h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((x) => x.textContent.includes("C2")); if (!r) return null; const q = r.getBoundingClientRect(); return { x: q.left + 60, y: q.top + q.height / 2 }; })()`, ctx.W);
+      // The row once the tab has its title (late in a sweep background tabs take a while to get theirs).
+      const p = await waitFor(() => h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((x) => x.textContent.includes("C2")); if (!r) return null; const q = r.getBoundingClientRect(); return { x: q.left + 60, y: q.top + q.height / 2 }; })()`, ctx.W), 8000);
       if (!p) return { error: "no C2 row" };
       try { await mouse(ctx.W, "mouseMoved", p.x, p.y); await mouse(ctx.W, "mousePressed", p.x, p.y); } finally { await mouse(ctx.W, "mouseReleased", p.x, p.y); }
       await sleep(1200);
