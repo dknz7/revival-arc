@@ -6,6 +6,8 @@
 // keeps a space's tabs in one window). Port 9333 only (sandbox-lib.mjs refuses any other).
 //
 //   pwsh -NoProfile -File tools/sandbox.ps1            # a sandbox running this checkout's Vivarc
+//   (the Ctrl+Tab cases, X.switcher-*, need it started twice: Vivarc frees Ctrl+Tab on the first start and Vivaldi reads
+//   its keys at launch, so run sandbox.ps1 -Stop and sandbox.ps1 again before a sweep)
 //   node tools/sandbox-rules.mjs                       # Dia: every rule; Arc: the tile rows and the Dia button's absence
 //   node tools/sandbox-rules.mjs --layout dia --only T.,R.D8 --log <dir> --extra
 //     --layout dia|arc|both (default both)   --only a comma list of ID prefixes   --log a folder for one JSON per case
@@ -66,6 +68,9 @@ const startServer = async () => {
     // /de-<label>, /en-<label>: a page whose language Chromium can determine (Task 8v: Translate shows on the German one only).
     if (req.url.startsWith("/de-")) { res.end(`<html lang="de"><title>DE-${req.url.slice(4)}</title><body>${"<p>Berlin ist die Hauptstadt und ein Land der Bundesrepublik Deutschland. Die Stadt ist mit rund 3,7 Millionen Einwohnern die bevölkerungsreichste und mit 891 Quadratkilometern die flächengrößte Gemeinde Deutschlands. Neben den Flüssen Spree, Havel und Dahme befinden sich im Stadtgebiet kleinere Fließgewässer sowie zahlreiche Seen und Wälder.</p>".repeat(6)}</body></html>`); return; }
     if (req.url.startsWith("/en-")) { res.end(`<html lang="en"><title>EN-${req.url.slice(4)}</title><body>${"<p>Berlin is the capital and largest city of Germany, by both area and population. With almost four million inhabitants it is the most populous city of the European Union. The city is also one of the states of Germany, and lies on the banks of the Spree river.</p>".repeat(6)}</body></html>`); return; }
+    // /bk-opener-<run>: a link that opens /bk-child-<run> in a new tab (Task 9d, Back closes opened tabs).
+    if (req.url.startsWith("/bk-opener-")) { res.end(`<title>BK-OPENER</title><a id="open" target="_blank" href="${req.url.replace("/bk-opener-", "/bk-child-")}">open</a>`); return; }
+    if (req.url.startsWith("/bk-child-")) { res.end(`<title>BK-CHILD</title><body style="margin:0;height:100vh">child ${req.url}</body>`); return; }
     if (req.url.startsWith("/long-")) { res.end(`<title>LONG-${req.url.slice(6)}</title><body style="margin:0">${"<p>line</p>".repeat(600)}</body>`); return; }
     res.end(`<title>page${req.url}</title>page ${req.url}`);
   });
@@ -82,6 +87,7 @@ async function start() {
 // One window (H) on its default space with one default tab, no spaces, no test bookmarks.
 async function reset() {
   if (ctx.stopRec) { await ctx.stopRec().catch(() => {}); ctx.stopRec = null; } // a record watch a failed case left running
+  for (const undo of (ctx.cleanups || []).splice(0)) await undo().catch(() => {});
   await busy();
   await h.refresh();
   const H = ctx.H;
@@ -192,10 +198,12 @@ const dotted = (win) => h.ev(`[...document.querySelectorAll(".vm-space-pill.else
 
 // A tab row's right-click menu: the labels it lists; then the item `label` is clicked and a toast, if any, is read.
 async function tabMenu(win, row, label) {
-  const menu = await waitFor(() => h.ev(`(() => { const r = [...document.querySelectorAll(".vm-tab")].find((r) => r.textContent.includes(${J(row)}));
+  const menu = await waitFor(() => h.ev(`(async () => { const r = [...document.querySelectorAll(".vm-tab")].find((r) => r.textContent.includes(${J(row)}));
     if (!r) return null; const b = r.getBoundingClientRect();
     r.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 8 }));
-    return [...document.querySelectorAll(".vm-menu > div")].map((d) => d.textContent); })()`, win), 8000);
+    // the menu opens once the other windows are read (Task 9d)
+    for (let i = 0; i < 30 && !document.querySelector(".vm-menu"); i++) await new Promise((res) => setTimeout(res, 50));
+    const items = [...document.querySelectorAll(".vm-menu > div")].map((d) => d.textContent); return items.length ? items : null; })()`, win), 8000);
   if (!menu) return { error: `no sidebar row ${row}` };
   await sleep(200);
   const clicked = await h.ev(`(() => { const i = [...document.querySelectorAll(".vm-menu-item")].find((d) => d.textContent === ${J(label)}); if (!i) return false; i.click(); return true; })()`, win);
@@ -2096,15 +2104,20 @@ ntCase("N.flyout-flips", {
 // plain items, dividers and no rich/flyout markup, and the delete confirmation keeps its danger row.
 ntCase("N.flat-menus-unchanged", {
   act: async () => {
-    const tabHtml = await h.ev(`(() => { const r = [...document.querySelectorAll(".vm-tab")].find((r) => r.textContent.includes("X2")); const b = r.getBoundingClientRect();
-      r.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 8 })); const m = document.querySelector(".vm-menu"); return m ? m.outerHTML.replace(/ style="[^"]*"/, "") : null; })()`, ctx.W);
+    const tabHtml = await h.ev(`(async () => { const r = [...document.querySelectorAll(".vm-tab")].find((r) => r.textContent.includes("X2")); const b = r.getBoundingClientRect();
+      r.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 8 }));
+      for (let i = 0; i < 30 && !document.querySelector(".vm-menu"); i++) await new Promise((res) => setTimeout(res, 50));
+      const m = document.querySelector(".vm-menu"); return m ? m.outerHTML.replace(/ style="[^"]*"/, "") : null; })()`, ctx.W);
     await escapeAll(ctx.W); await sleep(200);
     const del = await deleteLabel(ctx.W, "Y");
-    return { tabHtml, del };
+    const hTab = (await h.snap(ctx.H)).wins.find((w) => w.id === ctx.H)?.tabs.find((t) => t.active);
+    return { tabHtml, del, hTitle: hTab?.title || "H-d0" };
   },
   expect: (s, b, r) => {
     const g = (parts) => `<div class="vm-menu">${parts.map((p) => (p === "-" ? '<div class="vm-menu-sep"></div>' : `<div class="vm-menu-item">${p}</div>`)).join("")}</div>`;
-    const want = g(["Pin Tab", "Add to Favorites", "-", "Move to Vivarc", "Move to Y", "Move to Z", "-", "Duplicate Tab", "Copy Link", "Mute Tab", "-", "Close Tab", "Close Other Tabs"]);
+    // Task 9d added Reload Tab, the split view rows and the window rows (H is the sandbox's own window, named by its tab)
+    const want = g(["Pin Tab", "Add to Favorites", "-", "Move to Vivarc", "Move to Y", "Move to Z", "-", "Reload Tab", "Duplicate Tab", "Copy Link", "Mute Tab", "-",
+      "Split View: Side by Side", "Split View: Top and Bottom", "Move to New Window", `Move to Window: ${r.hTitle}`, "-", "Close Tab", "Close Other Tabs"]);
     return [r.tabHtml === want ? null : `the tab menu changed:\n        ${r.tabHtml}\n        want ${want}`, r.del?.label === "Delete “Y” and close its 1 tab" ? null : `the delete confirmation changed: ${J(r.del)}`, unchanged(b, s)];
   },
 });
@@ -4070,6 +4083,503 @@ def("PEEK.user-close-same-address", {
   expect: (s, b, r) => { const n = (r.closed || []).filter((x) => x.includes(new URL(ctx.peekUrl).pathname.slice(1))).length;
     return [r.error ?? null, n === 1 ? null : `${n} entries of the address in Recently Closed, want 1 (the user's): ${J(r.closed)}`]; },
 });
+
+// ---------- Task 9d: the extras (Ctrl+Tab, the tab menu, picking tabs, the favorites gap, Back closes, the space
+// transition, the wallpaper) ----------
+// Keys as the keyboard sends them, to the window's UI, where Vivaldi's onKeyboardShortcut hears them (as ctrlS above).
+const KEY = { Control: { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 },
+  Shift: { key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, nativeVirtualKeyCode: 16 },
+  Alt: { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 18 },
+  Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", windowsVirtualKeyCode: 37, nativeVirtualKeyCode: 37 },
+  Escape: { key: "Escape", code: "Escape", windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 } };
+const keyDown = (win, k, modifiers) => h.cdp(win).send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...KEY[k], modifiers });
+const keyUp = (win, k, modifiers) => h.cdp(win).send("Input.dispatchKeyEvent", { type: "keyUp", ...KEY[k], modifiers });
+const switcherState = (win) => h.ev(`window.__vm.switcher?.state?.() ?? null`, win);
+// The switcher needs Vivaldi to have let go of Ctrl+Tab, which it does from the start after Vivarc frees it (05-bootstrap.js):
+// a sweep runs on a sandbox started twice (tools/sandbox.ps1, -Stop, then again), and a case on one started once says so.
+const armed = async (win) => { const st = await switcherState(win); return st?.armed ? null : `the switcher is not armed (${st?.reason ?? "no switcher"}): start the sandbox a second time`; };
+// W shows X (X1..X3, X1 last used), Y1 parked in W was used more recently than X2/X3, and O shows Z with Z1 used last of all:
+// a window-wide or browser-wide list would put Y1 or Z1 in the row.
+const SET_SW = async () => {
+  await mkWin("W", { width: 1100 }); await mkWin("O", { width: 900 });
+  await tab(ctx.W, "X3", sp("X")); await tab(ctx.W, "X2", sp("X")); await tab(ctx.W, "X1", sp("X")); await tab(ctx.W, "Y1", sp("Y"));
+  await tab(ctx.O, "Z1", sp("Z"));
+  await show(ctx.W, sp("X"));
+  for (const t of ["X3", "X2"]) { await activate(ctx.tabs[t]); await sleep(250); }
+  await show(ctx.W, sp("Y")); await activate(ctx.tabs.Y1); await sleep(250);
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await sleep(250);
+  await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1); await sleep(250);
+  await focus(ctx.W);
+};
+const swCase = (id, c) => def(id, { gesture: true, setup: SET_SW, ready: () => waitTile(ctx.W, "X"), ...c });
+// Hold Ctrl, press Tab `presses` times, read the row, then release Ctrl (or press `finish` first).
+const ctrlTab = async (win, presses, { finish = null, shotName = null } = {}) => {
+  await focus(win);
+  const r = { notArmed: await armed(win) };
+  await keyDown(win, "Control", 2);
+  try {
+    for (let i = 0; i < presses; i++) { await keyDown(win, "Tab", 2); await keyUp(win, "Tab", 2); await sleep(i ? 120 : 400); }
+    await sleep(300);
+    r.row = await switcherState(win);
+    r.cards = await h.ev(`[...document.querySelectorAll("#vm-switch .vm-sw-card")].map((c) => c.textContent.trim())`, win);
+    if (shotName) await shot(win, shotName);
+    if (finish) { await keyDown(win, finish, 2); await keyUp(win, finish, 2); await sleep(200); }
+  } finally { await keyUp(win, "Control", 0); }
+  await sleep(800);
+  r.after = await switcherState(win);
+  return r;
+};
+swCase("X.switcher-this-window-and-space", {
+  act: () => ctrlTab(ctx.W, 2, { shotName: "9d-switcher" }),
+  expect: (s, b, r) => [r.notArmed, J(r.row?.items) === J(["X1", "X2", "X3"].map((t) => ctx.tabs[t])) ? null : `the row lists ${J(r.cards)}, want X1, X2, X3 (this window, this space, most recent first)`,
+    r.row?.selected === 2 ? null : `two presses selected ${r.row?.selected}, want 2`, r.row?.shown ? null : "the row never showed while the keys were held",
+    r.after?.open ? "the row stayed open after Ctrl was released" : null,
+    tabIs(s, "X3", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X")), tabIs(s, "Y1", { win: ctx.W, space: sp("Y"), active: false }),
+    tabIs(s, "Z1", { win: ctx.O, space: sp("Z"), active: true }), recIs(s, ctx.O, sp("Z"))],
+});
+swCase("X.switcher-shift-tab-and-escape", {
+  act: async () => {
+    await focus(ctx.W);
+    const r = { notArmed: await armed(ctx.W) };
+    await keyDown(ctx.W, "Control", 2);
+    try {
+      // CDP modifiers: Alt 1, Ctrl 2, Meta 4, Shift 8
+      await keyDown(ctx.W, "Shift", 10); await keyDown(ctx.W, "Tab", 10); await keyUp(ctx.W, "Tab", 10); await keyUp(ctx.W, "Shift", 2);
+      await sleep(500);
+      r.row = await switcherState(ctx.W);
+      await keyDown(ctx.W, "Escape", 2); await keyUp(ctx.W, "Escape", 2); await sleep(200);
+    } finally { await keyUp(ctx.W, "Control", 0); }
+    await sleep(800);
+    r.after = await switcherState(ctx.W);
+    return r;
+  },
+  // Shift+Tab starts at the least recent tab of the row (X3); Escape closes the row and switches nothing.
+  expect: (s, b, r) => [r.notArmed, r.row?.open && r.row.selected === 2 ? null : `Shift+Tab: ${J(r.row)}, want the row open on its last card`,
+    r.after?.open ? "Escape left the row open" : null, unchanged(b, s)],
+});
+// A quick Ctrl+Tab (released at once) goes straight to the previous tab, here X2.
+swCase("X.switcher-quick-press", {
+  act: async () => {
+    await focus(ctx.W);
+    const r = { notArmed: await armed(ctx.W) };
+    await keyDown(ctx.W, "Control", 2);
+    await h.ev(`(window.__9dShown = false, new MutationObserver(() => { if (document.querySelector("#vm-switch.in")) window.__9dShown = true; }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] }), 1)`, ctx.W);
+    // a quick press: Ctrl goes up straight after Tab, before the row could be made (Task 9d fix round)
+    try { await keyDown(ctx.W, "Tab", 2); await keyUp(ctx.W, "Tab", 2); } finally { await keyUp(ctx.W, "Control", 0); }
+    await sleep(900);
+    r.after = await switcherState(ctx.W);
+    r.shown = await h.ev(`window.__9dShown`, ctx.W);
+    return r;
+  },
+  expect: (s, b, r) => [r.notArmed, r.after?.open ? `the row stayed open (${J(r.after)})` : null, r.shown ? "the row showed for a quick press" : null,
+    tabIs(s, "X2", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X"))],
+});
+
+// The tab menu's new rows (upstream #134, #136): each run from a real right-click on a row.
+const SET_TM = async () => {
+  await mkWin("W", { width: 1000 }); await mkWin("O", { width: 900 });
+  await tab(ctx.W, "X1", sp("X")); await tab(ctx.W, "X2", sp("X")); await tab(ctx.O, "Z1", sp("Z"));
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1); await focus(ctx.W);
+};
+const tmCase = (id, c) => def(id, { setup: SET_TM, ready: async () => (await waitTile(ctx.W, "X")) && (await waitFor(() => h.ev(`!!${TROW("X2")}`, ctx.W), 8000)), ...c });
+tmCase("X.menu-reload", {
+  act: async () => {
+    // the menu, open, for a screenshot
+    await h.ev(`(async () => { const r = ${TROW("X2")}; const b = r.getBoundingClientRect(); r.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 8 }));
+      for (let i = 0; i < 30 && !document.querySelector(".vm-menu"); i++) await new Promise((res) => setTimeout(res, 50)); return 1; })()`, ctx.W);
+    await sleep(200); await shot(ctx.W, "9d-tab-menu"); await escapeAll(ctx.W); await sleep(200);
+    await h.ev(`(window.__9dLoads = [], chrome.tabs.onUpdated.addListener((id, c) => { if (c.status === "loading") window.__9dLoads.push(id); }), 1)`, ctx.W);
+    const r = await tabMenu(ctx.W, "X2", "Reload Tab");
+    r.loads = await waitFor(() => h.ev(`window.__9dLoads.includes(${ctx.tabs.X2}) ? window.__9dLoads : null`, ctx.W), 4000);
+    return r;
+  },
+  expect: (s, b, r) => [r.error ?? null, r.loads ? null : "X2 did not reload", unchanged(b, s)],
+});
+tmCase("X.menu-split-view", {
+  act: async () => {
+    const r = await tabMenu(ctx.W, "X2", "Split View: Side by Side");
+    if (r.error) return r;
+    await sleep(1500);
+    r.tiles = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((ts) => ts.map((t) => ({ id: t.id, active: t.active, tiling: JSON.parse(t.vivExtData || "{}").tiling || null })).filter((t) => t.tiling))`, ctx.H);
+    await escapeAll(ctx.W); await h.ev(`(window.dispatchEvent(new CustomEvent("vm-close-command-bar")), document.querySelector("#vm-cmd")?.remove(), 1)`, ctx.W).catch(() => {});
+    await sleep(300);
+    r.closeRow = await tabMenu(ctx.W, "X2", "Close Split View");
+    await sleep(800);
+    r.after = await h.ev(`chrome.tabs.get(${ctx.tabs.X2}).then((t) => JSON.parse(t.vivExtData || "{}").tiling || null)`, ctx.H);
+    return r;
+  },
+  expect: (s, b, r) => {
+    const x2 = r.tiles?.find((t) => t.id === ctx.tabs.X2), other = r.tiles?.find((t) => t.id !== ctx.tabs.X2);
+    return [r.error ?? null, x2 && other && x2.tiling.id === other.tiling.id && x2.tiling.layout === "row" ? null : `no side-by-side split of X2 and a new tab: ${J(r.tiles)}`,
+      other?.active ? null : "the split's new tab is not on screen", r.closeRow?.error ?? null, r.after ? `Close Split View left X2 tiled: ${J(r.after)}` : null,
+      recIs(s, ctx.W, sp("X")), tabIs(s, "X2", { win: ctx.W, space: sp("X") })];
+  },
+});
+tmCase("X.menu-move-to-new-window", {
+  gesture: true,
+  act: async () => { const r = await tabMenu(ctx.W, "X2", "Move to New Window"); if (!r.error) { const n = await tornWindow(); r.toast = n ? await toastIn(n) : null; } return r; },
+  expect: (s, b, r) => { const n = strangers(s)[0] ?? null; return [r.error ?? null, n == null ? "no new window" : null, n != null ? tabIs(s, "X2", { win: n, space: 0 }) : null,
+    n != null ? recIs(s, n, 0) : null, recIs(s, ctx.W, sp("X")), tabIs(s, "X1", { win: ctx.W, space: sp("X"), active: true }),
+    /Opened in a new window/.test(r.toast || "") ? null : `toast in the new window ${J(r.toast)}, want "Opened in a new window" + Undo`]; },
+});
+tmCase("X.menu-move-to-window", {
+  gesture: true,
+  act: () => tabMenu(ctx.W, "X2", "Move to Window: Z1"),
+  // The cross-window drop's rule: X2 joins the space O shows (Z), is on screen there, and O comes to the front; W keeps X.
+  expect: (s, b, r) => [r.error ?? null, tabIs(s, "X2", { win: ctx.O, space: sp("Z"), active: true }), recIs(s, ctx.O, sp("Z")), recIs(s, ctx.W, sp("X")),
+    tabIs(s, "X1", { win: ctx.W, space: sp("X"), active: true }), focusIs(s, ctx.O), (r.menu || []).filter((m) => m === "Move to Z").length === 1 ? null : `Move to Z listed ${(r.menu || []).filter((m) => m === "Move to Z").length} times`],
+});
+
+// Picking several tabs (upstream #147): Ctrl+click and Shift+click on rows, then the picked row's menu.
+const SET_PICK = async () => {
+  await mkWin("W", { width: 1000 });
+  for (const t of ["X1", "X2", "X3", "X4"]) await tab(ctx.W, t, sp("X"));
+  await tab(ctx.W, "Y1", sp("Y"));
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.X4); await focus(ctx.W);
+};
+const pickCase = (id, c) => def(id, { gesture: c.gesture ?? false, setup: SET_PICK, ready: async () => (await waitTile(ctx.W, "X")) && (await waitFor(() => h.ev(`!!${TROW("X1")}`, ctx.W), 8000)), ...c });
+const clickRow = (win, label, mods = {}) => h.ev(`(() => { const r = ${tabRowOf(label)}; if (!r) return "no row " + ${J(label)};
+  r.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: ${!!mods.ctrl}, metaKey: ${!!mods.meta}, shiftKey: ${!!mods.shift} })); return "clicked"; })()`, win);
+const picked = (win) => h.ev(`[...document.querySelectorAll("#vm-panel .vm-tab.vm-selected")].map((r) => r.querySelector(".vm-title")?.textContent)`, win);
+const PICK = () => ({ ctrl: true }); // Ctrl+click (the sandbox is Windows)
+pickCase("X.pick-stack", {
+  act: async () => {
+    const r = { c1: await clickRow(ctx.W, "X2", PICK()), c2: await clickRow(ctx.W, "X1", PICK()) };
+    await sleep(300);
+    r.picked = await picked(ctx.W);
+    await shot(ctx.W, "9d-picked");
+    const m = await tabMenu(ctx.W, "X1", "Stack 3 Tabs");
+    Object.assign(r, { menu: m.menu, error: m.error });
+    await sleep(1500);
+    await escapeAll(ctx.W);
+    r.groups = await h.ev(`Promise.all(${J(["X1", "X2", "X4", "X3"].map((t) => ctx.tabs[t]))}.map((id) => chrome.tabs.get(id).then((t) => JSON.parse(t.vivExtData || "{}").group || "")))`, ctx.H);
+    r.after = await picked(ctx.W);
+    return r;
+  },
+  // X4 is on screen, so it is picked first; X1, X2, X4 make one folder in X, X3 stays loose.
+  expect: (s, b, r) => [r.error ?? null, J([...(r.picked || [])].sort()) === J(["X1", "X2", "X4"]) ? null : `picked ${J(r.picked)}, want X1, X2 and X4 (the tab on screen)`,
+    r.groups?.[0] && r.groups[0] === r.groups[1] && r.groups[1] === r.groups[2] ? null : `not one folder: ${J(r.groups)}`, r.groups?.[3] ? "X3 went into the folder" : null,
+    r.after?.length ? `still picked after the menu: ${J(r.after)}` : null,
+    ...["X1", "X2", "X3", "X4"].map((t) => tabIs(s, t, { win: ctx.W, space: sp("X") })), recIs(s, ctx.W, sp("X"))],
+});
+pickCase("X.pick-range-close", {
+  act: async () => {
+    const r = { c1: await clickRow(ctx.W, "X2", { shift: true }) };
+    await sleep(300);
+    r.picked = await picked(ctx.W);
+    Object.assign(r, await tabMenu(ctx.W, "X3", "Close 3 Tabs"));
+    return r;
+  },
+  // Shift+click with nothing picked runs from the tab on screen (X4) to X2: X4, X3, X2 close, X1 stays and X keeps the window.
+  expect: (s, b, r) => [r.error ?? null, J([...(r.picked || [])].sort()) === J(["X2", "X3", "X4"]) ? null : `picked ${J(r.picked)}, want X2..X4`,
+    ...["X2", "X3", "X4"].map((t) => (find(s, ctx.tabs[t]) ? `${t} still open` : null)), tabIs(s, "X1", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X"))],
+});
+pickCase("X.pick-move", {
+  gesture: true,
+  act: async () => {
+    const r = { c1: await clickRow(ctx.W, "X1", PICK()), c2: await clickRow(ctx.W, "X2", PICK()) };
+    await sleep(300);
+    Object.assign(r, await tabMenu(ctx.W, "X2", "Move 3 Tabs to Y"));
+    return r;
+  },
+  // X4 (on screen) is picked first: X1, X2, X4 move to Y with Vivaldi's move; W stays on X, showing X3.
+  expect: (s, b, r) => [r.error ?? null, ...["X1", "X2", "X4"].map((t) => tabIs(s, t, { win: ctx.W, space: sp("Y") })), tabIs(s, "X3", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X"))],
+});
+pickCase("X.pick-escape-and-plain-click-let-go", {
+  act: async () => {
+    const r = {};
+    await clickRow(ctx.W, "X1", PICK()); await sleep(200);
+    r.before = await picked(ctx.W);
+    await h.ev(`(document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), 1)`, ctx.W); await sleep(200);
+    r.afterEscape = await picked(ctx.W);
+    await clickRow(ctx.W, "X1", PICK()); await sleep(200);
+    r.again = await picked(ctx.W);
+    r.plain = await clickRow(ctx.W, "X2"); await sleep(600);
+    r.afterPlain = await picked(ctx.W);
+    return r;
+  },
+  expect: (s, b, r) => [r.before?.length === 2 ? null : `Ctrl+click picked ${J(r.before)}`, r.afterEscape?.length ? `Escape left ${J(r.afterEscape)} picked` : null,
+    r.again?.length === 2 ? null : `picking again gave ${J(r.again)}`, r.afterPlain?.length ? `a plain click left ${J(r.afterPlain)} picked` : null,
+    tabIs(s, "X2", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X"))],
+});
+
+// A favorite dropped in the gap just right of the second tile lands after it (upstream #138); before, it went to the end.
+// The drag is a real HTML5 one (as dragAcross), dropped on a point of the grid between two tiles.
+async function dragToPoint(win, finder, pointExpr) {
+  const c = h.cdp(win);
+  const from = await waitFor(() => h.ev(`(() => { const r = ${finder}; if (!r) return null; const b = r.getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()`, win), 8000);
+  if (!from) return "no tile to drag";
+  let data = null;
+  const onMsg = (m) => { const d = JSON.parse(m.data); if (d.method === "Input.dragIntercepted") data = d.params.data; };
+  c.ws.addEventListener("message", onMsg);
+  await c.send("Input.setInterceptDrags", { enabled: true });
+  try {
+    await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: from.x, y: from.y, button: "left", buttons: 1, clickCount: 1 });
+    for (let i = 1; i <= 8; i++) { await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: from.x + i * 3, y: from.y + i * 2, button: "left", buttons: 1 }); await sleep(60); }
+    await sleep(500);
+    if (!data) return "the drag never started";
+    const at = await h.ev(pointExpr, win);
+    if (!at) return "no gap to drop in";
+    ctx.dropAt = at;
+    for (const type of ["dragEnter", "dragOver", "dragOver"]) { await c.send("Input.dispatchDragEvent", { type, x: at.x, y: at.y, data }); await sleep(120); }
+    ctx.dropMarks = await h.ev(`[...document.querySelectorAll("#vm-panel .drop-before, #vm-panel .drop-after")].map((n) => (n.title || n.className.split(" ")[0]) + ":" + (n.classList.contains("drop-after") ? "after" : "before"))`, win);
+    await c.send("Input.dispatchDragEvent", { type: "drop", x: at.x, y: at.y, data });
+    await sleep(1200);
+  } finally {
+    await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: from.x, y: from.y, button: "left", buttons: 0, clickCount: 1 }).catch(() => {});
+    c.ws.removeEventListener("message", onMsg); await c.send("Input.setInterceptDrags", { enabled: false }).catch(() => {});
+  }
+  return "dropped";
+}
+const FAV_ORDER = () => h.ev(`[...document.querySelectorAll("#vm-panel .vm-favs > .vm-fav")].map((t) => t.title)`, ctx.W);
+def("X.fav-gap-drop", {
+  setup: async () => {
+    await mkWin("W", { width: 1000 });
+    const favs = await favoritesFolder();
+    // only three tiles in the grid, so the gaps are known: the profile's own favorites (the starter ones) wait in a folder
+    // beside Favorites and go back, in their order, at the next reset, whatever this case did
+    // the folder first and its clean-up registered at once, then the moves: a move that fails half way still gets undone
+    const hold = await h.ev(`chrome.bookmarks.get(${J(favs)}).then(([f]) => chrome.bookmarks.create({ parentId: f.parentId, title: "9d-held-favorites" })).then((box) => box.id)`, ctx.H);
+    (ctx.cleanups ||= []).push(() => h.ev(`(async () => { const kids = await chrome.bookmarks.getChildren(${J(hold)}).catch(() => []);
+      for (const [i, c] of kids.entries()) await chrome.bookmarks.move(c.id, { parentId: ${J(favs)}, index: i }); await chrome.bookmarks.remove(${J(hold)}).catch(() => {}); return kids.length; })()`, ctx.H));
+    await h.ev(`chrome.bookmarks.getChildren(${J(favs)}).then(async (cs) => { for (const c of cs.filter((c) => c.url)) await chrome.bookmarks.move(c.id, { parentId: ${J(hold)} }); return 1; })`, ctx.H);
+    for (const n of ["GAP1", "GAP2", "GAP3"]) await bookmark(favs, n, `${origin}/${n.toLowerCase()}`);
+    await focus(ctx.W);
+  },
+  ready: () => waitFor(async () => J(await FAV_ORDER()) === J(["GAP1", "GAP2", "GAP3"]), 8000),
+  act: async () => {
+    const r = await dragToPoint(ctx.W, `[...document.querySelectorAll("#vm-panel .vm-fav")].find((t) => t.title === "GAP1")`,
+      `(() => { const t = [...document.querySelectorAll("#vm-panel .vm-favs > .vm-fav")]; const a = t[1].getBoundingClientRect(), b = t[2].getBoundingClientRect();
+        const x = Math.round(a.right + Math.max(1, (b.left - a.right) / 3)), y = Math.round(a.top + a.height / 2);
+        const hit = document.elementFromPoint(x, y); return hit && hit.classList.contains("vm-favs") ? { x, y } : null; })()`);
+    ctx.favOrder = await waitFor(async () => { const o = await FAV_ORDER(); return J(o) !== J(["GAP1", "GAP2", "GAP3"]) ? o : null; }, 4000) ?? await FAV_ORDER();
+    return r;
+  },
+  expect: () => [J(ctx.favOrder) === J(["GAP2", "GAP1", "GAP3"]) ? null : `favorites now ${J(ctx.favOrder)}, want GAP2, GAP1, GAP3 (dropped at ${J(ctx.dropAt)}, just right of GAP2)`,
+    J(ctx.dropMarks) === J(["GAP2:after"]) ? null : `while over the gap the marker was on ${J(ctx.dropMarks)}, want GAP2's right edge`],
+});
+
+// Back closes a tab a link opened (option, off by default; upstream PR #168): W shows X, BK-OPENER's link opens BK-CHILD.
+const bkUrl = (p) => `${origin}/bk-${p}-${ctx.bkRun}`;
+const SET_BACK = (on) => async () => {
+  ctx.bkRun = Date.now();
+  await mkWin("W", { width: 1000 });
+  await tab(ctx.W, "X1", sp("X"));
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
+  await h.ev(`Promise.resolve(window.__vm.settings.set("backCloses", ${on})).then(() => 1)`, ctx.W);
+  ctx.tabs.OPENER = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(bkUrl("opener"))}, active: true }).then((t) => t.id)`, ctx.H);
+  await waitFor(() => h.ev(`chrome.tabs.get(${ctx.tabs.OPENER}).then((t) => t.status === "complete")`, ctx.H), 6000);
+  await inPage(bkUrl("opener"), `document.getElementById("open").click()`);
+  ctx.tabs.CHILD = await waitFor(() => h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((ts) => ts.find((t) => (t.url || t.pendingUrl || "").startsWith(${J(bkUrl("child"))}))?.id ?? null)`, ctx.H), 6000);
+  await waitFor(() => h.ev(`chrome.tabs.get(${ctx.tabs.CHILD}).then((t) => t.status === "complete" && t.active)`, ctx.H), 6000);
+  await focus(ctx.W);
+};
+const backCase = (id, on, c) => def(id, { setup: SET_BACK(on), ready: () => waitFor(() => h.ev(`window.__vm.back.openers().some(([t]) => t === ${ctx.tabs.CHILD ?? -1})`, ctx.W), 6000), ...c });
+const altLeft = async (win) => { await focus(win); await keyDown(win, "Alt", 1); await keyDown(win, "ArrowLeft", 1); await sleep(50); await keyUp(win, "ArrowLeft", 1); await keyUp(win, "Alt", 0); await sleep(1200); };
+const mouseBack = async (url) => {
+  const tg = await waitFor(async () => (await targets()).find((t) => t.type === "page" && t.url === url), 6000, 200);
+  if (!tg) return "no page";
+  const c = await Cdp.open(tg.webSocketDebuggerUrl);
+  try { for (const type of ["mousePressed", "mouseReleased"]) await c.send("Input.dispatchMouseEvent", { type, x: 300, y: 200, button: "back", buttons: type === "mousePressed" ? 8 : 0, clickCount: 1 }); } catch (_) {} finally { c.close(); }
+  await sleep(1200);
+  return "clicked";
+};
+const backButton = async (win) => { const ok = await clickOn(win, `[...document.querySelectorAll('[data-name="Back"]')].find((e) => e.getBoundingClientRect().width > 0)`); await sleep(1200); return ok ? "clicked" : "no Back button"; };
+const closedToOpener = (s) => [find(s, ctx.tabs.CHILD) ? "the opened tab is still open" : null, tabIs(s, "OPENER", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X"))];
+backCase("X.back-closes-key", true, { act: async () => { await altLeft(ctx.W); return "ok"; }, expect: (s) => closedToOpener(s) });
+backCase("X.back-closes-mouse", true, { act: () => mouseBack(bkUrl("child")), expect: (s) => closedToOpener(s) });
+// the Back button sits in the sidebar's toolbar in the Arc layout and in the top row in Dia: both layouts
+backCase("X.back-closes-button", true, { gesture: true, act: () => backButton(ctx.W), expect: (s) => closedToOpener(s) });
+backCase("X.back-off-does-nothing-new", false, {
+  gesture: true, // the Back button is in a different place in each layout
+  act: async () => { await altLeft(ctx.W); await mouseBack(bkUrl("child")); return backButton(ctx.W); },
+  expect: (s, b) => [unchanged(b, s), tabIs(s, "CHILD", { win: ctx.W, active: true })],
+});
+backCase("X.back-with-history-goes-back", true, {
+  act: async () => {
+    await inPage(bkUrl("child"), `location.href = ${J(bkUrl("child") + "-next")}`);
+    await waitFor(() => h.ev(`chrome.tabs.get(${ctx.tabs.CHILD}).then((t) => t.status === "complete" && t.url.endsWith("-next"))`, ctx.H), 6000);
+    await altLeft(ctx.W);
+    ctx.childUrl = await h.ev(`chrome.tabs.get(${ctx.tabs.CHILD}).then((t) => t.url, () => null)`, ctx.H);
+    return "ok";
+  },
+  // the tab went back to its first page and stays open; only a Back from there would close it
+  expect: (s) => [ctx.childUrl === bkUrl("child") ? null : `the tab is at ${J(ctx.childUrl)}, want it back on ${bkUrl("child")}`, tabIs(s, "CHILD", { win: ctx.W, active: true })],
+});
+
+// Task 9d fix round: a click on a menu that sits over the greyed-out Back button is the menu's, not Back's.
+backCase("X.back-click-on-a-menu-over-the-button", true, {
+  gesture: true,
+  act: async () => {
+    const at = await h.ev(`(() => { const b = [...document.querySelectorAll('[data-name="Back"]')].find((e) => e.getBoundingClientRect().width > 0); if (!b) return null;
+      const r = b.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`, ctx.W);
+    if (!at) return "no Back button";
+    // the sidebar's own menu (right-click on the list), opened so that it covers the Back button
+    await h.ev(`(async () => { const p = document.querySelector("#vm-panel"); p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: ${at.x - 12}, clientY: ${at.y - 12} }));
+      for (let i = 0; i < 20 && !document.querySelector(".vm-menu"); i++) await new Promise((r) => setTimeout(r, 50)); return 1; })()`, ctx.W);
+    ctx.overBack = await h.ev(`(() => { const n = document.elementFromPoint(${at.x}, ${at.y}); return n ? (n.closest(".vm-menu") ? "menu" : n.className || n.tagName) : null; })()`, ctx.W);
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.cdp(ctx.W).send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+    await sleep(1200);
+    await escapeAll(ctx.W);
+    return "clicked";
+  },
+  expect: (s) => [ctx.overBack === "menu" ? null : `the menu did not cover the Back button (${J(ctx.overBack)}), nothing was tested`, tabIs(s, "CHILD", { win: ctx.W, active: true })],
+});
+// A page cannot close itself by faking the mouse's Back button (only a real press counts).
+backCase("X.back-mouse-forged-ignored", true, {
+  act: async () => { await inPage(bkUrl("child"), `dispatchEvent(new MouseEvent("mouseup", { button: 3, bubbles: true })), document.body.dispatchEvent(new MouseEvent("mouseup", { button: 3, bubbles: true })), 1`); await sleep(1200); return "ok"; },
+  expect: (s) => [tabIs(s, "CHILD", { win: ctx.W, active: true })],
+});
+// Move to Window lists the other windows on this window's side only: a private window is not offered to a normal one.
+tmCase("X.menu-no-private-window", {
+  act: async () => {
+    const pid = await openPrivate();
+    try {
+      if (pid == null) return { error: "no private window" };
+      await focus(ctx.W);
+      const r = await tabMenu(ctx.W, "X2", "Reload Tab");
+      r.privateTitle = await h.cdp(pid).eval(`chrome.tabs.query({ active: true }).then(([t]) => t?.title ?? null)`, 10000).catch(() => null);
+      return r;
+    } finally { await closePrivate(); }
+  },
+  // W's menu offers Z1 (O) and H, the sandbox's own window: a third row would be the private window
+  expect: (s, b, r) => { const rows = (r.menu || []).filter((m) => m.startsWith("Move to Window:")); return [r.error ?? null,
+    rows.length === 2 && rows.includes("Move to Window: Z1") ? null : `window rows ${J(rows)} (the private window is on ${J(r.privateTitle)})`]; },
+});
+// Escape pressed in another window keeps this window's picks; a right-click on a row that is not picked lets them go.
+pickCase("X.pick-escape-elsewhere-and-right-click", {
+  setup: async () => { await SET_PICK(); await mkWin("O", { width: 700 }); await focus(ctx.W); },
+  act: async () => {
+    const r = {};
+    await clickRow(ctx.W, "X1", PICK()); await sleep(200);
+    r.before = await picked(ctx.W);
+    await focus(ctx.O); await keyDown(ctx.O, "Escape", 0); await keyUp(ctx.O, "Escape", 0); await sleep(500);
+    r.afterEscapeInO = await picked(ctx.W);
+    await focus(ctx.W);
+    await h.ev(`(async () => { const r = ${tabRowOf("X3")}; const b = r.getBoundingClientRect(); r.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 8 }));
+      for (let i = 0; i < 30 && !document.querySelector(".vm-menu"); i++) await new Promise((res) => setTimeout(res, 50)); return 1; })()`, ctx.W);
+    await sleep(300);
+    r.afterRightClick = await picked(ctx.W);
+    r.menu = await h.ev(`[...document.querySelectorAll(".vm-menu .vm-menu-item")].map((d) => d.textContent)`, ctx.W);
+    await escapeAll(ctx.W);
+    return r;
+  },
+  expect: (s, b, r) => [r.before?.length === 2 ? null : `Ctrl+click picked ${J(r.before)}`, r.afterEscapeInO?.length === 2 ? null : `Escape in another window let ${J(r.before)} go here (${J(r.afterEscapeInO)})`,
+    r.afterRightClick?.length ? `a right-click on an unpicked row left ${J(r.afterRightClick)} picked` : null, (r.menu || []).includes("Reload Tab") ? null : `not the one-tab menu: ${J(r.menu)}`],
+});
+// With Reduce Transparency the wallpaper goes and the sidebar is opaque, Liquid Glass or not.
+def("X.wallpaper-reduced-transparency", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 1000 }); await tab(ctx.W, "X1", sp("X")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); },
+  act: async () => {
+    const c = h.cdp(ctx.W), r = {};
+    const read = () => h.ev(`(() => { const cs = getComputedStyle(document.querySelector("#tabs-tabbar-container")); return { img: cs.backgroundImage.slice(0, 120), color: cs.backgroundColor }; })()`, ctx.W);
+    await h.ev(`Promise.resolve(window.__vm.settings.set("sidebarWallpaper", true)).then(() => 1)`, ctx.W);
+    try {
+      await c.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-transparency", value: "reduce" }] });
+      await sleep(400); r.plain = await read();
+      await h.ev(`Promise.resolve(window.__vm.settings.set("glass", true)).then(() => 1)`, ctx.W); await sleep(400); r.glass = await read();
+    } finally {
+      await c.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+      await h.ev(`Promise.all([window.__vm.settings.set("glass", false), window.__vm.settings.set("sidebarWallpaper", false)]).then(() => 1)`, ctx.W).catch(() => {});
+    }
+    return r;
+  },
+  expect: (s, b, r) => [...["plain", "glass"].flatMap((k) => [r[k].img.includes("url(") ? `${k}: the wallpaper stayed (${r[k].img})` : null,
+    /rgba?\([^)]*,\s*0\)$|transparent/.test(r[k].color) || /rgba\([^)]*,\s*0?\.\d+\)$/.test(r[k].color) ? `${k}: the sidebar is not opaque (${r[k].color})` : null])],
+});
+
+// The space-switch transition (upstream #85): a click on a tile animates the sidebar list and the page; Reduce Motion stops it.
+const SET_MOTION = async () => { await mkWin("W", { width: 1000 }); await tab(ctx.W, "X1", sp("X")); await tab(ctx.W, "Y1", sp("Y")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); };
+const motionRun = async (reduced) => {
+  const c = h.cdp(ctx.W);
+  await c.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: reduced ? "reduce" : "no-preference" }] });
+  try {
+    if (!reduced) { await c.send("Animation.enable"); await c.send("Animation.setPlaybackRate", { playbackRate: 0.05 }); }
+    const clicked = await clickTile(ctx.W, "Y");
+    await sleep(reduced ? 600 : 900);
+    const r = { clicked, last: await h.ev(`window.__vm.spaceMotion.last`, ctx.W),
+      running: await h.ev(`[document.querySelector("#vm-panel .vm-scroll"), document.querySelector("#browser.vm-dia #webview-container") || document.querySelector("#webpage-stack"),
+        document.querySelector("#vm-panel")].map((n) => n?.getAnimations().length ?? -1)`, ctx.W) };
+    if (!reduced) { await shot(ctx.W, "9d-motion-frame1"); await sleep(1500); await shot(ctx.W, "9d-motion-frame2"); }
+    return r;
+  } finally {
+    if (!reduced) { await c.send("Animation.setPlaybackRate", { playbackRate: 1 }).catch(() => {}); await c.send("Animation.disable").catch(() => {}); }
+    await c.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+  }
+};
+def("X.space-motion", {
+  gesture: true, setup: SET_MOTION,
+  act: async () => { const r = await motionRun(false); return { ...r, error: r.clicked === "clicked" ? undefined : r.clicked }; },
+  expect: (s, b, r) => [r.last?.animated && r.last.next === sp("Y") ? null : `the switch did not animate: ${J(r.last)}`, r.running?.[0] > 0 && r.running?.[1] > 0 ? null : `animations running on the list and the page: ${J(r.running)}`,
+    r.running?.[2] === 0 ? null : `the whole panel animated (${r.running?.[2]}): only the list should`,
+    recIs(s, ctx.W, sp("Y")), showsSpace(s, ctx.W, sp("Y"))],
+});
+def("X.space-motion-reduce-motion", {
+  gesture: true, setup: SET_MOTION,
+  act: async () => { const r = await motionRun(true); return { ...r, error: r.clicked === "clicked" ? undefined : r.clicked }; },
+  expect: (s, b, r) => [r.last && r.last.reduced && !r.last.animated ? null : `with Reduce Motion: ${J(r.last)}`, r.running?.every((n) => n <= 0) ? null : `animations ran: ${J(r.running)}`,
+    recIs(s, ctx.W, sp("Y"))],
+});
+
+// The theme's wallpaper behind the sidebar (issue #62): on, the sidebar paints Vivaldi's image under a scrim; the text
+// keeps a contrast of at least 4.5:1 against the darkest-to-lightest of the sidebar pixels around it (measured in a
+// screenshot); a space with its own colour keeps its colour.
+const WALL = `(() => { const bar = document.querySelector("#tabs-tabbar-container"), cs = getComputedStyle(bar), b = document.querySelector("#browser");
+  const img = getComputedStyle(b).getPropertyValue("--browserBackgroundImage").trim();
+  return { on: b.classList.contains("vm-wallpaper"), themed: b.classList.contains("vm-themed"), image: img, bg: cs.backgroundImage.slice(0, 300), fg: getComputedStyle(document.querySelector("#vm-panel .vm-title") || bar).color }; })()`;
+// The contrast of the sidebar's text colour against the sidebar's background pixels (from a screenshot, the panel's rows
+// with their text masked out by colour distance), worst case over the area.
+const contrastOf = async (win) => {
+  const { data } = await h.cdp(win).send("Page.captureScreenshot", { format: "png" });
+  return h.cdp(win).eval(`(async () => {
+    const img = new Image(); img.src = "data:image/png;base64,${data}"; await img.decode();
+    const dpr = devicePixelRatio, cv = new OffscreenCanvas(img.width, img.height), g = cv.getContext("2d"); g.drawImage(img, 0, 0);
+    const fg = getComputedStyle(document.querySelector("#vm-panel .vm-scroll .vm-title")).color.match(/[0-9.]+/g).map(Number);
+    const lum = ([r, gg, bb]) => { const f = (c) => { c /= 255; return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4; }; return 0.2126 * f(r) + 0.7152 * f(gg) + 0.0722 * f(bb); };
+    const L = lum(fg), ratios = [];
+    // the background right behind the text: a strip along the top and the bottom of each row of the list (the space the
+    // row keeps above and below its text), so anti-aliased text edges do not count as background
+    for (const t of [...document.querySelectorAll("#vm-panel .vm-scroll .vm-row")].slice(0, 30)) {
+      const q = t.getBoundingClientRect(); if (q.width < 8 || q.height < 12) continue;
+      for (const y of [q.top + 2, q.bottom - 3]) {
+        const px = g.getImageData(Math.round((q.left + 4) * dpr), Math.round(y * dpr), Math.max(1, Math.round((q.width - 8) * dpr)), 1).data;
+        for (let i = 0; i < px.length; i += 4 * 2) { const l = lum([px[i], px[i + 1], px[i + 2]]); ratios.push((Math.max(l, L) + 0.05) / (Math.min(l, L) + 0.05)); }
+      }
+    }
+    ratios.sort((a, b) => a - b);
+    return { worst: ratios.length ? Math.round(ratios[Math.floor(ratios.length * 0.02)] * 100) / 100 : null, median: ratios.length ? Math.round(ratios[Math.floor(ratios.length / 2)] * 100) / 100 : null, fg };
+  })()`, 30000);
+};
+const wallCase = (layout) => def(`X.wallpaper-${layout}`, {
+  layout, setup: async () => { await mkWin("W", { width: 1100 }); await tab(ctx.W, "X1", sp("X")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); },
+  act: async () => {
+    const r = { off: await h.ev(WALL, ctx.W) };
+    await h.ev(`Promise.resolve(window.__vm.settings.set("sidebarWallpaper", true)).then(() => 1)`, ctx.W);
+    try {
+      await sleep(800);
+      r.on = await h.ev(WALL, ctx.W);
+      r.contrast = await contrastOf(ctx.W);
+      await shot(ctx.W, "9d-wallpaper");
+      // a space with its own colour keeps it (the theme editor wins)
+      await h.ev(`(document.querySelector("#browser").classList.add("vm-themed"), document.querySelector("#browser").style.setProperty("--vm-tint", "hsl(200 50% 30%)"), 1)`, ctx.W);
+      await sleep(300);
+      r.themed = await h.ev(WALL, ctx.W);
+    } finally {
+      await h.ev(`(document.querySelector("#browser").classList.remove("vm-themed"), document.querySelector("#browser").style.removeProperty("--vm-tint"), 1)`, ctx.W).catch(() => {});
+      await h.ev(`Promise.resolve(window.__vm.settings.set("sidebarWallpaper", false)).then(() => 1)`, ctx.W).catch(() => {});
+    }
+    return r;
+  },
+  expect: (s, b, r) => [!r.off.on && !r.off.bg.includes("url(") ? null : `with the option off the sidebar paints ${r.off.bg}`,
+    r.on.on ? null : "the option did not mark #browser", !r.on.image ? "this theme has no background image (the sandbox's default dark theme has one)" : null,
+    r.on.bg.includes("url(") && r.on.bg.startsWith("linear-gradient") ? null : `the sidebar does not paint the image under a scrim: ${r.on.bg}`,
+    r.contrast?.worst >= 4.5 ? null : `the text's contrast over the wallpaper is ${J(r.contrast)}, want at least 4.5:1`,
+    !r.themed.bg.includes("url(") ? null : `a space with its own colour still shows the wallpaper: ${r.themed.bg}`],
+});
+wallCase("dia");
+wallCase("arc");
 
 // ---------- running ----------
 async function setLayout(dia) {

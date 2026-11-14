@@ -789,6 +789,104 @@
 .vm-set-foot { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 0; }
 .vm-set-note { opacity: 0.5; font-size: 12.5px; }
 
+/* Ctrl+Tab switcher (25-tab-switcher.js; ported from KASOGIT/vivarc#93): this window's recent tabs in the space on screen,
+   a row of cards over the page. It shows only after the keys are held for a moment, so a quick Ctrl+Tab never flashes it. */
+#browser.vm-on #vm-switch {
+  position: fixed; inset: 0; z-index: 100002;
+  display: flex; justify-content: center; align-items: center;
+  outline: 0; opacity: 0; pointer-events: none;
+}
+#browser.vm-on #vm-switch.in { opacity: 1; pointer-events: auto; transition: opacity 90ms; }
+#browser.vm-on #vm-switch .vm-sw-panel {
+  max-width: 92vw; padding: 8px; border-radius: 18px;
+  color: var(--vm-text); background: var(--vm-surface);
+  border: 1px solid color-mix(in srgb, var(--vm-text) 10%, transparent);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6);
+}
+#browser.vm-on #vm-switch .vm-sw-strip { display: flex; gap: 4px; }
+#browser.vm-on #vm-switch .vm-sw-card { flex: none; width: 168px; padding: 8px; border-radius: 12px; cursor: pointer; }
+#browser.vm-on #vm-switch .vm-sw-card.sel { background: var(--vm-sel); }
+#browser.vm-on #vm-switch .vm-sw-thumb {
+  display: flex; align-items: center; justify-content: center; height: 112px; overflow: hidden; border-radius: 8px;
+  background: color-mix(in srgb, var(--vm-text) 7%, transparent);
+}
+#browser.vm-on #vm-switch .vm-sw-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+#browser.vm-on #vm-switch .vm-sw-big { display: flex; width: 36px; height: 36px; }
+#browser.vm-on #vm-switch .vm-sw-ico { display: flex; flex: none; width: 16px; height: 16px; }
+#browser.vm-on #vm-switch :is(.vm-sw-big, .vm-sw-ico) img { width: 100%; height: 100%; object-fit: contain; }
+#browser.vm-on #vm-switch .vm-sw-label { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; font-weight: 600; }
+#browser.vm-on #vm-switch .vm-sw-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A tab with no thumbnail yet: its icon (or its site's letter) and its site. */
+#browser.vm-on #vm-switch .vm-sw-thumb.vm-sw-nothumb { flex-direction: column; gap: 8px; }
+#browser.vm-on #vm-switch .vm-sw-host { max-width: 90%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; opacity: 0.7; }
+#browser.vm-on #vm-switch .vm-sw-mono { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; border-radius: 22%; color: #fff; font-weight: 700; }
+#browser.vm-on #vm-switch .vm-sw-big .vm-sw-mono { font-size: 18px; }
+#browser.vm-on #vm-switch .vm-sw-ico .vm-sw-mono { font-size: 10px; }
+#browser.vm-on.vm-glass #vm-switch .vm-sw-panel {
+  background: var(--vm-glass-sheen), var(--vm-glass-fill); backdrop-filter: var(--vm-glass-blur);
+  border-color: transparent; box-shadow: var(--vm-glass-rim), 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  #browser.vm-on.vm-glass #vm-switch .vm-sw-panel { background: var(--vm-surface); backdrop-filter: none; }
+}
+@media (prefers-reduced-motion: reduce) { #browser.vm-on #vm-switch.in { transition: none; } }
+
+/* Picked tab rows (09-select.js; ported from KASOGIT/vivarc#147): Ctrl/Cmd+click and Shift+click. An outlined, lightly
+   filled row, so a picked row reads apart from the one on screen (which keeps its own fill under the outline). */
+#browser.vm-on #vm-panel .vm-tab.vm-selected {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 70%, transparent);
+  background-color: color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 14%, transparent);
+}
+#browser.vm-on #vm-panel .vm-tab.vm-selected.active { background-color: color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 24%, transparent); }
+#browser.vm-on.vm-glass #vm-panel .vm-tab.vm-selected { box-shadow: var(--vm-lozenge-rim), inset 0 0 0 1.5px color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 75%, transparent); }
+
+/* While a favorite is dragged the tiles stay put (a tile growing under the pointer would move the drop zones), and the
+   drop marker shows over the glass tiles' rim (ported from KASOGIT/vivarc#138). */
+#browser.vm-on.vm-dragging #vm-panel .vm-favs > .vm-fav:is(:hover, :active) { transform: none; } /* outranks the glass hover below */
+#browser.vm-on.vm-glass #vm-panel .vm-fav.drop-before { box-shadow: var(--vm-lozenge-rim), inset 3px 0 0 0 var(--colorHighlightBg, #7b8cff); }
+#browser.vm-on.vm-glass #vm-panel .vm-fav.drop-after { box-shadow: var(--vm-lozenge-rim), inset -3px 0 0 0 var(--colorHighlightBg, #7b8cff); }
+
+/* Back closes opened tabs (17-back-closes.js, setting "backCloses"): a disabled button gets no click, so while it is on a
+   click on the greyed-out Back falls through to what is behind it, where the script finds it by position. */
+#browser.vm-on.vm-back-closes [data-name="Back"]:disabled,
+#browser.vm-on.vm-back-closes [data-name="Back"] button:disabled { pointer-events: none; }
+/* ...and its slot takes the click: hit-testable and out of the window-drag region the row around it may be (the Dia top
+   row with Vivaldi's frame off, the Arc sidebar's header), or the system would take a real click as a window drag. */
+#browser.vm-on.vm-back-closes .button-toolbar:has(> [data-name="Back"], > * > [data-name="Back"]) {
+  pointer-events: auto; -webkit-app-region: no-drag; app-region: no-drag;
+}
+
+/* The theme's wallpaper behind the sidebar (setting "sidebarWallpaper"; KASOGIT/vivarc issue #62). Vivaldi 8.3 already
+   paints a heavily blurred copy of the theme's image (--browserBlurredImage) behind the whole window; this puts the image
+   itself (--browserBackgroundImage, with Vivaldi's own size, position and repeat) behind the sidebar, fixed to the window so
+   it lines up with the frame, under a scrim of the theme's background colour so the text keeps its contrast. With Liquid
+   Glass the glass's own sheen stays on top and the scrim follows the glass opacity, never under 45%. A space with a colour
+   of its own (40-theme.js, vm-themed) keeps its colour: the theme editor wins. Reduce Transparency and Increase Contrast
+   turn the image off. A theme without an image shows the scrim over nothing, which is the theme's colour. */
+#browser.vm-on.vm-wallpaper { --vm-wall-scrim: color-mix(in srgb, var(--colorBg, #1c1c20) 58%, transparent); }
+#browser.vm-on.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container {
+  background-image: linear-gradient(var(--vm-wall-scrim), var(--vm-wall-scrim)), var(--browserBackgroundImage, none) !important;
+  background-size: auto, var(--browserBackgroundSize, cover) !important;
+  background-position: 0 0, var(--browserBackgroundPosition, 50%) !important;
+  background-repeat: no-repeat, var(--browserBackgroundRepeat, no-repeat) !important;
+  background-attachment: scroll, fixed !important;
+}
+#browser.vm-on.vm-glass.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container {
+  --vm-wall-scrim: color-mix(in srgb, var(--colorBg, #1c1c20) max(45%, var(--vm-glass-opacity, 55%)), transparent);
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0) 26%),
+    radial-gradient(120% 45% at 0% 0%, rgba(255, 255, 255, 0.14), transparent 70%),
+    linear-gradient(var(--vm-wall-scrim), var(--vm-wall-scrim)), var(--browserBackgroundImage, none) !important;
+  background-size: auto, auto, auto, var(--browserBackgroundSize, cover) !important;
+  background-position: 0 0, 0 0, 0 0, var(--browserBackgroundPosition, 50%) !important;
+  background-repeat: no-repeat, no-repeat, no-repeat, var(--browserBackgroundRepeat, no-repeat) !important;
+  background-attachment: scroll, scroll, scroll, fixed !important;
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  #browser.vm-on.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container,
+  #browser.vm-on.vm-glass.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container { background-image: none !important; background-color: var(--colorBg, #1c1c20) !important; }
+}
+
 /* Liquid glass (setting "glass"), after Apple's Human Interface Guidelines, Materials: glass is for the layer of controls
    and navigation (sidebar, menus, command bar, dialogs), never for the content layer, and never stacked on itself, so the
    rows and tiles inside a glass surface keep plain fills. This is the regular variant: blurred and saturated backdrop,

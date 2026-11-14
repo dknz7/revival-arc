@@ -47,6 +47,9 @@
   };
 
   const normalise = (combo) => String(combo).toLowerCase().split("+").map((s) => s.trim()).sort().join("+");
+  // Keys a second press of which, soon after the first, is meant: the Ctrl+Tab switcher's (25-tab-switcher.js), where two
+  // quick taps go back and forth. It drops its own doubled events (one press heard twice) itself.
+  const NO_DEDUPE = new Set(["ctrl+tab", "ctrl+shift+tab"].map(normalise));
   let last = { key: "", at: 0 };
   const warned = new WeakSet(); // subscribers that have thrown
   const handler = (...args) => {
@@ -54,7 +57,7 @@
     if (!combo) return;
     const key = normalise(combo);
     const now = Date.now();
-    if (key === last.key && now - last.at < 250) return;
+    if (key === last.key && now - last.at < 250 && !NO_DEDUPE.has(key)) return;
     last = { key, at: now };
     // Every window's listener hears every key; the number in the event is the Vivaldi window the key was pressed in
     // (measured on 8.2: it equals window.vivaldiWindowId there), handed on for the modules that act on one window only.

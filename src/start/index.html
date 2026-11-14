@@ -68,9 +68,11 @@
     <div class="card"><h3>Open tabs</h3><p>Below the divider. They stay until you close them, or hover the divider and press Clear.</p></div>
     <div class="card"><h3>Spaces</h3><p>The space selector at the bottom of the sidebar is always available: each is a space with its own tabs and pinned links (favorites are shared). Click one, or press <span data-shortcut="spaces">Cmd + Option + Left / Right</span> for the previous/next. Create one with <span data-shortcut="createSpace">Ctrl + Cmd + N</span> (or click <b>+</b>). Spaces only group tabs: they share the profile's logins. A space lives in one window; see Spaces and windows below.</p></div>
     <div class="card"><h3>Profiles</h3><p>The round avatars at the bottom of the sidebar are your Vivaldi profiles: separate logins, one window each. Click one to switch, press <span data-shortcut="profileNumber">Ctrl + Cmd + 1..9</span>, or use <span data-shortcut="profiles">Ctrl + Cmd + Left / Right</span> for the previous/next one. The <b>+</b> adds a new profile.</p></div>
-    <div class="card"><h3>Your look</h3><p>Hover the space name and click the palette to pick a color, intensity and grain for each profile.</p></div>
+    <div class="card"><h3>Your look</h3><p>Hover the space name and click the palette to pick a color, intensity and grain for each profile. In Vivarc Settings, <i>Wallpaper behind the sidebar</i> shows your Vivaldi theme's background image behind the sidebar, under a tint that keeps the text legible.</p></div>
     <div class="card"><h3>Hide the sidebar</h3><p>Press <span data-shortcut="sidebar">Cmd + S</span> to hide the sidebar in the window you are in, and again to bring it back. Other windows keep theirs. A hidden sidebar stays hidden until you press the key again; meanwhile <span data-shortcut="address">Cmd + L</span> edits the address in the command bar. In the Dia layout there is also a button for it in the top row. After the first start on a new version, restart Vivaldi once: it reads its keys at launch.</p></div>
     <div class="card"><h3>Mute a tab</h3><p>Right-click a tab and pick <i>Mute Tab</i> (or <i>Unmute Tab</i>). A tab playing sound shows a small speaker: click it to mute. A muted tab shows a crossed-out speaker in place of its icon: click it to unmute.</p></div>
+    <div class="card"><h3>Pick several tabs</h3><p>Hold <span data-shortcut="pickTabs">Cmd</span> and click tabs to pick them, or <b>Shift</b> and click to pick a range. Right-click a picked tab to stack them into a folder, move them to a space or close them. Escape or a plain click lets go.</p></div>
+    <div class="card"><h3>The tab menu</h3><p>Right-click a tab for <i>Reload Tab</i>, <i>Split View</i> (side by side, or top and bottom, with a new tab), <i>Move to New Window</i> (as dragging it out: Undo for 5 seconds) and <i>Move to Window</i> for each of your other windows (as dragging it into that window's sidebar: it joins the space that window shows).</p></div>
     <div class="card"><h3>Drag tabs between windows</h3><p>Drag a tab out past the edge of the window and it opens in a new window, as a plain tab of that window's default space. A toast in the new window offers <i>Undo</i> for 5 seconds. Drag a tab into another window's sidebar and it lands there, in the space that window shows. Pins, favorites, folders and a window's only tab stay put.</p></div>
   </div>
 
@@ -109,6 +111,7 @@
     <div class="card"><h3>Site requests</h3><p>When a site asks to send notifications, know your location or use your camera or microphone, the question shows as a card at the top right of the page, with the site's own options. Click one to answer. Close the card and a small <i>Site request pending</i> pill keeps it one click away. The address bar stays collapsed.</p></div>
     <div class="card"><h3>The right-hand panel</h3><p>Pause the pointer at the right edge of the window and Vivaldi's panel slides in, also on a monitor whose right edge meets another screen.</p></div>
     <div class="card"><h3>Rearranging icons on a Mac</h3><p>When you Cmd+drag toolbar or extension icons, let go of ⌘ before the mouse button. Vivaldi drops nothing if ⌘ is still held.</p></div>
+    <div class="card"><h3>Back closes opened tabs</h3><p>An option in Vivarc Settings, off by default. On a tab a link opened, Back with nothing to go back to closes the tab and brings back the page the link was on, like Arc: the Back key, the mouse's Back button or the Back button.</p></div>
     <div class="card"><h3>The address field</h3><p>Switching tabs no longer pops the hidden address field open. <span data-shortcut="address">Cmd + L</span> edits the address when you want it.</p></div>
   </div>
 
@@ -117,6 +120,7 @@
     <tr><td><span data-shortcut="commandBar">Cmd + T</span></td><td>Open the command bar</td></tr>
     <tr><td><span data-shortcut="address">Cmd + L</span></td><td>Edit the current page's address (in the command bar while the sidebar is hidden)</td></tr>
     <tr><td><span data-shortcut="sidebar">Cmd + S</span></td><td>Hide this window's sidebar, or show it again. Other windows keep theirs.</td></tr>
+    <tr><td>Ctrl + Tab</td><td>The recent tabs of this space, in this window: hold Ctrl, press Tab (Shift + Tab goes back), let go to switch. Restart Vivaldi once after the first start on a new version: it reads its keys at launch.</td></tr>
     <tr><td><span data-shortcut="tileBring">Shift</span></td><td>Click a space tile with it held to bring that space into this window</td></tr>
     <tr><td><span data-shortcut="tileWindow">Cmd + Shift</span></td><td>Click a space tile with it held to send that space to a new window</td></tr>
     <tr><td><span data-shortcut="copyUrl">Cmd + Shift + C</span></td><td>Copy the current page's URL</td></tr>
@@ -173,7 +177,7 @@
   const primary = mac ? 'Cmd' : 'Ctrl';
   const shortcuts = {
     commandBar: [primary, 'T'], address: [primary, 'L'], sidebar: [primary, 'S'],
-    tileBring: ['Shift'], tileWindow: [primary, 'Shift'],
+    tileBring: ['Shift'], tileWindow: [primary, 'Shift'], pickTabs: [primary],
     copyUrl: [primary, 'Shift', 'C'], quickCommands: mac ? ['Cmd', 'E'] : ['F2'],
     spaces: mac ? ['Cmd', 'Option', '\u2190 / \u2192'] : ['Ctrl', '\u2190 / \u2192'],
     createSpace: mac ? ['Ctrl', 'Cmd', 'N'] : ['Ctrl', 'Alt', 'N'],

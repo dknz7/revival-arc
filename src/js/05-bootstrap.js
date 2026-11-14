@@ -1,6 +1,7 @@
 // Sets up a Vivaldi profile that the installer has not configured (for example one created later): tabs on
-// the left, Cmd+T freed for the command bar, Cmd+S freed for Vivarc's own sidebar hide (12-sidebar-hide.js), toolbar
-// tidy-up. All of it applies live.
+// the left, Cmd+T freed for the command bar, Cmd+S freed for Vivarc's own sidebar hide (12-sidebar-hide.js), Ctrl+Tab
+// freed for the tab switcher (25-tab-switcher.js), toolbar tidy-up. All of it applies live, apart from the keys, which
+// Vivaldi reads at launch (measured on 8.2; the sandbox's 8.3 switcher worked after a restart).
 (() => {
   // Vivaldi's actions table with `key` taken off every command that holds it: { table: a new table, freed: the commands
   // that lost it, in table order }. Nothing else changes, and running it again frees nothing. Keys match however written.
@@ -20,15 +21,46 @@
     }
     return { table: out, freed };
   };
-  window.__vm.bootstrap = { freeKey };
+  // "Vivarc freed the tab switcher's keys during this run of Vivaldi": Vivaldi reads its key table at launch, so until the
+  // next start it still has them, and the switcher (25-tab-switcher.js) must leave Ctrl+Tab to it. Run-scoped by where it
+  // lives, so a restart clears it whatever the clock says: this window's own copy (`mine`), the background page (it
+  // starts and ends with Vivaldi; one per profile side, so a private window has its own, or none) and, where Vivaldi has
+  // it, chrome.storage.session (in memory, emptied when Vivaldi quits). Set BEFORE the key table is written, so no window
+  // of this side can read the freed table without seeing it too. A window of the other side (a private window) learns it
+  // by watching the table change (25-tab-switcher.js).
+  const RUN_KEY = "__vivarcTabKeysFreedRun";
+  let mine = false;
+  const bgPage = () => { try { return chrome.extension?.getBackgroundPage?.() || null; } catch (_) { return null; } };
+  const markFreedThisRun = async () => {
+    mine = true;
+    try { const bg = bgPage(); if (bg) bg[RUN_KEY] = true; } catch (_) {}
+    try { await chrome.storage?.session?.set?.({ [RUN_KEY]: true }); } catch (_) {}
+  };
+  // -> true when any of the three says so, else false (never "unknown": a missing background page or session store
+  // means nothing was marked there, and standing down for good on that would leave Ctrl+Tab dead from the next run on).
+  const freedThisRun = async () => {
+    if (mine) return true;
+    try { if (bgPage()?.[RUN_KEY] === true) return true; } catch (_) {}
+    try {
+      const session = chrome.storage?.session;
+      if (session?.get && (await session.get(RUN_KEY))?.[RUN_KEY] === true) return true;
+    } catch (_) {}
+    return false;
+  };
+  // Resolves once this window's profile setup has done (or skipped) the tab-key step: a switcher deciding before that could
+  // read the table between the leader's write and its own check.
+  let keysDone = () => {};
+  const keysReady = new Promise((resolve) => { keysDone = resolve; });
+  // Above every early return: the switcher needs these in every window, private ones included.
+  window.__vm.bootstrap = { freeKey, freedThisRun, markFreedThisRun, keysReady, RUN_KEY };
 
   const cfg = window.__vm.config;
-  if (!cfg || cfg.autoConfigureProfiles === false) return;
+  if (!cfg || cfg.autoConfigureProfiles === false) { keysDone(); return; }
   // A private window runs on its own off-the-record profile, whose Vivarc store starts empty, but vivaldi.prefs is the real
   // profile's: deciding from that store that "the profile is new" re-ran the whole setup against the real profile (Task 8u:
   // the address row turned off in every window, the sidebar width back to 323, the auto-hide choices reset). The setup is
   // the normal windows' job, so a private window does none of it.
-  if (chrome.extension?.inIncognitoContext) return;
+  if (chrome.extension?.inIncognitoContext) { keysDone(); return; }
 
   const get = async (path) => (await vivaldi.prefs.get(path))?.value;
   const set = (path, value) => vivaldi.prefs.set({ path, value });
@@ -146,39 +178,54 @@
   };
 
   // Ctrl+S (Cmd+S on a Mac) hides this window's sidebar, so Vivaldi's own commands lose it: whichever holds it in this
-  // profile (the tab bar's hide, its auto-hide, Save Page). Once per profile, apart from VERSION (a bump would run every
-  // setup step again), so a key the user puts back on a Vivaldi command later stays. Not marked done while the actions
-  // table cannot be read or still holds the key afterwards, so the next start tries again.
+  // profile (the tab bar's hide, its auto-hide, Save Page). Ctrl+Tab and Ctrl+Shift+Tab (Ctrl on a Mac too) are the tab
+  // switcher's (25-tab-switcher.js), so Vivaldi's tab cycling loses them (COMMAND_TAB_SWITCH_FORWARD_SETTING and
+  // COMMAND_TAB_SWITCH_BACK_SETTING in Vivaldi 8.3's defaults). Each once per profile, apart from VERSION (a bump would
+  // run every setup step again), so a key the user puts back on a Vivaldi command later stays. Not marked done while the
+  // actions table cannot be read or still holds a key afterwards, so the next start tries again.
   // vivaldi.actions is one array that every writer reads whole and writes whole, so two windows doing it at once lose each
   // other's edits: only the leader window (workspaces.leaderOf, the lowest normal window id, as for the repairs) runs this,
   // and it reads the table again right before it writes. A window that is not the leader leaves the flag to the leader.
-  const freeSidebarKey = async () => {
+  // -> true when the keys are free (or were already), false when it left them to another window or the next start.
+  // beforeWrite: run just before the table is written (the tab keys mark the run there).
+  const freeOnce = async (keys, names, flag, what, beforeWrite = null) => {
     const leaderOf = window.__vm.workspaces?.leaderOf;
     if (leaderOf) {
       const own = (await chrome.windows.getCurrent()).id;
-      if (leaderOf(await chrome.windows.getAll()) !== own) return;
+      if (leaderOf(await chrome.windows.getAll()) !== own) return false;
     } else {
-      console.warn("[vivarc] profile setup: the window leader is unknown, freeing the sidebar key from this window");
+      console.warn(`[vivarc] profile setup: the window leader is unknown, freeing ${what} from this window`);
     }
+    const holders = (table) => keys.flatMap((key) => freeKey(table, key).freed.map((command) => [key, command]));
     const first = await get("vivaldi.actions");
-    if (!Array.isArray(first) || !first[0]) return;
-    if (freeKey(first[0], TOGGLE).freed.length) {
+    if (!Array.isArray(first) || !first[0]) return false;
+    let changed = false;
+    if (holders(first[0]).length) {
       const actions = await get("vivaldi.actions"); // fresh: nothing between this read and the write
-      if (!Array.isArray(actions) || !actions[0]) return;
-      const { table, freed } = freeKey(actions[0], TOGGLE);
+      if (!Array.isArray(actions) || !actions[0]) return false;
+      const freed = holders(actions[0]);
+      let table = actions[0];
+      for (const key of keys) table = freeKey(table, key).table;
       actions[0] = table;
+      if (beforeWrite) await beforeWrite();
       await set("vivaldi.actions", actions);
-      const name = window.__vm.windows ? "Ctrl+S" : "Cmd+S";
-      for (const command of freed) console.log(`[vivarc] ${name} freed from ${command}`);
+      changed = freed.length > 0;
+      for (const [key, command] of freed) console.log(`[vivarc] ${names[key]} freed from ${command}`);
       const after = await get("vivaldi.actions");
-      const left = Array.isArray(after) && after[0] ? freeKey(after[0], TOGGLE).freed : [];
+      const left = Array.isArray(after) && after[0] ? holders(after[0]) : [];
       if (left.length) {
-        console.warn(`[vivarc] profile setup: Ctrl+S is still on ${left.join(", ")} after freeing it, will try again at the next start`);
-        return;
+        console.warn(`[vivarc] profile setup: ${[...new Set(left.map(([key]) => names[key]))].join(", ")} still on ${[...new Set(left.map(([, c]) => c))].join(", ")} after freeing, will try again at the next start`);
+        return false;
       }
     }
-    await window.__vm.store.set("sidebarKeyFreed", true);
+    await window.__vm.store.set(flag, true);
+    return changed;
   };
+  const freeSidebarKey = () => freeOnce([TOGGLE], { [TOGGLE]: window.__vm.windows ? "Ctrl+S" : "Cmd+S" }, "sidebarKeyFreed", "the sidebar key");
+  // Vivaldi reads its key table at launch, so keys freed now stay Vivaldi's until the next start: the run is marked first
+  // (markFreedThisRun), and the switcher waits for that start.
+  const TAB_KEYS = ["ctrl+tab", "ctrl+shift+tab"];
+  const freeTabKeys = () => freeOnce(TAB_KEYS, { "ctrl+tab": "Ctrl+Tab", "ctrl+shift+tab": "Ctrl+Shift+Tab" }, "tabKeysFreed", "the tab switcher's keys", markFreedThisRun);
 
   const configure = async () => {
     await ensureSideTabs();
@@ -190,6 +237,9 @@
       await window.__vm.store.set("extensionsDropdown", true);
     }
     if (!(await window.__vm.store.get("sidebarKeyFreed", false))) await freeSidebarKey();
+    try {
+      if (!(await window.__vm.store.get("tabKeysFreed", false))) await freeTabKeys();
+    } finally { keysDone(); }
     if ((await window.__vm.store.get("bootstrap", 0)) >= VERSION) return;
     await bindShortcuts();
     await tidyToolbars();
@@ -206,5 +256,5 @@
     await window.__vm.store.set("bootstrap", VERSION);
   };
 
-  configure().catch((e) => console.warn("[vivarc] profile setup:", e));
+  configure().catch((e) => console.warn("[vivarc] profile setup:", e)).finally(keysDone);
 })();
