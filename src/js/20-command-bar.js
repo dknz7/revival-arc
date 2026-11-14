@@ -179,6 +179,9 @@
     { label: "Mute / Unmute Tab", words: "sound audio silence", tab: true, run: (tab) =>
       chrome.tabs.update(tab.id, { muted: !tab.mutedInfo?.muted }) },
     { label: "Close Tab", words: "quit remove", tab: true, run: (tab) => chrome.tabs.remove(tab.id) },
+    // Ported from KASOGIT/vivarc#143: a picker of the other spaces; the tab moves and you go with it, as in Arc.
+    { label: "Move Tab to Space…", words: "move space workspace send", tab: true, stay: true,
+      when: () => (window.__vm.spaceTargets?.() || []).length > 0, run: (tab) => setMode(moveToSpacePicker(tab)) },
     { label: "Reopen Closed Tab", words: "restore undo", run: () => chrome.sessions.restore() },
     { label: "New Window", words: "open window", run: () => chrome.windows.create({}) },
     { label: "New Private Window", words: "incognito private", run: () => chrome.windows.create({ incognito: true }) },
@@ -202,6 +205,26 @@
       run: () => { window.__vm.settings.set("diaLayout", false); toast("Arc layout"); } },
     { label: "Edit Theme", words: "color appearance sidebar", run: () => window.dispatchEvent(new CustomEvent("vm-open-theme")) },
   ];
+  // A picker is a mode of the bar that lists choices instead of pages (#143): pick(text) returns rows { label, sub, run };
+  // Enter runs the chosen one and closes the bar, Backspace on an empty field leaves it, like an engine chip. Move Tab to
+  // Space lists the spaces the sidebar's own Move to <Space> offers (10-sidebar.js), moves the tab with Vivarc's move
+  // (native.moveToSpace: Vivaldi's own on 8.2, setSpace into the right window on 8.3), then takes you to it the way a picked
+  // tab is reached (pickTab: the window switches to its space, or the window showing that space comes forward).
+  const moveToSpacePicker = (tab) => ({ name: "Move to Space", placeholder: "Move this tab to…",
+    pick: (text) => (window.__vm.spaceTargets?.() || [])
+      .filter((space) => space.name.toLowerCase().includes(text.trim().toLowerCase()))
+      .map((space) => ({ label: space.name, sub: "Space", run: () => moveAndGo(tab, space) })) });
+  const moveAndGo = async (tab, space) => {
+    try {
+      await window.__vm.native.moveToSpace([tab.id], space.id);
+      window.__vm.spaceRepair?.schedule?.();
+      await pickTab(await chrome.tabs.get(tab.id));
+      toast(`Moved to ${space.name}`);
+    } catch (error) {
+      console.warn("[vivarc] move tab to space:", error);
+      toast(error?.code === "parked-elsewhere" ? "That space is in another window. Show it there first, then move the tab." : "Could not move the tab.");
+    }
+  };
   const ACTION_SVG =
     '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3 5 13.5h6L10 21l8-10.5h-6z"/></svg>';
 
@@ -218,6 +241,7 @@
   let selected = 0;
   let seq = 0;
   let autoCompleted = false;
+  let typed = ""; // what the user typed (an arrowed-to row fills the field around it, #129)
 
   const iconFor = (url, favicon) => {
     const wrap = el("span", "vm-cmd-ico");
@@ -331,6 +355,13 @@
     } else if (row.type === "engine") {
       input.value = "";
       setMode(row.engine);
+    } else if (row.type === "pick") {
+      close(true);
+      Promise.resolve(row.run()).catch((e) => console.warn("[vivarc] pick:", e));
+    } else if (row.type === "action" && row.action.stay) {
+      input.value = "";
+      typed = "";
+      Promise.resolve(row.action.run(row.tab)).catch((e) => console.warn("[vivarc] action:", e));
     } else if (row.type === "action") {
       close(true);
       Promise.resolve(row.action.run(row.tab)).catch((e) => console.warn("[vivarc] action:", e));
@@ -343,10 +374,11 @@
     if (!list) return;
     list.replaceChildren(...rows.map((row, i) => {
       const item = el("div", `vm-cmd-row${i === selected ? " sel" : ""}`);
-      if (row.type === "action" || row.type === "engine") {
+      if (row.type === "action" || row.type === "engine" || row.type === "pick") {
         const glyph = el("span", "vm-cmd-ico vm-cmd-glyph");
         glyph.innerHTML = ACTION_SVG;
         item.append(glyph, el("span", "vm-cmd-title", row.label));
+        if (row.sub) item.append(el("span", "vm-cmd-sub", `— ${row.sub}`));
       } else if (row.type === "search" || row.type === "suggest") {
         const glyph = el("span", "vm-cmd-ico vm-cmd-glyph");
         glyph.innerHTML = SEARCH_SVG;
@@ -355,7 +387,7 @@
         item.append(iconFor(row.url, row.favicon), el("span", "vm-cmd-title", row.label));
         if (row.sub) item.append(el("span", "vm-cmd-sub", `— ${row.sub}`));
       }
-      const says = { tab: "Switch to Tab", action: "Run Action", engine: "Tab", url: "Go to URL" }[row.type] ||
+      const says = { tab: "Switch to Tab", action: "Run Action", engine: "Tab", url: "Go to URL", pick: "Choose" }[row.type] ||
         (row.lead ? "Search" : null);
       if (says) {
         const hint = el("span", "vm-cmd-hint");
@@ -425,7 +457,9 @@
     const id = ++seq;
     const text = input.value.trim();
     const out = [];
-    if (mode) {
+    if (mode?.pick) {
+      out.push(...mode.pick(text).map((p) => ({ type: "pick", ...p })));
+    } else if (mode) {
       out.push({ type: "search", engine: mode, query: text, label: text || "%s", lead: true });
     } else if (!text) {
       (await allTabs()).slice(0, 7).forEach((tab) =>
@@ -489,15 +523,16 @@
       chip.style.backgroundColor = CHIP_COLORS[engine.keyword] || "#5b5670";
       chipHolder.append(chip);
     }
-    input.placeholder = engine ? "Search…" : "Search or Enter URL…";
+    input.placeholder = engine?.placeholder || (engine ? "Search…" : "Search or Enter URL…");
     input.value = "";
+    typed = "";
     compute();
   };
 
   const autocomplete = async () => {
     if (!input) return; // Enter closed the bar first
     const text = input.value;
-    if (mode || !text || /\s/.test(text) || !autoCompleted) return;
+    if (mode || !text || /\s/.test(text) || !autoCompleted || selected > 0) return;
     const needle = text.toLowerCase();
     const hosts = [
       ...(await chrome.tabs.query({ currentWindow: true })).map((t) => hostOf(t.url)),
@@ -510,6 +545,28 @@
     }
   };
 
+  // Ported from KASOGIT/vivarc#129: the row picked with the arrow keys fills the field, Arc-style. Its text (an address
+  // without its scheme, a search's words) completes what was typed, the rest selected, so typing on replaces the rest; text
+  // that does not start with what was typed takes the field whole. Back on the first row, the field is what was typed. Only
+  // the arrows fill it (not the mouse), and Enter still runs the row itself.
+  const fillText = (row) => {
+    if (!row || mode) return null;
+    if (row.type === "search") return row.query || null;
+    if (row.url && ["tab", "bookmark", "history", "url"].includes(row.type)) return row.url.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+    return null;
+  };
+  const fill = () => {
+    if (!input || mode) return;
+    const text = selected > 0 ? fillText(rows[selected]) : null;
+    if (!text) { if (input.value !== typed) input.value = typed; return; }
+    if (typed && text.toLowerCase().startsWith(typed.toLowerCase())) {
+      input.value = typed + text.slice(typed.length);
+      input.setSelectionRange?.(typed.length, input.value.length);
+    } else {
+      input.value = text;
+      input.setSelectionRange?.(text.length, text.length);
+    }
+  };
   const onKey = (e) => {
     if (e.key === "Escape") { e.preventDefault(); close(true); return; }
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -517,6 +574,7 @@
       if (!rows.length) return;
       selected = (selected + (e.key === "ArrowDown" ? 1 : rows.length - 1)) % rows.length;
       render();
+      fill();
       return;
     }
     if (e.key === "Enter") { e.preventDefault(); run(rows[selected]); return; }
@@ -579,14 +637,34 @@
     stack.append(fly, box);
     bar.append(stack);
     // A click just after opening is the rest of a double or triple click that opened it, not a click away.
-    bar.addEventListener("mousedown", (e) => { if (e.target === bar && Date.now() - openedAt > 500) close(true); });
+    // Ported from KASOGIT/vivarc#119 (a2f77c2): a click outside the bar closes it and still reaches the sidebar item it was
+    // on (a tab, a pinned row, a tile, a space), instead of taking two clicks. The press closed the bar, so the item gets
+    // the click when the button comes up over the same item.
+    const PASS = "#vm-panel .vm-row, #vm-panel .vm-fav, #vm-panel .vm-space-pill";
+    bar.addEventListener("mousedown", (e) => {
+      if (e.target !== bar || Date.now() - openedAt <= 500) return;
+      close(true);
+      if (e.button !== 0) return;
+      document.addEventListener("mouseup", (up) => {
+        try {
+          // What is under the pointer gets the click a real one would give it (a row's own button, a chevron), as long as
+          // the press and the release were on the same sidebar item.
+          const at = document.elementFromPoint(up.clientX, up.clientY);
+          const target = at?.closest?.(PASS);
+          if (target && target === document.elementFromPoint(e.clientX, e.clientY)?.closest?.(PASS)) {
+            at.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, button: 0, detail: 1, clientX: up.clientX, clientY: up.clientY }));
+          }
+        } catch (error) { console.warn("[vivarc] click through:", error); }
+      }, { once: true, capture: true });
+    });
     if (typeof ResizeObserver === "function") {
       new ResizeObserver(() => { bar?.style.setProperty("--vm-fly-h", fly.hidden ? "0px" : `${Math.ceil(fly.getBoundingClientRect().height) + 8}px`); }).observe(fly);
     }
     input.addEventListener("keydown", onKey);
     // Only the latest text is completed inline: an older keystroke's lookups would complete the text typed since.
-    input.addEventListener("input", async () => { showLeadRows(); if (await compute()) autocomplete(); });
+    input.addEventListener("input", async () => { typed = input.value; showLeadRows(); if (await compute()) autocomplete(); });
     if (editing !== null) input.value = editing;
+    typed = input.value;
     (document.querySelector("#browser") || document.body).append(bar);
     const filled = input.value;
     const focus = () => {
