@@ -637,6 +637,92 @@ class Repairs(unittest.TestCase):
         self.assertIsNone(leader([{"id": 2, "type": "popup"}]))
         self.assertIsNone(leader([]))
 
+    # ---- Task 9a: tabs of a deleted space (9 and 8 are in no list); heal = what healGate let through ----
+    ORPHANS = {  # 1 shows X with two dead tabs parked; 2 on default with one of another deleted space
+        "windows": normal(1, 2), "spaces": [X],
+        "record": [[X, 1]],
+        "tabs": [tab(10, 1, X, active=True), tab(11, 1, 9), tab(12, 1, 9), tab(20, 2, 0, active=True), tab(21, 2, 8)],
+    }
+
+    def heal_plan(self, snap, heal):
+        return js("workspaces.repairPlan({ ...s, record: new Map(s.record), heal })", s=snap, heal=heal)
+
+    def test_tabs_of_a_deleted_space_move_to_their_windows_default_space(self):
+        self.assertEqual(self.heal_plan(self.ORPHANS, [8, 9]), [
+            {"kind": "rehome", "tab": 11, "window": 1, "from": 9}, {"kind": "rehome", "tab": 12, "window": 1, "from": 9},
+            {"kind": "rehome", "tab": 21, "window": 2, "from": 8}])
+
+    def test_without_the_heal_s_go_ahead_a_dead_tab_stays_where_it_is(self):
+        self.assertEqual(self.plan(self.ORPHANS), [])
+        self.assertEqual(self.heal_plan(self.ORPHANS, [9]), [{"kind": "rehome", "tab": 11, "window": 1, "from": 9},
+                                                              {"kind": "rehome", "tab": 12, "window": 1, "from": 9}], "only what the heal let through")
+
+    def test_the_heal_never_moves_a_live_space(self):
+        self.assertEqual(self.heal_plan(self.ORPHANS, [X]), [])
+
+    def test_the_heal_moves_at_most_its_cap_a_pass(self):
+        many = {"windows": normal(1), "spaces": [X], "record": [],
+                "tabs": [tab(10, 1, 0, active=True)] + [tab(100 + i, 1, 9) for i in range(30)]}
+        plan = self.heal_plan(many, [9])
+        self.assertEqual(len(plan), js("workspaces.HEAL_MAX"))
+        self.assertEqual([p["tab"] for p in plan], [100 + i for i in range(25)], "in window order")
+
+    NO_DEFAULT_DEAD = {  # window 1 on default, its last default tab closed: Chromium put a dead tab on screen (8y 3b)
+        "windows": normal(1), "spaces": [X],
+        "record": [],
+        "tabs": [tab(11, 1, 9, active=True, last=50), tab(12, 1, 9, last=40), tab(13, 1, X, last=10)],
+    }
+
+    def test_rule_2_never_switches_a_window_into_a_deleted_space(self):
+        self.assertEqual(self.plan(self.NO_DEFAULT_DEAD), [], "no switch to 9: the heal takes the tabs home")
+        self.assertEqual(self.heal_plan(self.NO_DEFAULT_DEAD, [9]), [{"kind": "rehome", "tab": 11, "window": 1, "from": 9},
+                                                                    {"kind": "rehome", "tab": 12, "window": 1, "from": 9}],
+                         "after the heal the tab on screen is in the recorded (default) space")
+
+    def test_rule_2_does_not_switch_into_a_named_space_while_the_list_cant_be_read(self):
+        self.assertEqual(self.plan({**self.FOLLOW, "spaces": None}), [])
+        self.assertEqual(self.plan(self.FOLLOW), [{"kind": "switch", "window": 1, "space": X}], "with the list it still follows")
+
+    def test_a_window_recorded_on_the_dead_space_of_its_tab_on_screen_follows_the_heal(self):
+        # measured: moving the tab on screen out of the dead space the record names takes the record to default
+        snap = {"windows": normal(1), "spaces": [X], "record": [[9, 1]],
+                "tabs": [tab(11, 1, 9, active=True), tab(12, 1, X)]}
+        self.assertEqual(self.heal_plan(snap, [9]), [{"kind": "rehome", "tab": 11, "window": 1, "from": 9}])
+        self.assertEqual(self.plan(snap), [{"kind": "switch", "window": 1, "space": 0}], "without the heal, rule 1 as before")
+
+    def test_a_deleted_space_split_across_windows_is_not_gathered(self):
+        snap = {"windows": normal(1, 2), "spaces": [X], "record": [],
+                "tabs": [tab(10, 1, 0, active=True), tab(11, 1, 9), tab(20, 2, 0, active=True), tab(21, 2, 9), tab(22, 2, 9)]}
+        self.assertEqual(self.plan(snap), [])
+        self.assertEqual([p["kind"] for p in self.heal_plan(snap, [9])], ["rehome"] * 3)
+
+    def gate(self, first, second, tabs, skip=None):
+        return js("workspaces.healGate({ first, second, tabs, skip })", first=first, second=second, tabs=tabs, skip=skip or [])
+
+    def test_the_heal_gate_lets_through_the_dead_ids_of_a_list_it_trusts(self):
+        ok = {"pref": [X, Y], "store": [Y, X]}
+        tabs = [tab(1, 1, X), tab(2, 1, 9), tab(3, 2, 8), tab(4, 2, 0)]
+        self.assertEqual(self.gate(ok, ok, tabs), {"ids": [8, 9], "why": None})
+        self.assertEqual(self.gate(ok, ok, tabs, skip=[9, {"id": 8}]), {"ids": [], "why": None}, "undelete can still bring them back")
+        self.assertEqual(self.gate(ok, ok, [tab(1, 1, X)]), {"ids": [], "why": None})
+
+    def test_the_heal_gate_refuses_a_list_it_cannot_trust(self):
+        ok = {"pref": [X, Y], "store": [X, Y]}
+        tabs = [tab(1, 1, X), tab(2, 1, 9)]
+        for first, second, why in [
+            ({"pref": None, "store": [X, Y]}, ok, "a workspace list could not be read"),
+            (ok, {"pref": [X, Y], "store": None}, "a workspace list could not be read"),  # Vivaldi's store not found
+            ({"pref": [X, Y], "store": []}, ok, "a workspace list is empty"),  # start-up: the store has not loaded its list yet
+            ({"pref": [], "store": []}, {"pref": [], "store": []}, "a workspace list is empty"),
+            ({"pref": [X, Y], "store": [X]}, ok, "the workspace lists disagree or changed"),
+            (ok, {"pref": [X], "store": [X]}, "the workspace lists disagree or changed"),  # it changed between the reads
+        ]:
+            self.assertEqual(self.gate(first, second, tabs), {"ids": [], "why": why}, why)
+
+    def test_strays_says_whether_the_heal_needs_to_look(self):
+        self.assertEqual(js("[workspaces.strays(a, [5]), workspaces.strays(b, [5]), workspaces.strays(a, null)]",
+                            a=[tab(1, 1, 9)], b=[tab(1, 1, 5), tab(2, 1, 0)]), [True, False, False])
+
     def test_a_closed_leader_is_replaced(self):
         wins = normal(3, 7, 5)
         self.assertEqual(js("workspaces.leaderOf(w)", w=wins), 3)
@@ -693,6 +779,30 @@ class RepairRuntime(unittest.TestCase):
         out = runtime(Repairs.D8, me=1)
         self.assertEqual(out["calls"][0], ["move", [30], 1])
         self.assertIn("[vivarc] repair: gather space 5 into window 1 (tabs 30)", out["log"])
+
+    # Task 9a: the heal through the runner. The store's list (record().spaces) and setSpace are stubbed in.
+    HEAL_STUBS = """
+      const r0 = window.__vm.native.record;
+      window.__vm.native.record = () => ({ ...r0(), spaces: STORE });
+      window.__vm.native.setSpace = async (id, sp, o) => { call(["setSpace", id, sp, o.windowId]); };
+    """
+
+    def test_the_heal_moves_each_dead_tab_with_setspace_and_logs_it(self):
+        out = runtime(Repairs.ORPHANS, me=1, script="const STORE = () => s.spaces;" + self.HEAL_STUBS)
+        self.assertEqual(out["calls"][:3], [["setSpace", 11, 0, 1], ["setSpace", 12, 0, 1], ["setSpace", 21, 0, 2]])
+        self.assertIn("[vivarc] repair: tab 11 from deleted space 9 to its window's default space", out["log"])
+        self.assertEqual(runtime(Repairs.ORPHANS, me=2, script="const STORE = () => s.spaces;" + self.HEAL_STUBS)["calls"], [], "not the leader")
+
+    def test_the_heal_does_nothing_while_vivaldis_store_has_no_list(self):
+        for store, why in [("() => null", "a workspace list could not be read"), ("() => []", "a workspace list is empty"),
+                           ("() => [5, 6]", "the workspace lists disagree or changed")]:
+            out = runtime(Repairs.ORPHANS, me=1, script=f"const STORE = {store};" + self.HEAL_STUBS)
+            self.assertEqual(out["calls"], [], why)
+            self.assertIn(f"WARN [vivarc] repair: tabs of a deleted space left as they are: {why}", out["log"], why)
+
+    def test_the_heal_leaves_alone_what_undelete_can_still_bring_back(self):
+        script = "const STORE = () => s.spaces; window.__vm.store = { get: async () => [9, { id: 8 }] };" + self.HEAL_STUBS
+        self.assertEqual(runtime(Repairs.ORPHANS, me=1, script=script)["calls"], [])
 
     def test_a_repair_that_does_not_take_stops_after_three_passes(self):
         out = runtime(Repairs.D1, me=1)

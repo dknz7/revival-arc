@@ -205,19 +205,36 @@
   // What puts the invariants back when Vivaldi breaks them (spec Part 2, "Repairs"), in the spec's order. Pure.
   // windows: chrome.windows; tabs: every tab in every normal window; record: Map spaceId -> windowId (Vivaldi's);
   // spaces: the ids of the spaces that exist, or null when the list can't be read (then no space counts as deleted).
-  // -> [{kind:"switch", window, space} | {kind:"activate", tab} | {kind:"gather", space, window, tabs}], in the order
-  // to carry them out. Each step is planned on the record the steps before it leave, so the plan's own result needs no
-  // repair (Part 1's effects), with one exception noted at rule 2.
-  const repairPlan = ({ windows, tabs, record, spaces }) => {
+  // heal: the ids of deleted spaces whose tabs may be moved (healGate below says which, after its guards), else empty.
+  // -> [{kind:"rehome", tab, window, from} | {kind:"switch", window, space} | {kind:"activate", tab} |
+  // {kind:"gather", space, window, tabs}], in the order to carry them out. Each step is planned on the record (and the
+  // tabs) the steps before it leave, so the plan's own result needs no repair (Part 1's effects), with one exception
+  // noted at rule 2.
+  const HEAL_MAX = 25;
+  const repairPlan = ({ windows, tabs, record, spaces, heal }) => {
     const normal = (windows || []).filter((w) => w.type === "normal").map((w) => w.id).sort((a, b) => a - b);
     const live = new Set(normal);
-    const all = (tabs || []).filter((t) => live.has(t.windowId));
-    const held = (w, id) => all.filter((t) => t.windowId === w && of(t) === id);
     const known = Array.isArray(spaces) ? new Set(spaces) : null;
-    // the record as the plan so far leaves it: named spaces only, in windows that are still open
-    const shown = new Map([...(record || [])].filter(([id, w]) => id && live.has(w)));
-    const recordedIn = (w) => [...shown].find(([, x]) => x === w)?.[0] ?? 0;
     const plan = [];
+
+    // 0. A tab whose space no longer exists (Vivaldi 8.3 restores a deleted space's tab with its dead id, task 8y) moves
+    //    to its window's default space, where it stays (native.setSpace onto itself: same window, same place). At most
+    //    HEAL_MAX a pass; the rest wait for the next. The steps below see the moved tabs in the default space.
+    const dead = new Set([...(heal || [])].filter((id) => id && (!known || !known.has(id))));
+    const rehomed = new Set();
+    for (const t of (tabs || []).filter((x) => live.has(x.windowId) && dead.has(of(x))).sort((a, b) => a.windowId - b.windowId || a.index - b.index)) {
+      if (rehomed.size >= HEAL_MAX) break;
+      plan.push({ kind: "rehome", tab: t.id, window: t.windowId, from: of(t) });
+      rehomed.add(t.id);
+    }
+    const all = (tabs || []).filter((t) => live.has(t.windowId)).map((t) => (rehomed.has(t.id) ? { ...t, vivExtData: restamp(t, 0) } : t));
+    const held = (w, id) => all.filter((t) => t.windowId === w && of(t) === id);
+    // the record as the plan so far leaves it: named spaces only, in windows that are still open. Moving a window's tab on
+    // screen out of the dead space its record names takes the record to default with it (measured, task 9a), so rule 1
+    // has nothing to switch there (a switch to default on a window already there only steals focus, A8c).
+    const onScreen = new Set((tabs || []).filter((t) => t.active && rehomed.has(t.id)).map((t) => `${t.windowId}:${of(t)}`));
+    const shown = new Map([...(record || [])].filter(([id, w]) => id && live.has(w) && !onScreen.has(`${w}:${id}`)));
+    const recordedIn = (w) => [...shown].find(([, x]) => x === w)?.[0] ?? 0;
 
     // 1. A record on a deleted space, or on a space with no tab in its window (F2, C3, D1): the window goes to default,
     //    which activates its default tab (A8a, A8b), so rule 2 has nothing left to do there.
@@ -234,7 +251,10 @@
     //    Only a window on default can hold no tab of its space here (rule 1 took the rest); then the record follows
     //    the active tab, unless that space is shown in another window (G6). A switch to default would then do nothing
     //    (A8c) and a switch to it would only focus that window (A2), so nothing is switched: rule 3 gathers the tab
-    //    where its space is shown, and what the window shows next is Vivaldi's pick, for the next pass.
+    //    where its space is shown, and what the window shows next is Vivaldi's pick, for the next pass. Nor is a window
+    //    switched INTO a space that is not in the list (a deleted one: 8y, Chromium put a dead tab on screen when the
+    //    window's last default tab closed), nor into any named space while the list can't be read: the heal (rule 0)
+    //    takes such a tab home once its space is known to be gone.
     const pulled = new Set();
     for (const w of normal) {
       if (toDefault.has(w)) continue;
@@ -244,7 +264,7 @@
       if (space === own) continue;
       const back = recentTab(held(w, own), own);
       if (back) plan.push({ kind: "activate", tab: back.id });
-      else if (!shown.has(space)) {
+      else if (!shown.has(space) && (!space || known?.has(space))) {
         // Vivaldi's switch moves every tab of the space here (A4, A6), so rule 3 has nothing to gather for it
         plan.push({ kind: "switch", window: w, space });
         shown.set(space, w);
@@ -253,8 +273,9 @@
     }
 
     // 3. A named space with tabs in more than one window (D8): its strays move to where it lives, the window showing
-    //    it, else the one with most of its tabs (livesIn). They keep their space (C1).
-    const named = [...new Set(all.map(of))].filter((id) => id && !pulled.has(id)).sort((a, b) => a - b);
+    //    it, else the one with most of its tabs (livesIn). They keep their space (C1). A deleted space is not gathered:
+    //    its tabs go to their own window's default space (rule 0).
+    const named = [...new Set(all.map(of))].filter((id) => id && !pulled.has(id) && !(known && !known.has(id))).sort((a, b) => a - b);
     for (const id of named) {
       const own = all.filter((t) => of(t) === id);
       if (new Set(own.map((t) => t.windowId)).size < 2) continue;
@@ -264,6 +285,27 @@
     }
     return plan;
   };
+
+  // Which deleted spaces' tabs the heal (repair rule 0) may move: a wrong list would move every tab of a live space, so
+  // it acts only on a list it can trust. first, second: two reads about 1 s apart, each { pref, store }: the ids in the
+  // pref vivaldi.workspaces.list and in Vivaldi's own store (null when unreadable or not found). Trusted only when every
+  // read succeeded and is non-empty, the pref and the store agree, and nothing changed between the two reads (at
+  // start-up Vivaldi's store is empty until its list is loaded, so it disagrees with the pref and nothing moves). tabs:
+  // every normal window's tabs; skip: ids a "recently deleted spaces" store can still bring back (undelete, chunk 3).
+  // -> { ids: the dead space ids on tabs, sorted, or [] , why: null, or the reason nothing may move }
+  const healGate = ({ first, second, tabs, skip } = {}) => {
+    const reads = [first?.pref, first?.store, second?.pref, second?.store];
+    if (!reads.every(Array.isArray)) return { ids: [], why: "a workspace list could not be read" };
+    if (!reads.every((r) => r.length)) return { ids: [], why: "a workspace list is empty" };
+    const key = (r) => JSON.stringify([...new Set(r)].sort((a, b) => a - b));
+    if (new Set(reads.map(key)).size !== 1) return { ids: [], why: "the workspace lists disagree or changed" };
+    const known = new Set(first.pref);
+    const keep = new Set((skip || []).map((s) => (s && typeof s === "object" ? s.id : s)).filter(Boolean));
+    const ids = [...new Set((tabs || []).map(of))].filter((id) => id && !known.has(id) && !keep.has(id)).sort((a, b) => a - b);
+    return { ids, why: null };
+  };
+  // Whether any tab carries a named space that is not in `known` (cheap: the heal then confirms with healGate).
+  const strays = (tabs, known) => Array.isArray(known) && (tabs || []).some((t) => deadSpace(t, known));
 
   // A click on a tile that sends its space to a new window: ctrl+shift on Windows, cmd+shift on a Mac.
   const wantsNewWindow = (event, windows = window.__vm.windows) =>
@@ -553,6 +595,14 @@
               all: () => {
                 try { return new Map([...store.getActiveWorkspaces()].filter(([space]) => space != null)); } catch (_) { return new Map(); }
               },
+              // The ids of the spaces in Vivaldi's own store (it is empty at start-up until Vivaldi has loaded its
+              // list), or null when the store has no such list or it throws: the heal's second opinion (healGate).
+              spaces: () => {
+                try {
+                  const list = typeof store.getWorkspaces === "function" ? store.getWorkspaces() : null;
+                  return list && typeof list[Symbol.iterator] === "function" ? Array.from(list, (w) => w?.id) : null;
+                } catch (_) { return null; }
+              },
             };
           }
         }
@@ -669,5 +719,5 @@
     return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, strays, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

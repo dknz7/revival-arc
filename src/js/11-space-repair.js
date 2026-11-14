@@ -3,7 +3,11 @@
 // that, once the browser settles, the leader window (workspaces.leaderOf) plans the fix on a fresh snapshot
 // (workspaces.repairPlan) and carries it out, re-planning after each pass, at most 3 passes.
 // Every window runs this; only the leader acts, decided again at each run, so a new leader takes over when the
-// leader's window closes. Repairs never write a tab's space: a gather moves tabs, which keep their space (C1).
+// leader's window closes. Repairs never write a tab's space (a gather moves tabs, which keep their space, C1), with one
+// exception: a tab whose space no longer exists moves to its window's default space (rule 0, the heal; Vivaldi 8.3
+// restores a deleted space's closed tabs with the dead id, task 8y). The heal acts only on a workspace list it can trust
+// (workspaces.healGate: two reads about 1 s apart, the pref and Vivaldi's store agreeing and non-empty), skips ids a
+// "recently deleted spaces" store can still bring back, moves at most HEAL_MAX tabs a pass and logs each one.
 // Without Vivaldi's record (or its switch) every rule would be guessing, so repairs then do nothing.
 (() => {
   const SETTLE_MS = 400;
@@ -12,6 +16,8 @@
   const BUSY_MAX_MS = 10000;
   const BUSY_CHECK_MS = 500;
   const COOL_MS = 10000;
+  const HEAL_CONFIRM_MS = 1000;
+  const DELETED_KEY = "deletedSpaces"; // undelete's store (chunk 3): ids it can still revive are not healed
   const spacesOf = window.__vm.workspaces;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -78,6 +84,30 @@
     return all;
   };
 
+  // The two lists the heal compares: the pref and Vivaldi's own store. spaceRepair.test.lists replaces this read (the
+  // sandbox's guard case, R.heal-guard-unloaded).
+  const readLists = async () => {
+    const test = window.__vm.spaceRepair?.test;
+    if (typeof test?.lists === "function") return test.lists();
+    return { pref: await readSpaces(), store: window.__vm.native?.record()?.spaces?.() ?? null };
+  };
+  // The deleted spaces whose tabs may move this pass ([] when none, or when a guard says no). Asked only when a tab
+  // carries an id the snapshot's list does not have, so a pass without such a tab waits for nothing.
+  let lastWhy = null;
+  const confirmHeal = async (snap) => {
+    if (!spacesOf.strays(snap.tabs, snap.spaces)) return [];
+    const first = await readLists();
+    await sleep(HEAL_CONFIRM_MS);
+    const second = await readLists();
+    let skip = [];
+    try { skip = (await window.__vm.store?.get(DELETED_KEY, [])) || []; } catch (_) {}
+    const tabs = await chrome.tabs.query({ windowType: "normal" });
+    const { ids, why } = spacesOf.healGate({ first, second, tabs, skip: Array.isArray(skip) ? skip : [] });
+    if (why && why !== lastWhy) console.warn(`[vivarc] repair: tabs of a deleted space left as they are: ${why}`);
+    lastWhy = why;
+    return ids;
+  };
+
   let ownWindow = null;
   const snapshot = async () => {
     const windows = await chrome.windows.getAll();
@@ -96,6 +126,9 @@
       } else if (step.kind === "activate") {
         line = `activate tab ${step.tab}`;
         await chrome.tabs.update(step.tab, { active: true });
+      } else if (step.kind === "rehome") {
+        line = `tab ${step.tab} from deleted space ${step.from} to its window's default space`;
+        await window.__vm.native.setSpace(step.tab, 0, { windowId: step.window });
       } else if (step.kind === "gather") {
         line = `gather space ${step.space} into window ${step.window} (tabs ${step.tabs.join(", ")})`;
         await chrome.tabs.move(step.tabs, { windowId: step.window, index: -1 });
@@ -117,7 +150,10 @@
         warnOnce("record", "[vivarc] repairs are off: Vivaldi's workspace record or switch could not be found");
         return "done";
       }
-      const plan = spacesOf.repairPlan(snap);
+      const heal = await confirmHeal(snap);
+      if (busyFor()) return "wait";
+      // planned on the tabs as they are after the heal's wait
+      const plan = spacesOf.repairPlan(heal.length ? { ...snap, tabs: await chrome.tabs.query({ windowType: "normal" }), heal } : snap);
       if (!plan.length) return "done";
       if (pass > MAX_PASSES) return "stuck";
       for (const step of plan) await carryOut(step);
@@ -156,11 +192,16 @@
     if (!(await window.__vm.ready)) return;
     try { ownWindow = (await chrome.windows.getCurrent()).id; } catch (_) { return; }
     for (const ev of ["onActivated", "onAttached", "onDetached", "onRemoved"]) chrome.tabs[ev]?.addListener(() => schedule());
+    // a deleted space's tab put back in the background (Vivaldi's own Reopen Closed Tab can) sets off nothing else
+    let known = null;
+    chrome.tabs.onCreated?.addListener((tab) => { if (spacesOf.deadSpace(tab, known)) schedule(); });
     chrome.windows.onRemoved?.addListener(() => schedule());
     // a space created or deleted: the same comparison as the sidebar's 3 s poll of the workspace list
-    let spaces = JSON.stringify(await readSpaces());
+    known = await readSpaces();
+    let spaces = JSON.stringify(known);
     setInterval(async () => {
-      const now = JSON.stringify(await readSpaces());
+      known = await readSpaces();
+      const now = JSON.stringify(known);
       if (now !== spaces) { spaces = now; schedule(); }
     }, 3000);
     schedule();
