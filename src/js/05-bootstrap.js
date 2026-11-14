@@ -194,12 +194,14 @@
     await bindShortcuts();
     await tidyToolbars();
     await set("vivaldi.address_bar.visible", false);
-    await set("vivaldi.panels.position", "right");
-    await set("vivaldi.auto_hide.enabled", true);
-    for (const [key, value] of [["panel", true], ["tab_bar", false], ["address_bar", false], ["status_bar", false],
-      ["bookmarks_bar", false], ["show_introduction", false]]) await set(`vivaldi.auto_hide.${key}`, value);
-    await set("vivaldi.status_bar.display", "overlay");
-    if (!(await window.__vm.store.get("bootstrap", 0))) await set("vivaldi.tabs.bar.width", 323);
+    if (!(await window.__vm.store.get("bootstrap", 0))) {
+      await set("vivaldi.panels.position", "right");
+      await set("vivaldi.auto_hide.enabled", true);
+      for (const [key, value] of [["panel", true], ["tab_bar", false], ["address_bar", false], ["status_bar", false],
+        ["bookmarks_bar", false], ["show_introduction", false]]) await set(`vivaldi.auto_hide.${key}`, value);
+      await set("vivaldi.status_bar.display", "overlay");
+      await set("vivaldi.tabs.bar.width", 323);
+    }
     await replaceWelcome();
     await window.__vm.store.set("bootstrap", VERSION);
   };

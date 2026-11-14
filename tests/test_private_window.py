@@ -13,7 +13,7 @@ SETUP = r'''
 const fs = require("fs"), vm = require("vm");
 const sc = JSON.parse(process.argv[2]);
 const sets = [], prefs = { "vivaldi.actions": [{ COMMAND_SAVE_PAGE: { shortcuts: ["ctrl+s"] } }], "vivaldi.toolbars.tabbar_before": ["AddressField"],
-  "vivaldi.toolbars.tabbar_after": ["AccountButton"], "vivaldi.tabs.bar.position": "top" };
+  "vivaldi.toolbars.tabbar_after": ["AccountButton"], "vivaldi.tabs.bar.position": "top", ...sc.prefs };
 const ev = { addListener() {} };
 global.setTimeout = () => 0;
 global.console = { log() {}, warn() {} };
@@ -21,26 +21,53 @@ global.chrome = { extension: { inIncognitoContext: sc.incognito },
   windows: { getCurrent: async () => ({ id: 1, type: "normal", incognito: sc.incognito }), getAll: async () => [{ id: 1, type: "normal", incognito: sc.incognito }] },
   tabs: { query: async () => [], update: async () => ({}), onCreated: ev, onUpdated: ev } };
 global.vivaldi = { prefs: { get: async (path) => ({ value: prefs[path] }), set: async ({ path, value }) => { sets.push(path); prefs[path] = value; } } };
-const stored = new Map();
-global.window = { __vm: { config: { startUrl: "file:///guide.html" }, windows: true, shortcut: (c) => c,
+const stored = new Map(Object.entries(sc.stored || {}));
+const windows = true;
+const shortcut = (combo) => {
+  if (combo === "alt+meta+left" || combo === "alt+meta+right") {
+    return windows ? combo.replace("alt+meta", "ctrl") : combo;
+  }
+  if (!windows) return combo;
+  if (combo === "ctrl+meta+n") return "alt+ctrl+n";
+  return combo.replace("ctrl+meta+", "ctrl+shift+").replace("meta", "ctrl");
+};
+global.window = { __vm: { config: { startUrl: "file:///guide.html" }, windows, shortcut,
   workspaces: { leaderOf: (wins) => wins[0]?.id },
   store: { get: async (k, f) => stored.get(k) ?? f, set: async (k, v) => { stored.set(k, v); } } } };
 for (const file of ["05-bootstrap.js", "06-spaces.js"]) vm.runInThisContext(fs.readFileSync(require("path").join(process.argv[1], file), "utf8"));
 (async () => {
   await window.__vm.spaces.syncBottomBar(false);
   for (let i = 0; i < 60; i++) await new Promise((r) => setImmediate(r));
-  process.stdout.write(JSON.stringify({ sets, stored: [...stored.keys()] }) + "\n");
+  process.stdout.write(JSON.stringify({ sets, stored: [...stored.keys()], prefs, bootstrap: stored.get("bootstrap") }) + "\n");
 })();
 '''
 
 
-def setup_run(incognito):
-    out = subprocess.run(["node", "-e", SETUP, JS, json.dumps({"incognito": incognito})], check=True, capture_output=True, text=True)
+def setup_run(incognito, **scenario):
+    out = subprocess.run(["node", "-e", SETUP, JS, json.dumps({"incognito": incognito, **scenario})], check=True, capture_output=True, text=True)
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the profile setup's JavaScript")
 class ProfileSetup(unittest.TestCase):
+    LAYOUT = {"vivaldi.panels.position": "right", "vivaldi.status_bar.display": "overlay",
+              **{f"vivaldi.auto_hide.{key}": value for key, value in {
+                  "enabled": True, "panel": True, "tab_bar": False, "address_bar": False,
+                  "status_bar": False, "bookmarks_bar": False, "show_introduction": False}.items()}}
+
+    def test_first_bootstrap_applies_all_nine_defaults_over_existing_values(self):
+        out = setup_run(False, prefs={key: "old" for key in self.LAYOUT})
+        self.assertEqual({key: out["prefs"][key] for key in self.LAYOUT}, self.LAYOUT)
+
+    def test_version_bump_preserves_present_and_absent_layout_preferences(self):
+        for choices in ({}, {key: "custom" for key in self.LAYOUT},
+                        {"vivaldi.auto_hide.tab_bar": True, "vivaldi.panels.position": "left"}):
+            with self.subTest(choices=choices):
+                out = setup_run(False, stored={"bootstrap": 1}, prefs=choices)
+                self.assertGreater(out["bootstrap"], 1, "the version migration actually ran")
+                self.assertFalse(set(self.LAYOUT) & set(out["sets"]))
+                self.assertEqual({key: out["prefs"][key] for key in self.LAYOUT if key in out["prefs"]}, choices)
+
     def test_a_normal_window_of_a_new_profile_sets_it_up(self):
         out = setup_run(False)  # the control: the fake can see the setup's writes
         for path in ("vivaldi.address_bar.visible", "vivaldi.tabs.bar.width", "vivaldi.auto_hide.enabled", "vivaldi.actions",

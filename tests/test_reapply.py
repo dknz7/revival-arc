@@ -72,8 +72,14 @@ class Reapply(unittest.TestCase):
 
     def test_writes_nothing_into_the_users_profile(self):
         # Elevated writes into a user-writable folder can be redirected with a junction: the task must not make any.
+        profile = self.data / "Default"
+        profile.mkdir()
+        prefs = profile / "Preferences"
+        original = b'{"vivaldi":{"auto_hide":{},"panels":{},"status_bar":{}}}'
+        prefs.write_bytes(original)
         self.run_task()
         self.assertEqual(list(self.home.iterdir()), [])
+        self.assertEqual(prefs.read_bytes(), original)
 
     def plant_peek(self):
         peek = self.home / "peek"

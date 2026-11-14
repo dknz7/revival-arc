@@ -4,10 +4,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import windows_support as win
 
 
@@ -94,7 +97,18 @@ class WindowsSupport(unittest.TestCase):
                 launcher = Path(v.UPDATE_COMMAND).read_text(encoding='utf8')
                 self.assertIn('"' + str(data) + '"', launcher)
                 self.assertIn('"' + str(app) + '"', launcher)
+                # Vivaldi does not write prefs equal to their defaults (HOW-IT-WORKS.md).
+                # Absence after setup can therefore be a user choice too.
+                patched['vivaldi']['auto_hide'].clear()
+                del patched['vivaldi']['panels']['position']
+                del patched['vivaldi']['status_bar']['display']
+                prefs.write_text(json.dumps(patched))
+                self.assertIn('Default', v.load_state()['profiles'])
                 v.cmd_install(args)
+                reapplied = json.loads(prefs.read_text())['vivaldi']
+                self.assertEqual(reapplied['auto_hide'], {})
+                self.assertNotIn('position', reapplied['panels'])
+                self.assertNotIn('display', reapplied['status_bar'])
                 v.cmd_uninstall(args)
                 self.assertEqual(json.loads(prefs.read_text()), original)
                 self.assertEqual((resources / 'window.html').read_bytes(), html)  # byte-identical: no CRLF
@@ -141,3 +155,229 @@ class WindowsSupport(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(json.loads((home / '.vivarc/app/called.json').read_text()), ['install', '--no-peek'])
             self.assertTrue((home / '.vivarc/app/install.bat').is_file())
+
+
+class AutoHideLifecycle(unittest.TestCase):
+    DEFAULTS = {"vivaldi.panels.position": 1, "vivaldi.status_bar.display": 2,
+                **{f"vivaldi.auto_hide.{key}": value for key, value in {
+                    "enabled": True, "panel": True, "tab_bar": False, "address_bar": False,
+                    "status_bar": False, "bookmarks_bar": False, "show_introduction": False}.items()}}
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.v = v = private_vivarc()
+        app = root / 'Vivaldi app'
+        resources = app / '8.10.1' / 'resources' / 'vivaldi'
+        resources.mkdir(parents=True)
+        (resources / 'window.html').write_text('<html><body></body></html>')
+        self.actions = [{'COMMAND_NEW_TAB': {'shortcuts': ['ctrl+t']},
+                         'COMMAND_SAVE_PAGE': {'shortcuts': ['ctrl+s']}}]
+        (resources / 'prefs_definitions.json').write_text(json.dumps({'vivaldi': {'actions': {'default': self.actions}}}))
+        data = root / 'User Data'
+        (data / 'Default').mkdir(parents=True)
+        (data / 'Local State').write_text('{}')
+        self.prefs = data / 'Default' / 'Preferences'
+        self.write({})
+        v.HOME_DIR = str(root / 'vivarc home')
+        v.UPDATE_COMMAND = str(root / 'vivarc home' / 'Update Vivarc.bat')
+        v.UNINSTALL_COMMAND = str(root / 'vivarc home' / 'Uninstall Vivarc.bat')
+        v.LEGACY_UPDATE_COMMAND = str(root / 'missing.command')
+        self.args = argparse.Namespace(app=str(app), data_dir=str(data), no_peek=True, dry_run=False, purge=False)
+        win.configure(v, self.args)
+        for patch in (mock.patch.object(v, 'ensure_vivaldi_closed'),
+                      mock.patch.object(v.platform, 'system', return_value='Windows')):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def write(self, prefs):
+        self.prefs.write_text(json.dumps(prefs))
+
+    def read(self):
+        return json.loads(self.prefs.read_text())
+
+    def layout(self, prefs):
+        return {key: value for key in self.DEFAULTS
+                if (value := self.v._get(prefs, tuple(key.split('.')))) is not self.v._MISSING}
+
+    def test_install_uninstall_install_seeds_all_nine_again(self):
+        self.assertFalse(self.v.looks_configured(self.read()))
+        self.v.cmd_install(self.args)
+        self.assertTrue(self.v.looks_configured(self.read()))
+        self.v.cmd_uninstall(self.args)
+        self.assertFalse(self.v.looks_configured(self.read()))
+        self.assertEqual(self.layout(self.read()), {})
+        self.v.cmd_install(self.args)
+        self.assertEqual(self.layout(self.read()), self.DEFAULTS)
+
+    def test_uninstall_removes_restored_profile_from_saved_state(self):
+        self.v.cmd_install(self.args)
+        self.v.cmd_uninstall(self.args)
+        self.assertNotIn('Default', self.v.load_state()['profiles'])
+
+    def test_runtime_configured_profile_without_state_keeps_present_and_absent_keys(self):
+        from test_private_window import setup_run
+        runtime = setup_run(False)['prefs']  # actual 05-bootstrap.js, running in the Node harness
+        prefs = {}
+        for path, value in runtime.items():
+            self.v._set(prefs, tuple(path.split('.')), value)
+        for key in self.DEFAULTS:
+            self.v._delete(prefs, tuple(key.split('.')))
+        self.v._set(prefs, ('vivaldi', 'auto_hide', 'tab_bar'), True)
+        self.v._set(prefs, ('vivaldi', 'panels', 'position'), 0)
+        self.assertTrue(self.v.looks_configured(prefs))
+        self.assertNotIn('Default', self.v.load_state()['profiles'])
+        self.write(prefs)
+        self.v.cmd_install(self.args)
+        self.assertEqual(self.layout(self.read()), self.layout(prefs))
+        saved = self.v.load_state()['profiles']['Default']
+        for key, entry in self.v.blank_snapshot().items():
+            self.assertEqual(saved[key], entry, key)
+        self.v.cmd_uninstall(self.args)
+        self.assertEqual(self.layout(self.read()), {})
+        self.assertIs(self.v._get(self.read(), ('vivaldi', 'tabs', 'bar', 'position')), self.v._MISSING)
+        self.assertIs(self.v._get(self.read(), ('vivaldi', 'toolbars', 'tabbar_before')), self.v._MISSING)
+
+    def test_reset_preferences_in_saved_state_get_fresh_defaults_and_snapshot(self):
+        self.write({'vivaldi': {'panels': {'position': 0}}})
+        self.v.cmd_install(self.args)
+        reset = {'vivaldi': {'auto_hide': {'tab_bar': True}}}
+        self.write(reset)
+        self.assertIn('Default', self.v.load_state()['profiles'])
+        self.assertFalse(self.v.looks_configured(reset))
+        self.v.cmd_install(self.args)
+        self.assertEqual(self.layout(self.read()), self.DEFAULTS)
+        self.v.cmd_uninstall(self.args)
+        self.assertEqual(self.read(), reset)
+
+    def test_first_install_overrides_non_vivarc_values_and_uninstall_restores_them(self):
+        for choices in ({key: not value if isinstance(value, bool) else 0 for key, value in self.DEFAULTS.items()},
+                        {'vivaldi.auto_hide.tab_bar': True}):
+            with self.subTest(choices=choices):
+                original = {'vivaldi': {'actions': self.actions}}
+                for key, value in choices.items():
+                    self.v._set(original, tuple(key.split('.')), value)
+                self.write(original)
+                self.assertFalse(self.v.looks_configured(original))
+                self.v.cmd_install(self.args)
+                self.assertEqual(self.layout(self.read()), self.DEFAULTS)
+                self.v.cmd_uninstall(self.args)
+                self.assertEqual(self.read(), original)
+
+    def test_reapply_keeps_all_present_choices_because_it_is_reapply(self):
+        self.v.cmd_install(self.args)
+        prefs = self.read()
+        choices = {key: not value if isinstance(value, bool) else 0 for key, value in self.DEFAULTS.items()}
+        for key, value in choices.items():
+            self.v._set(prefs, tuple(key.split('.')), value)
+        self.write(prefs)
+        self.v.cmd_install(self.args)
+        self.assertEqual(self.layout(self.read()), choices)
+        first, _ = self.v.patch_preferences(prefs, self.actions, reapply=False)
+        self.assertEqual(self.layout(first), self.DEFAULTS)
+
+    def check_shortcut_edit_preserves_layout_and_snapshot(self, shortcuts):
+        original = {'vivaldi': {'tabs': {'bar': {'position': 0}}, 'panels': {'position': 0}}}
+        self.write(original)
+        self.v.cmd_install(self.args)
+        saved = self.v.load_state()['profiles']['Default']
+        prefs = self.read()
+        prefs['vivaldi']['actions'][0]['COMMAND_PAGE_COPY_URL']['shortcuts'] = shortcuts
+        choices = {key: not value if isinstance(value, bool) else 0 for key, value in self.DEFAULTS.items()}
+        for key, value in choices.items():
+            self.v._set(prefs, tuple(key.split('.')), value)
+        self.write(prefs)
+        self.v.cmd_install(self.args)
+        self.assertEqual(self.layout(self.read()), choices)
+        self.assertEqual(self.v.load_state()['profiles']['Default'], saved)
+        self.v.cmd_uninstall(self.args)
+        self.assertEqual(self.read(), original)
+
+    def test_removed_copy_url_keeps_layout_and_original_snapshot(self):
+        self.check_shortcut_edit_preserves_layout_and_snapshot([])
+
+    def test_normalized_copy_url_keeps_layout_and_original_snapshot(self):
+        self.check_shortcut_edit_preserves_layout_and_snapshot(['ctrl+shift+c'])
+
+    def test_sparse_pre_vivarc_copy_url_is_not_configured_and_first_install_seeds(self):
+        prefs = {'vivaldi': {'actions': [{'COMMAND_PAGE_COPY_URL': {'shortcuts': ['shift+meta+c']}}]}}
+        self.write(prefs)
+        with mock.patch.object(self.v, 'COPY_URL_KEY', 'shift+meta+c'), mock.patch.object(self.v, 'FREED_KEY', 'meta+t'):
+            self.assertFalse(self.v.looks_configured(prefs))
+            self.v.cmd_install(self.args)
+        self.assertEqual(self.layout(self.read()), self.DEFAULTS)
+        self.v.cmd_uninstall(self.args)
+        self.assertEqual(self.read(), prefs)
+
+    def test_shortcut_detection_normalizes_both_copy_and_new_tab_keys(self):
+        prefs = {'vivaldi': {'actions': [{'COMMAND_PAGE_COPY_URL': {'shortcuts': [' C + SHIFT + Ctrl ']},
+                                         'COMMAND_NEW_TAB': {'shortcuts': []}}]}}
+        self.assertTrue(self.v.looks_configured(prefs))
+        prefs['vivaldi']['actions'][0]['COMMAND_NEW_TAB']['shortcuts'] = [' T + CTRL ']
+        self.assertFalse(self.v.looks_configured(prefs))
+
+    def test_configured_signal_requires_both_markers_without_state_but_either_with_state(self):
+        for saved in (False, True):
+            for position in (1, 2, 'left', 'right', 0, 3, 'top', 'bottom', None):
+                for toolbar in (['AddressField'], [], None):
+                    for keys in (False, True):
+                        with self.subTest(saved=saved, position=position, toolbar=toolbar, keys=keys):
+                            prefs = {'vivaldi': {'tabs': {'bar': {'position': position}}}}
+                            if toolbar is not None:
+                                prefs['vivaldi']['toolbars'] = {'tabbar_before': toolbar}
+                            if keys:
+                                prefs['vivaldi']['actions'] = [{'COMMAND_PAGE_COPY_URL': {'shortcuts': ['ctrl+shift+c']},
+                                                              'COMMAND_NEW_TAB': {'shortcuts': []}}]
+                            state = {'profiles': {'Default': {}} if saved else {}}
+                            sidebar = position in (1, 2, 'left', 'right') and toolbar == ['AddressField']
+                            self.assertEqual(self.v.has_vivarc_sidebar(prefs), sidebar)
+                            self.assertEqual(self.v.is_configured_profile('Default', prefs, state),
+                                             (sidebar or keys) if saved else (sidebar and keys))
+
+    def add_second_profile(self):
+        data = Path(self.args.data_dir)
+        (data / 'Local State').write_text(json.dumps({'profile': {'info_cache': {'Default': {}, 'Profile 2': {}}}}))
+        second = data / 'Profile 2' / 'Preferences'
+        second.parent.mkdir()
+        second.write_text('{}')
+        return second
+
+    def test_install_failure_on_second_profile_persists_first_snapshot(self):
+        original = {'vivaldi': {'panels': {'position': 0}}}
+        self.write(original)
+        self.add_second_profile().write_text('{broken')
+        with self.assertRaises(json.JSONDecodeError):
+            self.v.cmd_install(self.args)
+        self.assertEqual(self.layout(self.read()), self.DEFAULTS)
+        self.assertEqual(self.v.load_state()['profiles'].get('Default'), self.v._snapshot(original))
+
+    def test_uninstall_removes_injection_before_touching_profiles(self):
+        self.v.cmd_install(self.args)
+        prefs, state = self.read(), self.v.load_state()
+        with mock.patch.object(self.v, 'write_atomic', side_effect=OSError('locked window.html')):
+            with self.assertRaisesRegex(OSError, 'locked window.html'):
+                self.v.cmd_uninstall(self.args)
+        self.assertEqual(self.read(), prefs)
+        self.assertEqual(self.v.load_state(), state)
+
+    def test_uninstall_prunes_missing_profile(self):
+        second = self.add_second_profile()
+        self.v.cmd_install(self.args)
+        second.unlink()
+        second.parent.rmdir()
+        self.v.cmd_uninstall(self.args)
+        self.assertEqual(self.v.load_state()['profiles'], {})
+
+    def test_purge_failure_on_second_profile_persists_first_restore(self):
+        second = self.add_second_profile()
+        self.v.cmd_install(self.args)
+        second.write_text('{broken')
+        self.args.purge = True
+        with self.assertRaises(json.JSONDecodeError):
+            self.v.cmd_uninstall(self.args)
+        self.assertEqual(self.read(), {})
+        self.assertEqual(set(self.v.load_state()['profiles']), {'Profile 2'})
+        resources = Path(self.v.resource_dir(self.args.app))
+        self.assertNotIn(self.v.BEGIN, (resources / 'window.html').read_text())
+        self.assertFalse((resources / 'vivarc.js').exists())
