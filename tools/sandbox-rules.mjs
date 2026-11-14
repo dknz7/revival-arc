@@ -4066,13 +4066,26 @@ for (const layout of ["dia", "arc"]) {
         await h.cdp(ctx.W).send("Input.insertText", { text: typed }); await sleep(700);
         const lead = await h.ev(`document.querySelector("#vm-cmd .vm-cmd-row.sel")?.textContent ?? null`, ctx.W);
         await keyEnter(ctx.W);
+        if (name === "data") {
+          // review round 2 (C1): a data: page can run a script, so it is shown in Vivaldi's own field, never submitted for the
+          // user; their own Enter there loads it
+          await sleep(1500);
+          const shown = await FIELD_STATE9(ctx.W);
+          const early = (await activeUrl(ctx.W)).url;
+          if (shown.native && shown.fieldFocused) await keyEnter(ctx.W);
+          const got = await waitFor(async () => { const u = (await activeUrl(ctx.W)).url; return u === want ? u : null; }, 5000, 200) || (await activeUrl(ctx.W)).url;
+          out[name] = { lead, got, want, early, shown: { native: shown.native, focused: shown.fieldFocused, value: shown.value } };
+          await sleep(300);
+          continue;
+        }
         const got = await waitFor(async () => { const u = (await activeUrl(ctx.W)).url; return u === want ? u : null; }, 5000, 200) || (await activeUrl(ctx.W)).url;
         out[name] = { lead, got, want, native: (await FIELD_STATE9(ctx.W)).native };
         await sleep(300);
       }
       return out;
     },
-    expect: (s, b, r) => Object.entries(r).map(([name, x]) => x.got === x.want ? null : `${name}: typed, the tab is on ${J(x.got)}, want ${J(x.want)} (lead row ${J(x.lead)})`),
+    expect: (s, b, r) => [...Object.entries(r).map(([name, x]) => x.got === x.want ? null : `${name}: typed, the tab is on ${J(x.got)}, want ${J(x.want)} (lead row ${J(x.lead)})`),
+      !r.data || (r.data.shown?.native && r.data.shown.value === r.data.want && r.data.early !== r.data.want) ? null : `data: was not shown unsubmitted in Vivaldi's field before the user's Enter: ${J(r.data)}`],
   });
   // The escape hatch: "Open in Vivaldi's address field" shows Vivaldi's own field with the text, where the toasts drop; it
   // works there (Enter loads), and it is hidden again once it is done.
@@ -4275,7 +4288,24 @@ const ACTED = new Set(["clicked", "ok", "dropped"]);
 const actFailure = (r) => typeof r === "string" ? (ACTED.has(r) ? null : `the act did not happen: ${r}`)
   : r && typeof r === "object" && !Array.isArray(r) && r.error ? `the act did not happen: ${r.error}` : null;
 
-let lastPerf = null;
+const perfByWin = new Map(); // "layout:window" -> its latest window.__vm.perf
+// Sums every window's latest counters for a layout (calls, scans, ms; the worst time is the max).
+const perfTotal = (layout) => {
+  const sum = {};
+  let windows = 0;
+  for (const [k, p] of perfByWin) {
+    if (!k.startsWith(`${layout}:`)) continue;
+    windows++;
+    for (const [mod, counters] of Object.entries(p || {})) {
+      const t = (sum[mod] ||= {});
+      for (const [n, v] of Object.entries(counters || {})) {
+        if (typeof v !== "number") continue;
+        t[n] = /^max/.test(n) ? Math.max(t[n] ?? 0, v) : Math.round(((t[n] ?? 0) + v) * 10) / 10;
+      }
+    }
+  }
+  return { windows, ...sum };
+};
 async function runCase(c, layout) {
   const t0 = Date.now();
   const out = { id: c.id, layout };
@@ -4322,8 +4352,11 @@ async function runCase(c, layout) {
   }
   if (out.released) console.log(`      (input still held or failed to release after ${c.id}: ${J(out.released)})`);
   // The UI's own counters (Vivarc's observers and the bar's computations, window.__vm.perf) in H, the sweep's long-lived window.
-  out.perf = await h.ev(`JSON.parse(JSON.stringify(window.__vm.perf || null))`, ctx.H).catch(() => null);
-  if (out.perf) lastPerf = out.perf;
+  out.perf = {};
+  for (const e of h.byWin.values()) {
+    const p = await h.ev(`JSON.parse(JSON.stringify(window.__vm.perf || null))`, e.win).catch(() => null);
+    if (p) { out.perf[e.win] = p; perfByWin.set(`${layout}:${e.win}`, p); }
+  }
   const tag = `${out.skip ? "SKIP" : out.pass ? "PASS" : "FAIL"} ${layout} ${c.id}`;
   const timing = out.heldAtMs !== undefined ? ` (invariants held ${out.heldAtMs ?? "never"} ms after the act)` : "";
   if (out.skip) console.log(`${tag}: ${out.skip} (${out.bad.join(" | ")})`);
@@ -4360,7 +4393,7 @@ for (const layout of layouts) {
   const n = mine.filter((r) => r.pass).length, skipped = mine.filter((r) => r.pass === null).length;
   console.log(`${layout}: ${n} pass, ${mine.length - n - skipped} fail${skipped ? `, ${skipped} skipped (${SPLIT_REFUSED})` : ""}`);
   const hangs = mine.filter((r) => (r.bad || []).some((b) => /no reply to Input\.dispatch/.test(b))).map((r) => r.id);
-  console.log(`${layout}: input-ack hangs ${hangs.length}${hangs.length ? ` (${hangs.join(", ")})` : ""}; H's counters at the end: ${J(lastPerf)}`);
+  console.log(`${layout}: input-ack hangs ${hangs.length}${hangs.length ? ` (${hangs.join(", ")})` : ""}; the counters summed over its windows: ${J(perfTotal(layout))}`);
 }
 await reset().catch(() => {});
 await setLayout(false).catch(() => {});
