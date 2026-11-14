@@ -199,8 +199,8 @@ class Edit(unittest.TestCase):
         self.assertEqual(self.check("X"), {"same": True})
         self.assertEqual(self.check(""), {"why": "A space needs a name"})
         self.assertEqual(self.check("y")["why"], "There is already a space called “y”")
-        self.assertEqual(self.check("vivarc")["why"], "“vivarc” is another space's Pinned folder", "the default space's folder")
-        self.assertEqual(self.check("Old")["why"], "“Old” is another space's Pinned folder")
+        self.assertEqual(self.check("vivarc")["why"], "“vivarc” is the default space's Pinned folder")
+        self.assertIn("A Pinned folder called “Old” is already in your bookmarks", self.check("Old")["why"], "a folder no space claims")
         self.assertEqual(self.check("x "), {"name": "x"}, "its own folder's name, another case: fine")
 
     def test_the_folder_keeps_its_arc_prefix(self):
@@ -279,7 +279,9 @@ globalThis.chrome = {
     update: async (id, p) => calls.push(["tabs.update", id, p]),
   },
 };
-globalThis.vivaldi = { prefs: { get: async (path) => ({ value: prefs[path] }) } };
+globalThis.vivaldi = { prefs: { get: async (path) => ({ value: prefs[path] }) },
+  tabsPrivate: { move: async (a) => { calls.push(["tabsPrivate.move", a.tabIds, a.target, a.tweaks]); return a.tweaks.includes("create-new-group") ? { group: "new-g", success: true } : { success: true }; },
+    setGroupProperties: async (a) => calls.push(["groupTitle", a.groupExtId, a.groupTitle]) } };
 globalThis.window = { __vm: {
   ready: new Promise(() => {}),
   store: {
@@ -294,6 +296,7 @@ globalThis.window = { __vm: {
     setSpace: async (id, space, o) => { calls.push(["setSpace", id, space, o.windowId, o.index ?? null]); const t = tabs.find((x) => x.id === id); if (t) { t.windowId = o.windowId; t.vivExtData = JSON.stringify(space ? { workspaceId: space } : {}); } },
     switchTo: async (w, s) => calls.push(["switch", w, s]),
     focus: async (w) => calls.push(["focus", w]),
+    movesByTab: async () => true,
   },
 } };
 for (const f of ["07-workspaces.js", "08-space-edit.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], f), "utf8"));
@@ -356,7 +359,7 @@ class DeleteAndUndelete(unittest.TestCase):
         self.assertIn(["tabs.create", "u2", 7, False], c, "no longer listed: opened by address, in its old window")
         made = [x for x in c if x[0] == "setSpace"]
         self.assertEqual(made, [["setSpace", 501, Y, 7, None]], "the new tab put into the space; the restored one came back in it")
-        self.assertIn(["ext", 501, {"group": "g", "fixedGroupTitle": "F", "vivarcPin": "p"}], c)
+        self.assertIn(["ext", 501, {"vivarcPin": "p"}], c)
         self.assertIn(["tabs.update", 501, {"muted": True}], c)
         self.assertIn(["switch", 7, Y], c, "shown")
         self.assertIn(["focus", 7], c, "asked from window 8: its old window comes forward")
@@ -367,13 +370,19 @@ class DeleteAndUndelete(unittest.TestCase):
     def test_a_tab_already_back_with_the_id_is_not_opened_twice(self):
         r = self.undelete(tabs=[tab(1, 7, 0, 0), tab(9, 8, 0, 0), {"id": 77, "windowId": 7, "index": 5, "url": "u2", "vivExtData": json.dumps({"workspaceId": Y}), "mutedInfo": {"muted": True}}])
         self.assertNotIn("u2", [c[1] for c in r["calls"] if c[0] == "tabs.create"])
-        self.assertIn(["ext", 77, {"group": "g", "fixedGroupTitle": "F", "vivarcPin": "p"}], r["calls"], "what it lacks is written back")
+        self.assertIn(["ext", 77, {"vivarcPin": "p"}], r["calls"], "what it lacks is written back")
         self.assertEqual(r["out"]["tabs"], 2)
 
     def test_after_a_restart_the_asking_window(self):
         old = {**self.ENTRY, "run": "earlier"}
         r = self.undelete(entry=old, store={"deletedSpaces": [old]}, restoreInto=8)
         self.assertIn(["switch", 8, Y], r["calls"])
+
+    def test_a_folder_is_made_again_with_vivaldis_move_and_named(self):
+        entry = {**self.ENTRY, "tabs": [{**self.ENTRY["tabs"][1], "url": "u3", "index": 3}, {**self.ENTRY["tabs"][1], "url": "u4", "index": 4}]}
+        r = self.undelete(entry=entry, store={"deletedSpaces": [entry]})
+        self.assertIn(["tabsPrivate.move", [500, 501], 500, ["do-not-reparent", "create-new-group"]], r["calls"], "8.3 drops a group written to a tab's data")
+        self.assertIn(["groupTitle", "new-g", "F"], r["calls"])
 
     def test_into_the_asking_window_when_the_old_one_is_gone(self):
         r = self.undelete(windows=[8], restoreInto=8)

@@ -156,8 +156,12 @@
     if (me && me.name === clean) return { same: true };
     const same = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
     if ((list || []).some((w) => w.id !== id && same(String(w.name || ""), clean))) return { why: `There is already a space called “${clean}”` };
-    const mine = ws().assign(folders || [], list || []).byId[id] ?? null;
-    if ((folders || []).some((f) => f.id !== mine?.id && same(ws().label(f), clean))) return { why: `“${clean}” is another space's Pinned folder` };
+    const { default: base, byId } = ws().assign(folders || [], list || []);
+    const mine = byId[id] ?? null;
+    const other = (folders || []).find((f) => f.id !== mine?.id && same(ws().label(f), clean));
+    if (other && other.id === base?.id) return { why: `“${clean}” is the default space's Pinned folder` };
+    // a folder no space claims (a deleted space's, kept for undelete): two folders of one name would leave the pins to chance
+    if (other) return { why: `A Pinned folder called “${clean}” is already in your bookmarks (a deleted space's?): rename or remove it first` };
     return { name: clean };
   };
   // The space's bookmark folder title for its new name, keeping an "Arc - " prefix (upstream #126).
@@ -322,6 +326,23 @@
       const target = plan.window;
       const made = [];
       const splits = new Map();
+      // Into the space, in the target window. A tab Vivaldi restored elsewhere (with the old window gone it restores a
+      // folder's tabs into a new window of their own, measured, p3) is first taken out of the space there: 8.3 refuses to
+      // move a tab into a space that also has tabs in another window ("ambiguous windowId").
+      // A tab Vivaldi put on screen there (a restore activates it; after a restart it lands in the last focused window)
+      // leaves only once that window's own most recent tab is back on screen (a tab on screen cannot leave, G4).
+      const into = async (tab) => {
+        if (tab.windowId !== target && tab.active) {
+          const own = native.record()?.activeIn(tab.windowId) ?? 0;
+          const others = (await chrome.tabs.query({ windowId: tab.windowId })).filter((t) => t.id !== tab.id && ws().of(t) !== id);
+          const keeper = ws().recentTab(others.filter((t) => ws().of(t) === own), own) ?? ws().recentTab(others.map((t) => ({ ...t, vivExtData: "{}" })), 0);
+          if (keeper) await chrome.tabs.update(keeper.id, { active: true });
+          tab = await chrome.tabs.get(tab.id);
+        }
+        if (tab.windowId !== target && ws().of(tab) === id) await native.setSpace(tab.id, 0, { windowId: tab.windowId });
+        const now = await chrome.tabs.get(tab.id);
+        if (ws().of(now) !== id || now.windowId !== target) await native.setSpace(tab.id, id, { windowId: target });
+      };
       for (const t of plan.tabs) {
         renew();
         let tab = null;
@@ -333,28 +354,68 @@
         const fresh = !tab;
         if (fresh) tab = await chrome.tabs.create({ windowId: target, url: t.url, active: false, pinned: !!t.pinned }).catch(() => null);
         if (!tab) continue;
-        try { if (ws().of(tab) !== id || tab.windowId !== target) await native.setSpace(tab.id, id, { windowId: target }); }
-        catch (error) { console.warn("[vivarc] undelete: a tab did not go back into its space:", error); }
+        try { await into(tab); } catch (error) { console.warn("[vivarc] undelete: a tab did not go back into its space:", error); }
         // what the tab was: a new tab gets it all; a restored one keeps what Vivaldi brought back and gets what it lacks
         const has = fresh ? {} : extOf(tab);
         const patch = {};
-        if (t.group && !has.group) { patch.group = t.group; if (t.fixedGroupTitle) patch.fixedGroupTitle = t.fixedGroupTitle; }
         if (t.vivarcPin && !has.vivarcPin) patch.vivarcPin = t.vivarcPin;
         if (t.tiling?.id && fresh) { if (!splits.has(t.tiling.id)) splits.set(t.tiling.id, crypto.randomUUID?.() || `vm-${Date.now()}-${splits.size}`); patch.tiling = { ...t.tiling, id: splits.get(t.tiling.id) }; }
         if (Object.keys(patch).length) await window.__vm.setExtData(tab, patch).catch(() => {});
         if (t.muted && !tab.mutedInfo?.muted) await chrome.tabs.update(tab.id, { muted: true }).catch(() => {});
-        made.push({ id: tab.id, pinned: !!t.pinned });
+        made.push({ id: tab.id, pinned: !!t.pinned, group: t.group || null, title: t.fixedGroupTitle || null });
       }
       renew();
-      // the order: read in the window, the space's tabs must come as they were; else each unpinned one goes last, in order
-      const inWindow = (await chrome.tabs.query({ windowId: target })).filter((t) => made.some((m) => m.id === t.id)).sort((a, b) => a.index - b.index).map((t) => t.id);
-      const want = made.map((m) => m.id).filter((x) => inWindow.includes(x));
+      const modern = await native.movesByTab();
+      // the order: read in the window, the space's tabs must come as they were. Else, on 8.3, each goes just before the
+      // next one, from the end (one tab per move: a move of several does not reorder them, measured, p2); on 8.2 by index.
+      const loose = made.filter((m) => !m.pinned);
+      const now = (await chrome.tabs.query({ windowId: target })).sort((a, b) => a.index - b.index);
+      const inWindow = now.filter((t) => loose.some((m) => m.id === t.id)).map((t) => t.id);
+      const want = loose.map((m) => m.id).filter((x) => inWindow.includes(x));
       if (!inOrder(inWindow, want)) {
-        for (const m of made) if (!m.pinned && inWindow.includes(m.id)) await native.setSpace(m.id, id, { windowId: target, index: -1 }).catch(() => {});
+        try {
+          if (modern) {
+            for (let i = want.length - 2; i >= 0; i--) {
+              await vivaldi.tabsPrivate.move({ tabIds: [want[i]], target: want[i + 1], windowId: target, tweaks: ["do-not-reparent"], workspaceId: id, debug: "Vivarc.undelete" });
+            }
+          } else {
+            const base = Math.min(...now.filter((t) => want.includes(t.id)).map((t) => t.index));
+            for (let i = 0; i < want.length; i++) await chrome.tabs.move(want[i], { windowId: target, index: base + i });
+          }
+        } catch (error) { console.warn("[vivarc] undelete: the order:", error); }
+      }
+      // a window the restore made that is left with nothing but blank tabs closes again
+      for (const w of await chrome.windows.getAll({ populate: true }).catch(() => [])) {
+        if (w.type === "normal" && !windows.includes(w.id) && (w.tabs || []).every((t) => ws().isBlank(t))) await chrome.windows.remove(w.id).catch(() => {});
       }
       // 4. shown, the entry gone
       await native.switchTo(target, id).catch((error) => console.warn("[vivarc] undelete: show the space:", error));
       if (target !== here) await native.focus(target).catch(() => {});
+      // 5. folders, once the space is shown (Vivaldi's first switch into it undid a folder made before, measured, p3).
+      // Vivaldi 8.3 drops a `group` written into a tab's data (p1), so a folder whose tabs came back without it is made
+      // again with Vivaldi's own move, as the sidebar makes one, and given its name.
+      // A restored tab first carries its old group id. Vivaldi drops it a moment later, and a folder made before its clean-up
+      // is undone with it (measured, p3: the same move made 1.5 s later stays). So each folder is made, looked at 1 s
+      // later, and made again if it is gone, at most 3 times. A folder that came back under a NEW id is left as it is.
+      const groupsNow = async () => new Map((await chrome.tabs.query({ windowId: target })).map((t) => [t.id, extOf(t).group || null]));
+      for (const group of new Set(made.filter((m) => m.group).map((m) => m.group))) {
+        let current = await groupsNow();
+        const members = made.filter((m) => m.group === group && current.has(m.id)).map((m) => m.id);
+        if (members.length < 2) continue;
+        const one = (map) => { const ids = new Set(members.map((x) => map.get(x))); return ids.size === 1 && !ids.has(null) && !ids.has(group); };
+        for (let attempt = 0; attempt < 3 && !one(current); attempt++) {
+          renew();
+          try {
+            const r = await vivaldi.tabsPrivate.move({ tabIds: members, target: members[0], debug: "Vivarc.undelete",
+              tweaks: modern ? ["do-not-reparent", "create-new-group"] : ["do-not-reparent", "create-new-group", "target-is-tab"] });
+            const title = made.find((m) => m.group === group)?.title;
+            if (r?.group && title) await vivaldi.tabsPrivate.setGroupProperties({ groupExtId: r.group, groupTitle: title });
+          } catch (error) { console.warn("[vivarc] undelete: a folder:", error); break; }
+          await sleep(1000);
+          current = await groupsNow();
+        }
+        if (!one(current)) console.warn(`[vivarc] undelete: the folder of tabs ${members.join(", ")} did not come back`);
+      }
       await forget(entry).catch((error) => console.warn("[vivarc] undelete: forget the entry:", error));
       return { window: target, space: id, tabs: made.length };
     } finally { restoring().delete(id); end?.(); }

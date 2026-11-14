@@ -1618,7 +1618,7 @@ ntCase("N.chevron-and-menu", {
     r.geo.chevRight > r.geo.rowRight || r.geo.chevRight < r.geo.rowRight - 12 ? `the chevron is not at the row's right edge (${J(r.geo)})` : null,
     Math.abs(r.geo.titleMid - r.geo.rowMid) > 2 ? `the + New Tab label is not centred (${J(r.geo)})` : null,
     J(r.labels.map((l) => l.replace(" (disabled)", ""))) === J(NT_LABELS) ? null : `menu rows ${J(r.labels)}`,
-    r.labels[5] === "Recently Cleaned (disabled)" ? null : `Recently Cleaned is not disabled: ${r.labels[5]}`,
+    r.labels[NT_LABELS.indexOf("Recently Cleaned")] === "Recently Cleaned (disabled)" ? null : `Recently Cleaned is not disabled: ${r.labels[NT_LABELS.indexOf("Recently Cleaned")]}`,
     r.cleanedFly ? "the disabled Recently Cleaned opened a flyout" : null, r.bar ? "the chevron click opened the command bar" : null, r.closed ? null : "a second chevron click did not close the menu", unchanged(b, s)],
 });
 // The rest of the row keeps its click: the command bar opens, no menu.
@@ -3618,6 +3618,7 @@ async function deleteSpace(win, name) {
   await sleep(500);
   const first = await h.ev(`${CONFIRM_ROW}.then((m) => { if (!m) return null; const t = m.textContent; m.click(); return t; })`, win);
   if (!first?.startsWith("Delete")) return `no delete row (${first})`;
+  ctx.deletedAt = Date.now();
   await waitFor(async () => !(await h.snap(ctx.H)).spaces.some(([id]) => id === sp(name)), 8000);
   return "ok";
 }
@@ -3884,7 +3885,9 @@ const SET_UD = async ({ other = false } = {}) => {
   await h.ev(`window.__vm.store.set("theme:space:${sp("Y")}", { on: true, hue: 123, sat: 40, light: 30, grain: 10 }).then(() => 1)`, ctx.H);
   await titled(ys);
   await sleep(500);
-  ctx.before = { list: await prefList(), rules: (await prefRules()).filter((r) => r.workspaceId === sp("Y")).map((r) => [r.type, r.expression]) };
+  ctx.before = { list: await prefList(), rules: (await prefRules()).filter((r) => r.workspaceId === sp("Y")).map((r) => [r.type, r.expression]),
+    order: (await h.ev(`chrome.tabs.query({ windowId: ${holder} }).then((ts) => ts.sort((a, b) => a.index - b.index).map((t) => t.title))`, ctx.H)).filter((t) => /^DY[0-9]$/.test(t)) };
+  ctx.deletedAt = Date.now();
   await focus(holder); await busy();
   const r = await deleteSpace(holder, "Y");
   if (r !== "ok") throw new Error(`setup: delete Y: ${r}`);
@@ -3905,7 +3908,7 @@ const undeleted = async (s, win, { shownIn = win, history = false } = {}) => {
   const left = await h.ev(DELETED, ctx.H);
   const [e2, e3, e4] = [await extIn("DY2"), await extIn("DY3"), await extIn("DY4")];
   // with its history: restored from Recently Closed, so its entries are gone from there (a tab opened anew leaves them)
-  const stillClosed = history ? await h.ev(`chrome.sessions.getRecentlyClosed({ maxResults: 25 }).then((l) => l.filter((x) => /<title>DY[0-9]</.test(decodeURIComponent(x.tab?.url || ""))).map((x) => x.tab.title))`, ctx.H) : [];
+  const stillClosed = history ? await h.ev(`chrome.sessions.getRecentlyClosed({ maxResults: 25 }).then((l) => l.filter((x) => x.lastModified >= ${Math.floor(ctx.deletedAt / 1000) - 2} && /<title>DY[0-9]</.test(decodeURIComponent(x.tab?.url || ""))).map((x) => x.tab.title))`, ctx.H) : [];
   return [y ? null : "Y is not back in Vivaldi's list (same id)", e2?.muted ? null : "DY2 is not muted again",
     e3?.group && e3.group === e4?.group ? null : `DY3 and DY4 are not in one folder (${J([e3?.group, e4?.group])})`,
     stillClosed.length ? `Recently Closed still lists ${J(stillClosed)}: opened anew, without their history` : null, y && y.name !== "Y" ? `named ${J(y.name)}` : null,
@@ -3913,7 +3916,7 @@ const undeleted = async (s, win, { shownIn = win, history = false } = {}) => {
     J(orderOf(list)) === J(orderOf(ctx.before.list)) ? null : `order ${J(orderOf(list))}, want ${J(orderOf(ctx.before.list))}`,
     J(rules) === J(ctx.before.rules) ? null : `rules ${J(rules)}, want ${J(ctx.before.rules)}`,
     theme?.hue === 123 ? null : `theme ${J(theme)}`,
-    inOrderIn(s, ["DY1", "DY2", "DY3", "DY4"], win, sp("Y")), recIs(s, shownIn, sp("Y")), showsSpace(s, shownIn, sp("Y")),
+    inOrderIn(s, ctx.before.order, win, sp("Y")), recIs(s, shownIn, sp("Y")), showsSpace(s, shownIn, sp("Y")),
     (await waitTile(shownIn, "Y")) ? null : "no Y tile", left.length ? `deletedSpaces still holds ${J(left.map((e) => e.id))}` : null];
 };
 def("UD.undelete", {
@@ -3944,10 +3947,12 @@ def("UD.after-restart", {
     await focus(ctx.W);
     if (!(await waitFor(() => hasEl(ctx.W, "#vm-panel .vm-newtab-chev"), 15000))) return { error: "no sidebar after the restart" };
     const held = await h.ev(DELETED, ctx.H);
+    const closed = await h.ev(`chrome.sessions.getRecentlyClosed({ maxResults: 25 }).then((l) => l.map((x) => x.tab ? ["tab", x.tab.title, x.tab.sessionId] : ["window", (x.window?.tabs || []).map((t) => t.title)]))`, ctx.H);
+    await h.ev(`(() => { window.__ud = []; for (const k of ["log", "warn"]) { const o = console[k]; console[k] = (...a) => { if (String(a[0]).includes("[vivarc]")) window.__ud.push(a.map((x) => x && x.stack ? x.message : String(x)).join(" ")); return o.apply(console, a); }; } return 1; })()`, ctx.W);
     const r = await pickFrom(ctx.W, "Recently Deleted Spaces", "Y");
     if (r !== "ok") return { error: r };
     await sleep(2500);
-    return { done: "ok", held: held.map((e) => e.id) };
+    return { done: "ok", held: held.map((e) => e.id), closed, logs: await h.ev(`window.__ud`, ctx.W) };
   },
   expect: async (s, b, r) => [r.error ?? null, J(r.held) === J([sp("Y")]) ? null : `after the restart deletedSpaces held ${J(r.held)}`, ...(await undeleted(s, ctx.W))],
 });
@@ -4010,11 +4015,16 @@ def("ED.rename", {
     ctx.folderCount = Object.keys(await folders()).length;
   },
   act: async () => {
+    if (SHOTS) { // the tile's menu as it opens, for the report
+      await h.ev(`(() => { const p = ${pillOf("X")}; const b = p.getBoundingClientRect(); p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 4, clientY: b.top + 4 })); return 1; })()`, ctx.W);
+      await sleep(400); await shot(ctx.W, "9c-tile-edit-menu");
+    }
     const menu = await tileMenu(ctx.W, "X", "Rename…");
     if (!menu) return { error: "no Rename row" };
     if (!(await waitFor(() => h.ev(`document.activeElement?.classList.contains("vm-space-rename")`, ctx.W), 4000))) return { error: "the rename field did not open", menu };
     await shot(ctx.W, "9c-rename-in-place");
-    await typeAndEnter(ctx.W, "Work");
+    ctx.newName = `Work ${Date.now() % 100000}`; // run-unique: a space folder outlives the space (undelete reattaches by name)
+    await typeAndEnter(ctx.W, ctx.newName);
     await sleep(2500);
     return { done: "ok", menu };
   },
@@ -4023,7 +4033,7 @@ def("ED.rename", {
     const x = list.find((w) => w.id === sp("X"));
     const pinShown = await h.ev(`!![...document.querySelectorAll("#vm-panel .vm-row.vm-link")].find((r) => r.title.includes(${J(ctx.pinUrl)}))`, ctx.W);
     return [r.error ?? null, J(r.menu) === J(["Rename…", "Change Icon…", "Move Left (disabled)", "Move Right", "Delete Space…"]) ? null : `the tile menu ${J(r.menu)}`,
-      x?.name === "Work" ? null : `X is named ${J(x?.name)}`, all.Work ? null : `no "Work" folder: ${J(Object.keys(all))}`, all.X ? `a folder "X" is still there: ${J(Object.keys(all))}` : null,
+      x?.name === ctx.newName ? null : `X is named ${J(x?.name)}`, all[ctx.newName] ? null : `no ${J(ctx.newName)} folder: ${J(Object.keys(all))}`, all.X ? `a folder "X" is still there: ${J(Object.keys(all))}` : null,
       Object.keys(all).length === ctx.folderCount ? null : `${Object.keys(all).length} space folders, want ${ctx.folderCount} (an empty one was made)`,
       pinShown ? null : "the pin is not in the sidebar after the rename", recIs(s, ctx.W, sp("X")), unchanged(b, s)];
   },
@@ -4077,12 +4087,13 @@ def("ED.plus", {
     const field = await waitFor(() => h.ev(`document.activeElement?.classList.contains("vm-space-rename") ? document.activeElement.value : null`, ctx.W), 5000);
     const made = (await prefList()).filter((w) => !before.includes(w.id));
     if (made[0]) { ctx.spaces.NEW = made[0].id; }
-    await typeAndEnter(ctx.W, "Fresh");
+    ctx.newName = `Fresh ${Date.now() % 100000}`; // run-unique, as in ED.rename
+    await typeAndEnter(ctx.W, ctx.newName);
     await sleep(1500);
     return { done: "ok", field, made, after: (await prefList()).find((w) => w.id === made[0]?.id), icons: await vivIcons() };
   },
   expect: (s, b, r) => [r.error ?? null, r.made?.length === 1 ? null : `${r.made?.length} spaces made`, r.field === "New Space" ? null : `the rename field held ${J(r.field)}`,
-    r.after?.name === "Fresh" ? null : `named ${J(r.after?.name)}`, r.after?.icon === r.icons?.[r.icons.length - 1] ? null : "not Vivaldi's default icon", recIs(s, ctx.W, sp("X")), unchanged(b, s)],
+    r.after?.name === ctx.newName ? null : `named ${J(r.after?.name)}`, r.after?.icon === r.icons?.[r.icons.length - 1] ? null : "not Vivaldi's default icon", recIs(s, ctx.W, sp("X")), unchanged(b, s)],
 });
 
 // Closing a space's last tab keeps the window in that space, empty, with the command bar open (Byron's D3). Escape
