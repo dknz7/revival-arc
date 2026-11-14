@@ -506,7 +506,11 @@
       await chrome.tabs.update(tab.id, { vivExtData: spacesOf.tornData(now, shown) });
       await window.__vm.unsplit(tab).catch((error) => console.warn("[vivarc] split view left behind by a drop from another window:", error));
       await chrome.tabs.update(tab.id, { active: true });
-      if (focusAfter) await chrome.windows.update(here, { focused: true });
+      if (focusAfter) {
+        // a minimised window comes back as it was (normal), and is brought to the front either way
+        const target = await chrome.windows.get(here).catch(() => null);
+        await chrome.windows.update(here, { focused: true, ...(target?.state === "minimized" ? { state: "normal" } : {}) });
+      }
     } catch (error) {
       console.warn("[vivarc] tab from another window:", error);
       window.dispatchEvent(new CustomEvent("vm-toast", { detail: failed }));
@@ -520,7 +524,9 @@
   // type on the data transfer, which dragover can see but not read). Accepting it with dropEffect "move" is also what
   // tells the source window's dragend the tab was taken, so its tear-off stays quiet. zone is the nearer edge: no folder
   // is made across windows.
-  const wireDrop = (node, { horizontal = false, allowInto = false, accept, onDrop, onAcross }) => {
+  // markAt(e, zone): the node and zone to mark while a drag is over this node (the favorites grid marks the tile a drop in
+  // a gap lands beside), or nothing to mark the node itself.
+  const wireDrop = (node, { horizontal = false, allowInto = false, accept, onDrop, onAcross, markAt }) => {
     const zoneOf = (e, nearest = false) => {
       const r = node.getBoundingClientRect();
       const t = horizontal ? (e.clientX - r.left) / r.width : (e.clientY - r.top) / r.height;
@@ -556,7 +562,8 @@
       e.stopPropagation();
       e.dataTransfer.dropEffect = "move";
       clearDrop();
-      node.classList.add(`drop-${zoneOf(e)}`);
+      const zone = zoneOf(e), mark = markAt?.(e, zone);
+      (mark?.node || node).classList.add(`drop-${mark?.zone || zone}`);
     });
     node.addEventListener("drop", async (e) => {
       if (fromElsewhere(e)) {
@@ -934,12 +941,15 @@
   // and Move to Window the cross-window drop (the tab joins the space that window shows, activated there), so the space
   // rules hold either way: upstream's bare chrome.tabs.move would leave the tab parked there (C1).
   // Windows of this profile side only: a private window does not take a normal window's tab, nor the other way round.
+  // Peek's preview tabs (window.__vm.peek, where the Peek module is loaded) are not the user's: a window holding nothing
+  // else is not offered, and they do not count as the window's tabs.
+  const peekTab = (t) => !!window.__vm.peek?.isPeekTab?.(t);
   const otherWindows = async () => {
     const here = myWindow();
     const privateHere = !!chrome.extension?.inIncognitoContext;
     try {
       return (await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] }))
-        .filter((w) => w.type === "normal" && w.id !== here && !!w.incognito === privateHere);
+        .filter((w) => w.type === "normal" && w.id !== here && !!w.incognito === privateHere && (w.tabs || []).some((t) => !peekTab(t)));
     } catch (_) { return []; }
   };
   const cut = (text, max = 40) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
@@ -1040,19 +1050,20 @@
     if (tabs.length === state.tabs.length) await chrome.tabs.create({});
     await chrome.tabs.remove(tabs.map((t) => t.id));
   };
+  // The rows act on the tabs picked when a row is clicked (a re-render may have dropped some since the menu opened).
   const pickedMenu = () => {
     const tabs = pickedTabs();
     const label = selecting.labels(tabs.length);
-    const done = (run, failed) => folderAction(async () => { clearPicked(); await run(); }, failed);
+    const done = (run, failed) => folderAction(async () => { const now = pickedTabs(); clearPicked(); await run(now); }, failed);
     const inFolders = selecting.byFolder(tabs, stacksOf.stackOf, shownStacks).length > 0;
     return [
-      [label.stack, done(() => stackPicked(tabs), "Could not stack the tabs")],
-      ...(inFolders ? [["Remove from Folder", done(() => leavePicked(tabs), "Could not take the tabs out of their folder")]] : []),
+      [label.stack, done((now) => stackPicked(now), "Could not stack the tabs")],
+      ...(inFolders ? [["Remove from Folder", done((now) => leavePicked(now), "Could not take the tabs out of their folder")]] : []),
       [],
-      ...moveTargets().map((target) => [label.move(target.name), () => { clearPicked(); movePicked(tabs, target); }]),
+      ...moveTargets().map((target) => [label.move(target.name), () => { const now = pickedTabs(); clearPicked(); movePicked(now, target); }]),
       ...(moveTargets().length ? [[]] : []),
       ["Clear Selection", clearPicked],
-      [label.close, done(() => closePicked(tabs), "Could not close the tabs")],
+      [label.close, done((now) => closePicked(now), "Could not close the tabs")],
     ];
   };
 
@@ -1095,7 +1106,9 @@
       e.stopPropagation();
       const at = { clientX: e.clientX, clientY: e.clientY, preventDefault() {}, stopPropagation() {} };
       if (picked.length > 1 && picked.includes(tab.id)) { showMenu(at, pickedMenu()); return; }
-      const [others, inWindow] = await Promise.all([otherWindows(), chrome.tabs.query({ windowId: tab.windowId }).then((t) => t.length, () => 0)]);
+      clearPicked(); // a right-click on a row that is not picked acts on that row alone
+      const [others, inWindow] = await Promise.all([otherWindows(),
+        chrome.tabs.query({ windowId: tab.windowId }).then((t) => t.filter((x) => !peekTab(x)).length, () => 0)]);
       showMenu(at, [
         ...(depth ? [["Remove from Folder", removeFromFolder], []] : []),
         ...(state.space ? [
@@ -1653,6 +1666,13 @@
     const body = el("div", "vm-scroll");
     const favLeaves = state.favs ? state.favs.children.filter((c) => !c.children) : [];
     let grid = null;
+    // The favorite tile a drop at `at` in the grid lands beside: { index, after, tile }, or null with no tile.
+    const gapSlot = (at) => {
+      const tiles = [...(grid?.children ?? [])].filter((t) => t.classList.contains("vm-fav"));
+      const centers = tiles.map((t) => { const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+      const slot = window.__vm.favDrop?.slot(centers, at);
+      return slot ? { ...slot, tile: tiles[slot.index] } : null;
+    };
     if (state.defaultSpace) {
       grid = el("div", "vm-favs");
       favLeaves.forEach((n) => grid.append(favTile(n)));
@@ -1660,11 +1680,14 @@
         horizontal: true,
         accept: (d) => !(d.type === "bm" && d.node.children),
         // A drop in a gap between tiles lands beside the nearest tile, on the side the pointer is (09-fav-drop.js; ported
-        // from KASOGIT/vivarc#138), as a drop on that tile would; with no tile it goes to the end.
+        // from KASOGIT/vivarc#138), as a drop on that tile would, and that tile's edge shows the marker meanwhile; with no
+        // tile it goes to the end.
+        markAt: (e) => {
+          const slot = gapSlot({ x: e.clientX, y: e.clientY });
+          return slot ? { node: slot.tile, zone: slot.after ? "after" : "before" } : null;
+        },
         onDrop: async (_zone, data, at) => {
-          const tiles = [...grid.children].filter((t) => t.classList.contains("vm-fav"));
-          const centers = tiles.map((t) => { const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
-          const slot = window.__vm.favDrop?.slot(centers, at);
+          const slot = gapSlot(at);
           const target = slot ? favLeaves[slot.index] : null;
           if (!target) return insertPinned(data, (await ensureFolder("Favorites")).id, null);
           if (data.type === "bm" && data.node.id === target.id) return;
@@ -1711,6 +1734,7 @@
     const bar = spaceBar();
     panel.replaceChildren(currentUrlField(), ...(grid ? [grid] : []), body, ...(bar ? [bar] : []));
     body.scrollTop = scroll;
+    window.dispatchEvent(new CustomEvent("vm-sidebar-rendered", { detail: state.active })); // 41-space-motion.js
   };
 
   const ICON_MAX = 20000;
