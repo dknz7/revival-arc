@@ -963,6 +963,13 @@
   overflow-wrap: anywhere;
   pointer-events: none;
 }
+/* A deleted space's icon in the New Tab menu's Recently Deleted Spaces (Task 9c). */
+#browser.vm-on .vm-space-glyph {
+  display: block; width: 18px; height: 18px; background: currentColor;
+  mask-size: contain; mask-position: center; mask-repeat: no-repeat;
+}
+#browser.vm-on .vm-menu .vm-space-ico { font-size: 14px; line-height: 1; }
+#browser.vm-on .vm-menu .vm-space-ico .vm-space-glyph { width: 15px; height: 15px; }
 
 /* Native toolbar buttons and profile chips share the same vertical center. */
 #browser.vm-on #tabs-tabbar-container .toolbar-tabbar-after > .button-toolbar,

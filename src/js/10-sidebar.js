@@ -1267,6 +1267,9 @@
     return pill;
   };
 
+  // Undelete (Task 9c, 08-space-edit.js)
+  const editOf = () => window.__vm.spaceEdit ?? null;
+
   const confirmDeleteSpace = async (item, event) => {
     // The default action and propagation must be stopped now; the menu itself opens once the count is in.
     event.preventDefault();
@@ -1277,7 +1280,9 @@
     try {
       const { tabCount, windowCount, closesWindow } = spacesOf.removalScope(tabs, item.id);
       const label = spacesOf.removalLabel(item.name, tabCount, windowCount, closesWindow);
-      showMenu(at, [[label, () => deleteSpace(item), true], ["Cancel", () => {}]]);
+      // It opens where the Delete Space row was clicked: a double-click there must not confirm (guardDanger)
+      guardDanger(showMenu(at, [[label, () => deleteSpace(item), true],
+        ...(editOf() ? [{ label: "Undo from New Tab \u203a Recently Deleted Spaces", disabled: true }] : []), ["Cancel", () => {}]]));
     } catch (_) {}
   };
 
@@ -1302,11 +1307,44 @@
         const there = await chrome.tabs.query({ windowId: shownIn }).catch(() => []);
         if (there.some((t) => spacesOf.of(t) !== item.id)) target = shownIn;
       }
+      // Undelete (Task 9c): what the space was is stored and read back BEFORE Vivaldi deletes it; a store that does not
+      // take it deletes nothing, since the confirmation said it can be undone.
+      const edit = editOf();
+      let kept = null;
+      if (edit) {
+        try { kept = await edit.remember(item.id); } catch (error) {
+          console.warn("[vivarc] delete space: not kept for undo:", error);
+          say("Could not keep the space for undo, so it was not deleted");
+          return;
+        }
+      }
       await remove(target, item.id);
       // Vivaldi's switch of that window may bring it to the front: the window the delete was asked in keeps the focus
       if (target !== win.id) await chrome.windows.update(win.id, { focused: true }).catch(() => {});
+      if (kept) edit.noteClosed(kept).catch((error) => console.warn("[vivarc] delete space: Recently Closed entries:", error));
     } finally { end?.(); refresh(false); }
   };
+  // The New Tab menu's Recently Deleted Spaces: each row the space's name, icon and tab count; a click brings it back.
+  const spaceGlyph = (entry) => {
+    const box = el("span", "vm-ico vm-space-ico");
+    if (entry.emoji) box.textContent = entry.emoji;
+    else if (typeof entry.icon === "string" && entry.icon.trim().startsWith("<svg")) {
+      const glyph = el("span", "vm-space-glyph");
+      glyph.style.maskImage = `url("data:image/svg+xml,${encodeURIComponent(entry.icon)}")`;
+      box.append(glyph);
+    } else box.textContent = Array.from((entry.name || "").trim())[0]?.toLocaleUpperCase() || "?";
+    return box;
+  };
+  const undeleteSpace = async (entry) => {
+    try {
+      await editOf().undelete(entry, myWindow() ?? (await chrome.windows.getCurrent()).id);
+    } catch (error) { console.warn("[vivarc] undelete space:", error); say(`Could not bring back \u201c${entry.name}\u201d`); }
+    finally { refresh(true); }
+  };
+  const deletedSpacesRow = () => (editOf() ? [{ label: "Recently Deleted Spaces", flyout: async () => {
+    const now = Date.now();
+    return (await editOf().list()).map((e) => ({ label: e.name || "Space", icon: spaceGlyph(e), note: editOf().deletedNote(e, now), action: () => undeleteSpace(e) }));
+  } }] : []);
 
   const openCreateSpaceDialog = async () => {
     try {
@@ -1455,6 +1493,7 @@
     { label: "Open Tabs", flyout: openTabsFlyout },
     { label: "Recently Closed", flyout: async () => tabRows(spacesOf.closedTabs(await closedSessions()), (t) => restoreClosed(t.sessionId)) },
     { label: "Recently Closed Windows", flyout: async () => spacesOf.closedWindows(await closedSessions()).map((w) => ({ label: w.label, action: () => restoreClosed(w.sessionId) })) },
+    ...deletedSpacesRow(),
     newTabHooks.cleaned(),
     [],
     ...newTabHooks.cleanUp(),

@@ -17,7 +17,7 @@
   const BUSY_CHECK_MS = 500;
   const COOL_MS = 10000;
   const HEAL_CONFIRM_MS = 1000;
-  const DELETED_KEY = "deletedSpaces"; // undelete's store (chunk 3): ids it can still revive are not healed
+  const DELETED_KEY = "deletedSpaces"; // undelete's store (08-space-edit.js, Task 9c): ids it can still revive are not healed
   const spacesOf = window.__vm.workspaces;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -99,10 +99,19 @@
     const first = await readLists();
     await sleep(HEAL_CONFIRM_MS);
     const second = await readLists();
+    // Undelete's entries (08-space-edit.js), less the expired ones: an entry past its 30 days (or pushed out by the cap)
+    // can no longer bring its tabs back, so they heal like any other (Task 9c). A store that cannot be read heals nothing
+    // this pass: it might hold an entry.
     let skip = [];
-    try { skip = (await window.__vm.store?.get(DELETED_KEY, [])) || []; } catch (_) {}
+    try {
+      const store = window.__vm.store;
+      skip = (await (store?.read ? store.read(DELETED_KEY) : store?.get(DELETED_KEY, []))) || [];
+    } catch (_) { return []; }
+    skip = Array.isArray(skip) ? skip : [];
+    const edit = window.__vm.spaceEdit;
+    if (edit?.held) skip = edit.held(skip, Date.now());
     const tabs = await chrome.tabs.query({ windowType: "normal" });
-    const { ids, why } = spacesOf.healGate({ first, second, tabs, skip: Array.isArray(skip) ? skip : [] });
+    const { ids, why } = spacesOf.healGate({ first, second, tabs, skip });
     if (why && why !== lastWhy) console.warn(`[vivarc] repair: tabs of a deleted space left as they are: ${why}`);
     lastWhy = why;
     return ids;
