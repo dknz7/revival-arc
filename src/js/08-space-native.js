@@ -129,16 +129,19 @@
   //   there is none.
   // - A space shown in another window is moved into that window: asked from the tab's own window, Vivaldi's move
   //   reports success and changes nothing ("ambiguous windowId").
-  // - A space parked in another window cannot be reached: from the tab's window the move fails the same way, and asked
-  //   with the holding window the tab lands in that window's SHOWN space. Refused before anything is touched.
+  // - A space parked in another window cannot be reached on 8.2: from the tab's window the move fails the same way, and
+  //   asked with the holding window the tab lands in that window's SHOWN space. Refused before anything is touched.
   // - A space with no tabs anywhere is moved within the tab's own window.
   // Vivaldi's move does not throw when it fails, so the tab is read again: if it is not where it should be, what was
   // done first is undone (the original tab active again, a blank tab closed) and this throws.
   // Rejects, before touching anything, when Vivaldi's move is not found.
   // On Vivaldi 8.3 the move is setSpace's instead (into the window found here): 8.3's own Move to Workspace moves with
-  // no window and fails into a space with no tabs anywhere ("invalid workspaceId"), measured in task 8t.
+  // no window and fails into a space with no tabs anywhere ("invalid workspaceId"), measured in task 8t. And 8.3's move
+  // given the holding window DOES reach a space parked there: the tab joins it and that window keeps the space it shows
+  // (measured, task 8y exp2), so the parked-elsewhere refusal is 8.2's only.
   const moveToSpace = async (tabIds, spaceId) => {
-    const vivaldiMove = (await movesByTab()) ? null : mover();
+    const modern = await movesByTab();
+    const vivaldiMove = modern ? null : mover();
     const move = vivaldiMove ? (tab, windowId) => vivaldiMove({ id: tab.id, windowId }, spaceId)
       : byTab ? (tab, windowId) => setSpace(tab.id, spaceId, { windowId }) : null;
     if (!move) throw new Error("Moving tabs to a space is unavailable");
@@ -152,7 +155,7 @@
       if (spaceId) {
         const shownIn = record()?.all().get(spaceId);
         const lives = spacesOf.livesIn(await chrome.tabs.query({ windowType: "normal" }), record()?.all() ?? new Map(), spaceId);
-        if (shownIn == null && lives != null && lives !== tab.windowId) {
+        if (!modern && shownIn == null && lives != null && lives !== tab.windowId) {
           const error = new Error("That space is parked in another window: show it there first");
           error.code = "parked-elsewhere";
           throw error;

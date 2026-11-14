@@ -903,17 +903,20 @@
   // Vivaldi's own move (08-space-native.js); this window stays on the space it shows. A tab bound for a space shown in
   // another window goes there with the move; the repair run is asked as well, as a safety net, though a non-leader
   // window's request does nothing (the leader runs repairs).
+  // A tab that went to another window (its space lives there, shown or parked) says so, since it leaves this list.
   let warnedMove = false;
   const moveTabToSpace = async (tab, target) => {
     try {
       await window.__vm.native.moveToSpace([tab.id], target.id);
+      const now = await chrome.tabs.get(tab.id).catch(() => null);
+      if (now && now.windowId !== tab.windowId) window.dispatchEvent(new CustomEvent("vm-toast", { detail: `Moved to ${target.name}, in another window` }));
       window.__vm.spaceRepair?.schedule();
       refresh(false);
     } catch (error) {
       if (!warnedMove) { warnedMove = true; console.warn("[vivarc] move to space:", error); }
       window.dispatchEvent(new CustomEvent("vm-toast", { detail: error?.code === "parked-elsewhere"
-        ? "That space is in another window. Show it there first, then move the tab."
-        : "Could not move the tab. Use Vivaldi's Move to Workspace command." }));
+        ? `${target.name} is parked in another window. Show it there first, then move the tab.`
+        : `Could not move the tab to ${target.name}. Use Vivaldi's Move to Workspace command.` }));
     }
   };
 

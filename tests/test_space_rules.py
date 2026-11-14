@@ -965,6 +965,15 @@ class MoveToSpace(unittest.TestCase):
         self.assertEqual(out[0][1]["target"], "last")
         self.assertEqual(out[0][1]["workspaceId"], 42)
 
+    def test_on_vivaldi_8_3_a_space_parked_in_another_window_is_moved_into_that_window(self):
+        # Task 9a (8y bug 2): 8.3's move given the holding window reaches the parked space; that window keeps what it shows
+        tabs = [ws_tab(1, 7, 42, active=True), ws_tab(2, 7, 42), ws_tab(5, 8, 50), ws_tab(6, 8, 0, active=True)]
+        out = native_js(f"globalThis.vivaldi83 = true; fakeTabs.push(...{json.dumps(tabs)}); installBg(); await native.moveToSpace([2], 50); return [calls, fakeTabs.find((t) => t.id === 2)]")
+        calls, moved = out
+        self.assertEqual(calls, [["tabsPrivate.move", {"tabIds": [2], "target": "last", "windowId": 8, "tweaks": ["do-not-reparent"],
+                                                         "workspaceId": 50, "debug": "Vivarc.setSpace"}]], "no switch, no keeper: tab 2 was not on screen")
+        self.assertEqual((moved["windowId"], json.loads(moved["vivExtData"])["workspaceId"]), (8, 50))
+
     def test_on_vivaldi_8_3_a_refused_move_throws_and_gives_the_screen_back(self):
         tabs = [ws_tab(1, 7, 42, active=True, accessed=50), ws_tab(3, 7, 42, accessed=40)]
         out = native_js(f"""globalThis.vivaldi83 = true; globalThis.spaceMoveFails = true; fakeTabs.push(...{json.dumps(tabs)}); installBg();
