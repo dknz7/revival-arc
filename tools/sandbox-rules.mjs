@@ -3704,7 +3704,9 @@ def("DEL.bar-switch-to-dead", {
   expect: async (s, b, r) => [r.error ?? null, await recordStayedLive(),
     /deadsite/i.test(r.rows?.[0] || "") ? `the first row is the dead tab's: ${J(r.rows?.[0])}` : null,
     r.value === "127.0.0" ? null : `the bar autocompleted to ${J(r.value)}`,
-    recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X")), labelIs(s, "X1", { win: ctx.W, space: sp("X") }), noDead(s)],
+    recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X")), labelIs(s, "X1", { win: ctx.W, space: sp("X") }),
+    // the heal runs about 1.4 s after the repairs are let go, which can be after a quiet snapshot: up to 8 s more for it
+    noDead((await waitFor(async () => { const now = await h.snap(ctx.H); return deadIn(now).length ? null : now; }, 8000)) ?? s)],
 });
 // Deleting, from O's tile, a space shown in W: W is switched off it first, so W's record never names the deleted id
 // (8y: about 0.5 s on it, when any new tab would have been filed under the dead id).
