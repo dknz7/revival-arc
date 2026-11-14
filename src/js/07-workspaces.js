@@ -112,14 +112,41 @@
   // brought into the space on screen in the window the user picked it in (`here`, showing `hereShown`; Byron,
   // 2026-11-14), { kind: "adopt", window, space }, and activated there. known: the ids of the spaces that exist, or null
   // when the list can't be read: then no named space can be told live from dead, so such a tab is only activated.
+  // The destination is itself checked: a window still recorded on a deleted space adopts into its default space instead.
   const deadSpace = (tab, known) => { const space = of(tab); return !!space && Array.isArray(known) && !known.includes(space); };
+  // Positive evidence that a tab's space exists: the default space always does; a named one only when the list was read
+  // and holds it. The command bar promotes (first row, autocomplete) only such tabs.
+  const liveSpace = (tab, known) => { const space = of(tab); return !space || (Array.isArray(known) && known.includes(space)); };
+  const liveOr0 = (space, known) => (space && Array.isArray(known) && known.includes(space) ? space : 0);
   const tabPick = (tab, shown, shownIn, { known, here, hereShown } = {}) => {
     const space = of(tab);
-    if (deadSpace(tab, known)) return { kind: "adopt", window: here ?? tab.windowId, space: (here ?? tab.windowId) === tab.windowId ? (shown ?? 0) : (hereShown ?? 0) };
+    if (deadSpace(tab, known)) {
+      const window = here ?? tab.windowId;
+      return { kind: "adopt", window, space: liveOr0(window === tab.windowId ? shown : hereShown, known) };
+    }
     if (shown == null || space === shown) return { kind: "activate" };
     if (space && known === null) return { kind: "activate" };
     if (space && shownIn != null && shownIn !== tab.windowId) return { kind: "focus", window: shownIn };
     return { kind: "switch", window: tab.windowId, space };
+  };
+
+  // A tab restored from Recently Closed comes to the window the user clicked in (`here`, showing `hereShown`), whatever
+  // its space (Byron, 2026-11-14; Vivaldi puts it back in its old window). It keeps its own space when that space can be
+  // shown here without moving anything else: the default space, or a live named space that lives here or nowhere (no
+  // other tab of it in another window). Otherwise (a deleted space, a named space living in another window, or a list
+  // that can't be read) it joins the space on screen here (if that is live; else the default space).
+  // tab: the restored tab; tabs: every normal window's tabs; record: Map spaceId -> windowId; known: the space ids, or null.
+  // -> { window, space, show: whether `here` must switch to `space` first }
+  const restorePlan = ({ tab, here, hereShown, tabs, record, known } = {}) => {
+    const own = of(tab), onScreen = liveOr0(hereShown, known);
+    let space = onScreen;
+    if (!own) space = 0;
+    else if (liveSpace(tab, known)) {
+      const others = (tabs || []).filter((t) => t.id !== tab.id);
+      const home = livesIn(others, new Map([...(record || new Map())].filter(([, w]) => w != null)), own);
+      if (home == null || home === here) space = own;
+    }
+    return { window: here ?? tab.windowId, space, show: space !== (hereShown ?? 0) };
   };
 
   // Of the tabs bound to one pin, the one to use: already here and in the shown space, else the most recently used.
@@ -220,7 +247,7 @@
     // 0. A tab whose space no longer exists (Vivaldi 8.3 restores a deleted space's tab with its dead id, task 8y) moves
     //    to its window's default space, where it stays (native.setSpace onto itself: same window, same place). At most
     //    HEAL_MAX a pass; the rest wait for the next. The steps below see the moved tabs in the default space.
-    const dead = new Set([...(heal || [])].filter((id) => id && (!known || !known.has(id))));
+    const dead = new Set(spaceList(spaces) ? [...(heal || [])].filter((id) => id && !known.has(id)) : []);
     const rehomed = new Set();
     for (const t of (tabs || []).filter((x) => live.has(x.windowId) && dead.has(of(x))).sort((a, b) => a.windowId - b.windowId || a.index - b.index)) {
       if (rehomed.size >= HEAL_MAX) break;
@@ -286,23 +313,58 @@
     return plan;
   };
 
+  // A workspace id list as read (the pref's ids, the store's ids), or null when it is not a list of ids: anything that
+  // is not a positive safe integer (undefined from a record without an id, a string, a fraction), a duplicate, or not
+  // an array at all makes the whole list untrustworthy (Task 9a fix round: a list of undefineds once looked "equal").
+  // [] stays [] (a real, empty list). -> the ids, sorted, or null
+  const spaceList = (raw) => {
+    if (!Array.isArray(raw)) return null;
+    if (!raw.every((id) => Number.isSafeInteger(id) && id > 0)) return null;
+    const ids = [...new Set(raw)];
+    return ids.length === raw.length ? ids.sort((a, b) => a - b) : null;
+  };
+  const sameList = (a, b) => !!a && !!b && a.length === b.length && a.every((id, i) => id === b[i]);
+  // What the "recently deleted spaces" store (key deletedSpaces, written by undelete, Task 9c) says may still come back,
+  // as store.read gave it: undefined (no key yet) -> []; an array of plain ids or of records with at least a numeric `id`
+  // -> those ids; anything else -> null (unreadable: the heal must not act).
+  const deletedIds = (raw) => {
+    if (raw === undefined) return [];
+    if (!Array.isArray(raw)) return null;
+    const ids = raw.map((r) => (r && typeof r === "object" ? r.id : r));
+    return ids.every((id) => Number.isSafeInteger(id) && id > 0) ? [...new Set(ids)] : null;
+  };
   // Which deleted spaces' tabs the heal (repair rule 0) may move: a wrong list would move every tab of a live space, so
   // it acts only on a list it can trust. first, second: two reads about 1 s apart, each { pref, store }: the ids in the
   // pref vivaldi.workspaces.list and in Vivaldi's own store (null when unreadable or not found). Trusted only when every
-  // read succeeded and is non-empty, the pref and the store agree, and nothing changed between the two reads (at
-  // start-up Vivaldi's store is empty until its list is loaded, so it disagrees with the pref and nothing moves). tabs:
-  // every normal window's tabs; skip: ids a "recently deleted spaces" store can still bring back (undelete, chunk 3).
-  // -> { ids: the dead space ids on tabs, sorted, or [] , why: null, or the reason nothing may move }
+  // read is a valid id list (spaceList) and non-empty, the pref and the store agree, and nothing changed between the two
+  // reads (at start-up Vivaldi's store is empty until its list is loaded, so it disagrees with the pref and nothing
+  // moves). tabs: every normal window's tabs; skip: what deletedIds read (null: unreadable, so nothing moves).
+  // -> { ids: the dead space ids on tabs, sorted, or [], list: the trusted list (or null), why: null or the reason }
   const healGate = ({ first, second, tabs, skip } = {}) => {
-    const reads = [first?.pref, first?.store, second?.pref, second?.store];
-    if (!reads.every(Array.isArray)) return { ids: [], why: "a workspace list could not be read" };
-    if (!reads.every((r) => r.length)) return { ids: [], why: "a workspace list is empty" };
-    const key = (r) => JSON.stringify([...new Set(r)].sort((a, b) => a - b));
-    if (new Set(reads.map(key)).size !== 1) return { ids: [], why: "the workspace lists disagree or changed" };
-    const known = new Set(first.pref);
-    const keep = new Set((skip || []).map((s) => (s && typeof s === "object" ? s.id : s)).filter(Boolean));
+    const reads = [first?.pref, first?.store, second?.pref, second?.store].map(spaceList);
+    if (!reads.every(Boolean)) return { ids: [], list: null, why: "a workspace list could not be read" };
+    if (!reads.every((r) => r.length)) return { ids: [], list: null, why: "a workspace list is empty" };
+    if (!reads.every((r) => sameList(r, reads[0]))) return { ids: [], list: null, why: "the workspace lists disagree or changed" };
+    if (!Array.isArray(skip)) return { ids: [], list: null, why: "the recently deleted spaces could not be read" };
+    const known = new Set(reads[0]);
+    const keep = new Set(skip);
     const ids = [...new Set((tabs || []).map(of))].filter((id) => id && !known.has(id) && !keep.has(id)).sort((a, b) => a - b);
-    return { ids, why: null };
+    return { ids, list: reads[0], why: null };
+  };
+  // Just before one heal step: the tab as it is now, the lists as they are now, the deleted-spaces store as it is now.
+  // The step goes ahead only if the tab is still where it was planned (same window), still on the planned dead id, the
+  // fresh pref and store lists are valid and equal to the list the heal was approved on (so the id is still absent:
+  // nobody re-created it), and the id is not in the deleted-spaces store. -> null (go ahead) or why not.
+  const healStepOk = ({ step, tab, pref, store, list, skip } = {}) => {
+    if (!tab) return "the tab is gone";
+    if (tab.windowId !== step?.window) return "the tab moved to another window";
+    if (of(tab) !== step.from) return "the tab is in another space now";
+    const a = spaceList(pref), b = spaceList(store);
+    if (!a || !b || !sameList(a, list) || !sameList(b, list)) return "the workspace list changed";
+    if (list.includes(step.from)) return "its space exists again";
+    if (!Array.isArray(skip)) return "the recently deleted spaces could not be read";
+    if (skip.includes(step.from)) return "its space can be brought back";
+    return null;
   };
   // Whether any tab carries a named space that is not in `known` (cheap: the heal then confirms with healGate).
   const strays = (tabs, known) => Array.isArray(known) && (tabs || []).some((t) => deadSpace(t, known));
@@ -310,19 +372,36 @@
   // Peek (the optional community link preview) makes two tabs behind a preview: one it preloads (stashed in another
   // space; Vivaldi 8.3 drops that and leaves it in the default space, task 8y) and the one backing its floating page
   // (vivExtData.arcPeekRuntime). Neither is the user's: Vivarc's lists leave them out (the isPeekTab idea of upstream
-  // KASOGIT/vivarc#150). ids: the open previews' tab ids (peekIds of Peek's preview records). Only open previews count, so
-  // the preloaded tab is the user's again once "Open in New Tab" has made it a real one.
+  // KASOGIT/vivarc#150). ids: the live preview tab ids of every window (17-peek.js keeps them on the background page; a
+  // preview made into a tab leaves at once). A runtime tab Peek has adopted into the tab strip (arcPeekAdopted, its
+  // fallback when nothing was preloaded) is the user's. Anything unreadable counts as the user's (filters fail open).
   const isPeekTab = (tab, ids) => {
     if (tab?.id != null && ids?.has?.(tab.id)) return true;
-    try { return !!JSON.parse(tab?.vivExtData || "{}")?.arcPeekRuntime; } catch (_) { return false; }
+    try { const ext = JSON.parse(tab?.vivExtData || "{}") || {}; return !!ext.arcPeekRuntime && !ext.arcPeekAdopted; } catch (_) { return false; }
   };
-  const peekIds = (previews) => new Set([...(previews || [])].flatMap((d) => [d?.parallelTabId, d?.relatedTabId]).filter((id) => id != null));
-  // Recently Closed without Peek's own tabs (every preview used to leave two entries there, task 8y). closed: [{ url, at }]
-  // (ms), the Peek tabs Vivarc saw close. A tab entry (lastModified in seconds) with the same address, closed within 5 s
-  // of one of them, is Peek's.
-  const PEEK_CLOSED_MS = 5000;
-  const withoutPeekClosed = (sessions, closed) => (sessions || []).filter((s) => !s?.tab || !(closed || []).some((c) =>
-    c && c.url === s.tab.url && Number.isFinite(s.lastModified) && Math.abs(s.lastModified * 1000 - c.at) <= PEEK_CLOSED_MS));
+  const peekIds = (previews) => {
+    try { return new Set([...(previews || [])].flatMap((d) => [d?.parallelTabId, d?.relatedTabId]).filter((id) => Number.isInteger(id))); } catch (_) { return new Set(); }
+  };
+  // Recently Closed without the entries of tabs Peek itself closed (every preview used to leave two there, task 8y).
+  // claimed: the sessionIds 17-peek.js matched, one by one, to a preview tab it saw close (claimClosed). Only those are
+  // left out: a tab the user closed is never hidden, even at the same address.
+  const withoutPeekClosed = (sessions, claimed) => {
+    const mine = new Set((claimed || []).filter((id) => typeof id === "string" && id));
+    return (sessions || []).filter((s) => !s?.tab?.sessionId || !mine.has(s.tab.sessionId));
+  };
+  // Which Recently Closed entries are the preview tabs that just closed: closed { url, at (ms), n: how many preview tabs
+  // of that address closed together (Peek closes its two at once) }; sessions: newest first; taken: sessionIds already
+  // claimed. The tab entries with that address closed within 3 s and not already claimed are Peek's only when there are
+  // exactly n of them; any other count means a tab of the user's may be among them: [] (every entry stays shown).
+  const PEEK_CLOSED_MS = 3000;
+  const claimClosed = (closed, sessions, taken) => {
+    const n = closed?.n ?? 1;
+    if (!closed?.url || !(n > 0)) return [];
+    const used = new Set(taken || []);
+    const hits = (sessions || []).filter((s) => s?.tab?.sessionId && !used.has(s.tab.sessionId) && s.tab.url === closed.url
+      && Number.isFinite(s.lastModified) && Math.abs(s.lastModified * 1000 - closed.at) <= PEEK_CLOSED_MS);
+    return hits.length === n ? hits.map((s) => s.tab.sessionId) : [];
+  };
   // Where Peek's preloaded tab goes when a preview becomes a tab: beside its source (just after it) when the source is
   // in this window. others: this window's tabs but the preloaded one, sorted by index. -> setSpace's index, or undefined
   // (the end of the window).
@@ -740,5 +819,5 @@
     return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, strays, isPeekTab, peekIds, withoutPeekClosed, PEEK_CLOSED_MS, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, deletedIds, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, claimClosed, PEEK_CLOSED_MS, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

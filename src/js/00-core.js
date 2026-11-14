@@ -119,7 +119,9 @@
   // the copy event ran with the text.
   const copyText = (text) => {
     let done = false;
-    const onCopy = (e) => { e.clipboardData.setData("text/plain", String(text ?? "")); e.preventDefault(); e.stopPropagation(); done = true; };
+    const onCopy = (e) => {
+      try { e.clipboardData.setData("text/plain", String(text ?? "")); e.preventDefault(); e.stopPropagation(); done = true; } catch (_) {}
+    };
     document.addEventListener("copy", onCopy, true);
     try { document.execCommand("copy"); } catch (_) {} finally { document.removeEventListener("copy", onCopy, true); }
     return done;

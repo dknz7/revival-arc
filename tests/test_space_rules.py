@@ -269,6 +269,46 @@ class BarPick(unittest.TestCase):
         # the default space always exists
         self.assertEqual(self.known_pick(in_window(1, 0, 10), None), {"kind": "switch", "window": 1, "space": 0})
 
+    def test_a_dead_tab_never_joins_a_dead_space_on_screen(self):
+        # a window still recorded on a deleted space: the tab goes into its default space instead
+        self.assertEqual(self.known_pick(in_window(1, 9, 10), [5, 6], shown=8, here_shown=8), {"kind": "adopt", "window": 1, "space": 0})
+        self.assertEqual(self.known_pick(in_window(1, 9, 10), [5, 6], here=2, here_shown=8), {"kind": "adopt", "window": 2, "space": 0})
+        self.assertEqual(self.known_pick(in_window(1, 9, 10), [5, 6], shown=9, here_shown=9), {"kind": "adopt", "window": 1, "space": 0},
+                         "the same dead id: setSpace would change nothing")
+
+    def test_live_space_needs_positive_evidence(self):
+        self.assertEqual(js("[workspaces.liveSpace(a, [5]), workspaces.liveSpace(b, [5]), workspaces.liveSpace(c, [5]), workspaces.liveSpace(b, null), workspaces.liveSpace(c, null)]",
+                            a=in_window(1, 9, 1), b=in_window(1, 5, 2), c=in_window(1, 0, 3)), [False, True, True, False, True])
+
+    def restore(self, tab, tabs, record=(), known=(5, 6), here=2, here_shown=6):
+        return js("workspaces.restorePlan({ tab, tabs, record: new Map(record), known, here, hereShown })", tab=tab, tabs=tabs,
+                  record=list(record), known=None if known is None else list(known), here=here, hereShown=here_shown)
+
+    # Task 9a fix round (Byron's ruling is general): a restored tab comes to the window clicked in (2, showing 6).
+    def test_a_restored_tab_of_a_deleted_space_joins_the_space_on_screen_here(self):
+        self.assertEqual(self.restore(in_window(1, 9, 10), []), {"window": 2, "space": 6, "show": False})
+
+    def test_a_restored_tab_of_a_live_space_living_in_another_window_joins_the_space_on_screen_here(self):
+        others = [in_window(1, 5, 11)]
+        self.assertEqual(self.restore(in_window(1, 5, 10), others), {"window": 2, "space": 6, "show": False}, "5 lives in window 1 (parked)")
+        self.assertEqual(self.restore(in_window(1, 5, 10), [], record=[[5, 1]]), {"window": 2, "space": 6, "show": False}, "5 shown in window 1")
+
+    def test_a_restored_tab_of_a_live_space_living_here_or_nowhere_keeps_its_space(self):
+        self.assertEqual(self.restore(in_window(1, 5, 10), []), {"window": 2, "space": 5, "show": True}, "5 has no other tab: shown here")
+        self.assertEqual(self.restore(in_window(2, 5, 10), [in_window(2, 5, 11)]), {"window": 2, "space": 5, "show": True})
+        self.assertEqual(self.restore(in_window(2, 6, 10), [in_window(2, 6, 11)]), {"window": 2, "space": 6, "show": False}, "already on screen here")
+
+    def test_a_restored_default_tab_comes_to_the_default_space_here(self):
+        self.assertEqual(self.restore(in_window(1, 0, 10), []), {"window": 2, "space": 0, "show": True})
+        self.assertEqual(self.restore(in_window(1, 0, 10), [], here_shown=0), {"window": 2, "space": 0, "show": False})
+
+    def test_with_the_list_unreadable_a_restored_named_tab_joins_the_space_on_screen_only_if_known_live(self):
+        self.assertEqual(self.restore(in_window(1, 5, 10), [], known=None), {"window": 2, "space": 0, "show": True},
+                         "neither 5 nor the space on screen can be told live: the default space")
+
+    def test_a_window_on_a_dead_space_restores_into_its_default_space(self):
+        self.assertEqual(self.restore(in_window(1, 9, 10), [], here_shown=8), {"window": 2, "space": 0, "show": True})
+
     def test_dead_space_tells_a_deleted_space_from_a_live_one(self):
         self.assertEqual(js("[workspaces.deadSpace(a, [5]), workspaces.deadSpace(b, [5]), workspaces.deadSpace(c, [5]), workspaces.deadSpace(a, null)]",
                             a=in_window(1, 9, 1), b=in_window(1, 5, 2), c=in_window(1, 0, 3)), [True, False, False, False])
@@ -696,15 +736,15 @@ class Repairs(unittest.TestCase):
         self.assertEqual(self.plan(snap), [])
         self.assertEqual([p["kind"] for p in self.heal_plan(snap, [9])], ["rehome"] * 3)
 
-    def gate(self, first, second, tabs, skip=None):
-        return js("workspaces.healGate({ first, second, tabs, skip })", first=first, second=second, tabs=tabs, skip=skip or [])
+    def gate(self, first, second, tabs, skip=()):
+        return js("workspaces.healGate({ first, second, tabs, skip })", first=first, second=second, tabs=tabs, skip=None if skip is None else list(skip))
 
     def test_the_heal_gate_lets_through_the_dead_ids_of_a_list_it_trusts(self):
         ok = {"pref": [X, Y], "store": [Y, X]}
         tabs = [tab(1, 1, X), tab(2, 1, 9), tab(3, 2, 8), tab(4, 2, 0)]
-        self.assertEqual(self.gate(ok, ok, tabs), {"ids": [8, 9], "why": None})
-        self.assertEqual(self.gate(ok, ok, tabs, skip=[9, {"id": 8}]), {"ids": [], "why": None}, "undelete can still bring them back")
-        self.assertEqual(self.gate(ok, ok, [tab(1, 1, X)]), {"ids": [], "why": None})
+        self.assertEqual(self.gate(ok, ok, tabs), {"ids": [8, 9], "list": [X, Y], "why": None})
+        self.assertEqual(self.gate(ok, ok, tabs, skip=[9, 8])["ids"], [], "undelete can still bring them back")
+        self.assertEqual(self.gate(ok, ok, [tab(1, 1, X)])["ids"], [])
 
     def test_the_heal_gate_refuses_a_list_it_cannot_trust(self):
         ok = {"pref": [X, Y], "store": [X, Y]}
@@ -716,8 +756,45 @@ class Repairs(unittest.TestCase):
             ({"pref": [], "store": []}, {"pref": [], "store": []}, "a workspace list is empty"),
             ({"pref": [X, Y], "store": [X]}, ok, "the workspace lists disagree or changed"),
             (ok, {"pref": [X], "store": [X]}, "the workspace lists disagree or changed"),  # it changed between the reads
+            # Task 9a fix round: malformed lists never pass, even when they look alike
+            ({"pref": [None, None], "store": [None, None]}, {"pref": [None, None], "store": [None, None]}, "a workspace list could not be read"),
+            ({"pref": [X, "6"], "store": [X, "6"]}, {"pref": [X, "6"], "store": [X, "6"]}, "a workspace list could not be read"),
+            ({"pref": [X, X], "store": [X, X]}, {"pref": [X, X], "store": [X, X]}, "a workspace list could not be read"),
+            ({"pref": {"0": X}, "store": [X]}, ok, "a workspace list could not be read"),
+            ({"pref": [X, 1.5], "store": [X, 1.5]}, {"pref": [X, 1.5], "store": [X, 1.5]}, "a workspace list could not be read"),
         ]:
-            self.assertEqual(self.gate(first, second, tabs), {"ids": [], "why": why}, why)
+            self.assertEqual(self.gate(first, second, tabs), {"ids": [], "list": None, "why": why}, why)
+        self.assertEqual(self.gate(ok, ok, tabs, skip=None), {"ids": [], "list": None, "why": "the recently deleted spaces could not be read"})
+
+    def test_the_deleted_spaces_store_is_read_strictly(self):
+        out = js("[undefined, [], [9, 8], [{ id: 9, name: 'Y' }, 8], [{ name: 'no id' }], ['9'], {}, null, 'x'].map((r) => workspaces.deletedIds(r))")
+        self.assertEqual(out, [[], [], [9, 8], [9, 8], None, None, None, None, None], "missing key: none; a bad shape or a failed read: unreadable")
+
+    def test_space_list_takes_only_lists_of_unique_ids(self):
+        out = js("[[5, 6], [6, 5], [], [5, 5], [5, null], [5, '6'], null, 'x', [0], [-1]].map((r) => workspaces.spaceList(r))")
+        self.assertEqual(out, [[5, 6], [5, 6], [], None, None, None, None, None, None, None])
+
+    def test_an_unreadable_final_list_means_no_rehome(self):
+        # the plan is made on the snapshot after the heal's wait: without a valid list there, nothing is healed
+        for spaces in (None, [None], [X, X]):
+            self.assertEqual([p for p in self.heal_plan({**self.ORPHANS, "spaces": spaces}, [8, 9]) if p["kind"] == "rehome"], [], spaces)
+
+    def step_ok(self, tab_now, pref=(X,), store=(X,), skip=(), step=None):
+        step = step or {"kind": "rehome", "tab": 11, "window": 1, "from": 9}
+        return js("workspaces.healStepOk({ step, tab, pref, store, list, skip })", step=step, tab=tab_now, pref=list(pref) if pref is not None else None,
+                  store=list(store) if store is not None else None, list=[X], skip=None if skip is None else list(skip))
+
+    def test_each_heal_step_is_checked_again_as_it_runs(self):
+        self.assertIsNone(self.step_ok(tab(11, 1, 9)))
+        self.assertEqual(self.step_ok(None), "the tab is gone")
+        self.assertEqual(self.step_ok(tab(11, 2, 9)), "the tab moved to another window")
+        self.assertEqual(self.step_ok(tab(11, 1, X)), "the tab is in another space now", "the user moved it into a live space")
+        self.assertEqual(self.step_ok(tab(11, 1, 0)), "the tab is in another space now")
+        self.assertEqual(self.step_ok(tab(11, 1, 9), pref=(X, 9), store=(X, 9)), "the workspace list changed", "its space was re-created (undelete)")
+        self.assertEqual(self.step_ok(tab(11, 1, 9), pref=None), "the workspace list changed")
+        self.assertEqual(self.step_ok(tab(11, 1, 9), store=(None,)), "the workspace list changed")
+        self.assertEqual(self.step_ok(tab(11, 1, 9), skip=(9,)), "its space can be brought back")
+        self.assertEqual(self.step_ok(tab(11, 1, 9), skip=None), "the recently deleted spaces could not be read")
 
     def test_strays_says_whether_the_heal_needs_to_look(self):
         self.assertEqual(js("[workspaces.strays(a, [5]), workspaces.strays(b, [5]), workspaces.strays(a, null)]",
@@ -781,10 +858,14 @@ class RepairRuntime(unittest.TestCase):
         self.assertIn("[vivarc] repair: gather space 5 into window 1 (tabs 30)", out["log"])
 
     # Task 9a: the heal through the runner. The store's list (record().spaces) and setSpace are stubbed in.
+    # chrome.tabs.get reads the (unchanging) state; store.read answers DELETED (default: no key); AFTER(id) runs after
+    # each setSpace, which is how a test acts between two heal steps.
     HEAL_STUBS = """
       const r0 = window.__vm.native.record;
       window.__vm.native.record = () => ({ ...r0(), spaces: STORE });
-      window.__vm.native.setSpace = async (id, sp, o) => { call(["setSpace", id, sp, o.windowId]); };
+      chrome.tabs.get = async (id) => s.tabs.find((t) => t.id === id);
+      window.__vm.store = { read: async () => (typeof DELETED === "function" ? DELETED() : undefined) };
+      window.__vm.native.setSpace = async (id, sp, o) => { call(["setSpace", id, sp, o.windowId]); if (typeof AFTER === "function") AFTER(id); };
     """
 
     def test_the_heal_moves_each_dead_tab_with_setspace_and_logs_it(self):
@@ -801,8 +882,45 @@ class RepairRuntime(unittest.TestCase):
             self.assertIn(f"WARN [vivarc] repair: tabs of a deleted space left as they are: {why}", out["log"], why)
 
     def test_the_heal_leaves_alone_what_undelete_can_still_bring_back(self):
-        script = "const STORE = () => s.spaces; window.__vm.store = { get: async () => [9, { id: 8 }] };" + self.HEAL_STUBS
+        script = "const STORE = () => s.spaces; const DELETED = () => [9, { id: 8, name: 'Z' }];" + self.HEAL_STUBS
         self.assertEqual(runtime(Repairs.ORPHANS, me=1, script=script)["calls"], [])
+
+    def test_a_deleted_spaces_store_that_cannot_be_read_heals_nothing(self):
+        for deleted in ("() => { throw new Error('IDB down'); }", "() => ({ not: 'a list' })", "() => [{ name: 'no id' }]"):
+            out = runtime(Repairs.ORPHANS, me=1, script=f"const STORE = () => s.spaces; const DELETED = {deleted};" + self.HEAL_STUBS)
+            self.assertEqual(out["calls"], [], deleted)
+
+    # The coordinator's case (Task 9a fix round): a batch of orphans, and between two heal steps the user moves the next
+    # one into a live space, or re-creates its deleted space: that one is NOT moved, and the batch stops there.
+    def test_a_tab_moved_into_a_live_space_between_two_heal_steps_is_not_moved(self):
+        script = """const STORE = () => s.spaces;
+          const AFTER = (id) => { if (id === 11) s.tabs.find((t) => t.id === 12).vivExtData = JSON.stringify({ workspaceId: 5 }); };""" + self.HEAL_STUBS
+        out = runtime(Repairs.ORPHANS, me=1, script=script)
+        moved = [c[1] for c in out["calls"] if c[0] == "setSpace"]
+        self.assertNotIn(12, moved, "tab 12 is in live space X now")
+        self.assertEqual(moved[0], 11)
+        self.assertIn(21, moved, "the next pass plans again and heals what is still dead")
+        self.assertTrue(any("tab 12 from deleted space 9" in line and "not done (the tab is in another space now)" in line for line in out["log"]))
+
+    def test_a_space_re_created_between_two_heal_steps_stops_the_heal(self):
+        script = """const STORE = () => s.spaces;
+          const AFTER = (id) => { if (id === 11 && !s.spaces.includes(9)) s.spaces.push(9); };""" + self.HEAL_STUBS
+        out = runtime(Repairs.ORPHANS, me=1, script=script)
+        moved = [c[1] for c in out["calls"] if c[0] == "setSpace"]
+        self.assertNotIn(12, moved, "space 9 exists again: its tab 12 stays")
+        self.assertTrue(any("not done (the workspace list changed)" in line for line in out["log"]))
+
+    def test_a_gesture_between_two_heal_steps_stops_the_batch(self):
+        script = """const STORE = () => s.spaces;
+          const AFTER = (id) => { if (id === 11) bg.__vivarcSpaceGesture = Date.now() + 5000; };""" + self.HEAL_STUBS
+        out = runtime(Repairs.ORPHANS, me=1, script=script)
+        self.assertEqual([c[1] for c in out["calls"] if c[0] == "setSpace"], [11])
+
+    def test_a_failed_heal_move_stops_the_batch(self):
+        script = """const STORE = () => s.spaces;""" + self.HEAL_STUBS + """
+          window.__vm.native.setSpace = async (id) => { call(["setSpace", id]); if (id === 11) throw new Error("refused"); };"""
+        out = runtime(Repairs.ORPHANS, me=1, script=script)
+        self.assertEqual([c for c in out["calls"] if c[0] == "setSpace"][:2], [["setSpace", 11], ["setSpace", 11]], "the pass stops at the failure and the next one starts again")
 
     def test_a_repair_that_does_not_take_stops_after_three_passes(self):
         out = runtime(Repairs.D1, me=1)

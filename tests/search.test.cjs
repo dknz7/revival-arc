@@ -297,13 +297,14 @@ test('switching tab in this window closes an edit bar, keeping its page; a switc
 // The bar edits tab 10 (window 1, recorded on `shown`) and Enter picks its first row, tab 20. Vivaldi's record and switch
 // are faked; every switch, focus and activation lands in one log, in order.
 // known: the spaces Vivaldi's list holds (Task 9a: a tab in a space not listed was deleted); null: the list can't be read.
-async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true, minimised = null, known = [1, 2] } = {}) {
+// knownLater: what the list says from its second read on (a space deleted between the listing and the switch).
+async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true, minimised = null, known = [1, 2], knownLater, via = 'pickTab' } = {}) {
   const space = await editUrl(tabs);
   const log = [];
   space.context.window.__vm.native = {
     record: () => (record ? { activeIn: (w) => (w === 1 ? shown : 0), all: () => new Map(all) } : null),
     hasSwitch: () => hasSwitch,
-    spaceIds: async () => known,
+    spaceIds: (() => { let n = 0; return async () => (n++ === 0 || knownLater === undefined ? known : knownLater); })(),
     setSpace: async (id, s, opts) => { log.push(['setSpace', id, s, { ...opts }]); },
     switchTo: async (w, s) => { log.push(['switch', w, s]); },
     focus: async (w) => { log.push(['focus', w]); },
@@ -314,6 +315,11 @@ async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwit
   if (minimised) {
     space.context.chrome.windows.get = async id => ({ id, state: minimised.includes(id) ? 'minimized' : 'normal' });
     space.context.chrome.windows.update = async (id, opts) => { log.push(['window', id, { ...opts }]); };
+  }
+  if (via === 'restoreTab') {
+    space.context.chrome.tabs.move = async (id, opts) => { log.push(['tabs.move', id, { ...opts }]); };
+    await space.context.window.__vm.restoreTab(tabs[20]);
+    return { ...space, log };
   }
   space.inputs[0].value = '';
   await space.inputs[0].events.input();
@@ -345,6 +351,19 @@ test('a tab picked in another window that is not minimised is only focused', asy
 // Task 9a (8y bug 1): a tab of a deleted space (9) is brought into the space on screen here, never switched to.
 test('a tab picked from the bar whose space was deleted joins the space on screen and is activated, with no switch', async () => {
   const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 9) });
+  assert.deepEqual(log, [['setSpace', 20, 1, { windowId: 1 }], ['update', 20, { active: true }]]);
+});
+test('a named space deleted between the listing and the switch is not switched to: the tab joins the space on screen', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { known: [1, 2], knownLater: [1] });
+  assert.deepEqual(log, [['setSpace', 20, 1, { windowId: 1 }], ['update', 20, { active: true }]]);
+});
+// Task 9a fix round: a restored tab comes to the window clicked in (window 1 here, showing 1).
+test('a restored tab of a space living in no other window keeps its space here: moved, the window switched, then shown', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { via: 'restoreTab' });
+  assert.deepEqual(log, [['switch', 1, 2], ['update', 20, { active: true }]]);
+});
+test('a restored tab of a deleted space joins the space on screen here, with no switch', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 9) }, { via: 'restoreTab' });
   assert.deepEqual(log, [['setSpace', 20, 1, { windowId: 1 }], ['update', 20, { active: true }]]);
 });
 test('with the space list unreadable a tab of a named space picked from the bar is only activated', async () => {

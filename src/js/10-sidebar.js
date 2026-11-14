@@ -1407,9 +1407,13 @@
     const end = window.__vm.spaceRepair?.gesture() ?? null;
     try {
       const restored = await chrome.sessions.restore(sessionId);
-      // A restored tab comes back in its old space, active in this window: shown like a pick, or it would be parked or
-      // gathered away. A restored window is its own, on its default space.
-      if (restored?.tab) await window.__vm.pickTab?.(await chrome.tabs.get(restored.tab.id));
+      // Vivaldi brings a tab back in its old window and space: it comes to this window instead (Byron, 2026-11-14), in
+      // its own space when that can be shown here, else the one on screen (restoreTab, 20-command-bar.js). A restored
+      // window is its own, on its default space.
+      if (restored?.tab) {
+        const tab = await chrome.tabs.get(restored.tab.id);
+        await (window.__vm.restoreTab ?? window.__vm.pickTab)?.(tab);
+      }
     } catch (error) {
       console.warn("[vivarc] restore:", error);
       say("Could not restore that");

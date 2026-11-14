@@ -33,15 +33,30 @@ class PeekTabs(unittest.TestCase):
     def test_unreadable_data_is_not_a_peek(self):
         self.assertFalse(js("workspaces.isPeekTab({ id: 1, vivExtData: '{oops' }, new Set())"))
 
-    def test_recently_closed_leaves_out_what_peek_closed_within_five_seconds(self):
+    def test_recently_closed_leaves_out_only_the_entries_matched_to_closed_preview_tabs(self):
         sessions = [{"lastModified": 1000, "tab": {"url": "https://a.test/1", "sessionId": "1"}},
-                    {"lastModified": 1000, "tab": {"url": "https://a.test/2", "sessionId": "2"}},
-                    {"lastModified": 1100, "tab": {"url": "https://a.test/1", "sessionId": "3"}},  # the same page closed later by the user
+                    {"lastModified": 1000, "tab": {"url": "https://a.test/1", "sessionId": "2"}},  # the user's own tab, same address
                     {"lastModified": 1000, "window": {"sessionId": "w", "tabs": []}}]
-        closed = [{"url": "https://a.test/1", "at": 1000 * 1000 + 3000}]
-        out = js("workspaces.withoutPeekClosed(s, c).map((x) => x.tab?.sessionId ?? x.window.sessionId)", s=sessions, c=closed)
-        self.assertEqual(out, ["2", "3", "w"])
-        self.assertEqual(len(js("workspaces.withoutPeekClosed(s, [])", s=sessions)), 4)
+        out = js("workspaces.withoutPeekClosed(s, ['1']).map((x) => x.tab?.sessionId ?? x.window.sessionId)", s=sessions)
+        self.assertEqual(out, ["2", "w"])
+        self.assertEqual(len(js("workspaces.withoutPeekClosed(s, [])", s=sessions)), 3)
+        self.assertEqual(len(js("workspaces.withoutPeekClosed(s, [null, 5])", s=sessions)), 3)
+
+    def test_closed_preview_tabs_claim_their_entries_only_when_the_count_matches(self):
+        at = 1000 * 1000
+        one = [{"lastModified": 1000, "tab": {"url": "https://a.test/1", "sessionId": "1"}},
+               {"lastModified": 1000, "tab": {"url": "https://a.test/2", "sessionId": "2"}}]
+        two = one + [{"lastModified": 1001, "tab": {"url": "https://a.test/1", "sessionId": "3"}}]
+        closed = {"url": "https://a.test/1", "at": at + 500, "n": 1}
+        self.assertEqual(js("workspaces.claimClosed(c, s, [])", c=closed, s=one), ["1"])
+        self.assertEqual(js("workspaces.claimClosed(c, s, [])", c=closed, s=two), [], "one preview tab, two entries: a user tab may be among them")
+        self.assertEqual(js("workspaces.claimClosed(c, s, [])", c={**closed, "n": 2}, s=two), ["1", "3"], "Peek's two tabs closed together")
+        self.assertEqual(js("workspaces.claimClosed(c, s, ['3'])", c=closed, s=two), ["1"], "one already claimed leaves one")
+        self.assertEqual(js("workspaces.claimClosed(c, s, [])", c={"url": "https://a.test/1", "at": at + 9000, "n": 1}, s=one), [], "too long ago")
+        self.assertEqual(js("workspaces.claimClosed(c, s, [])", c={"url": "", "at": at, "n": 1}, s=one), [])
+
+    def test_a_runtime_tab_peek_adopted_into_the_strip_is_the_users(self):
+        self.assertFalse(js("workspaces.isPeekTab(t, new Set())", t=tab(12, ext={"arcPeekRuntime": {"webviewId": "p"}, "arcPeekAdopted": {"createdBy": "ArcPeek"}})))
 
     def test_beside_its_source_is_just_after_it(self):
         others = [tab(1, index=0), tab(2, index=1), tab(3, index=2)]
@@ -56,10 +71,11 @@ const calls = [], warns = [];
 globalThis.console = { warn: (...a) => warns.push(a.map(String).join(" ")), log() {}, error() {} };
 const tabs = input.tabs;
 const listeners = { created: [], updated: [], removed: [] };
-const bg = {};
+const bg = { ...(input.bg || {}) };
 globalThis.chrome = {
   extension: { getBackgroundPage: () => bg },
   windows: { getCurrent: async () => ({ id: 1 }) },
+  sessions: { getRecentlyClosed: async () => (input.sessions || []).map((x) => ({ ...x, lastModified: x.lastModified === "now" ? Date.now() / 1000 : x.lastModified })) },
   tabs: {
     get: async (id) => { const t = tabs.find((x) => x.id === id); if (!t) throw new Error("no tab"); return t; },
     query: async ({ windowId }) => tabs.filter((t) => t.windowId === windowId),
@@ -87,8 +103,9 @@ run().then(() => setTimeout(() => process.stdout.write(JSON.stringify({ calls, w
 """
 
 
-def peek_js(script, tabs, webviews=None, set_space_fails=False):
-    result = subprocess.run(["node", "-e", PEEK_HARNESS, JS_DIR, json.dumps({"script": script, "tabs": tabs, "webviews": webviews or [], "setSpaceFails": set_space_fails})],
+def peek_js(script, tabs, webviews=None, set_space_fails=False, sessions=None, bg=None):
+    result = subprocess.run(["node", "-e", PEEK_HARNESS, JS_DIR, json.dumps({"script": script, "tabs": tabs, "webviews": webviews or [], "setSpaceFails": set_space_fails,
+                                                                           "sessions": sessions or [], "bg": bg or {}})],
                             capture_output=True, text=True, check=True)
     return json.loads(result.stdout)
 
@@ -98,7 +115,7 @@ class PeekRuntime(unittest.TestCase):
     # window 1: the source tab 2 (space 5), its neighbours 1 and 3; Peek's preloaded tab 10 (stashed: default) and its
     # runtime tab 11.
     TABS = [tab(1, 1, 5, index=0), tab(2, 1, 5, index=1), tab(10, 1, 0, index=2), tab(3, 1, 5, index=3),
-            tab(11, 1, 0, ext={"arcPeekRuntime": {"createdBy": "ArcPeek"}}, index=4)]
+            tab(11, 1, 0, ext={"arcPeekRuntime": {"createdBy": "ArcPeek", "webviewId": "peek-1"}}, index=4)]
     PREVIEW = [["peek-1", {"parallelTabId": 10, "relatedTabId": 11, "tabId": 2, "_hiddenWorkspaceId": 6}]]
 
     def test_the_preview_tab_goes_into_the_space_on_screen_beside_its_source_before_peek_moves_it(self):
@@ -116,12 +133,59 @@ class PeekRuntime(unittest.TestCase):
         out = peek_js("await peek._moveParallelTabToMainWindow('peek-1');", self.TABS, [["peek-1", {"parallelTabId": None, "relatedTabId": 11, "tabId": 2}]])
         self.assertEqual(out["calls"], [["peek-move-back", "peek-1"]])
 
-    def test_the_runtime_tab_peek_leaves_after_open_in_new_tab_is_closed_and_kept_out_of_recently_closed(self):
-        out = peek_js("await peek.disposePeek('peek-1', { animated: false, closeRuntimeTab: false, closeParallelTab: false }); await new Promise((r) => setTimeout(r, 1100));",
-                      self.TABS, self.PREVIEW)
-        self.assertEqual(out["calls"][-1], ["remove", 11])
-        self.assertEqual([c["url"] for c in out["bg"]["__vivarcPeekClosed"]], ["https://site.test/11"], "what Recently Closed is filtered by")
+    PROMOTE_THEN_DISPOSE = ("await peek._moveParallelTabToMainWindow('peek-1');"
+                            "await peek.disposePeek('peek-1', { animated: false, closeRuntimeTab: false, closeParallelTab: false });"
+                            "await new Promise((r) => setTimeout(r, 600));")
+
+    def test_the_runtime_tab_peek_leaves_after_open_in_new_tab_is_closed_and_its_entry_claimed(self):
+        out = peek_js(self.PROMOTE_THEN_DISPOSE, self.TABS, self.PREVIEW,
+                      sessions=[{"lastModified": "now", "tab": {"url": "https://site.test/11", "sessionId": "s11"}}])
+        self.assertIn(["remove", 11], out["calls"])
+        self.assertEqual(out["bg"]["__vivarcPeekClosed"], ["s11"], "its Recently Closed entry, by identity")
+
+    def test_two_preview_tabs_of_one_address_closed_together_claim_both_entries(self):
+        tabs = [t if t["id"] != 10 else {**t, "url": "https://site.test/11"} for t in self.TABS]
+        script = ("await peek.disposePeek('peek-1', { closeRuntimeTab: true }); await chrome.tabs.remove(10); await chrome.tabs.remove(11);"
+                  "await new Promise((r) => setTimeout(r, 600));")
+        out = peek_js(script, tabs, self.PREVIEW, sessions=[{"lastModified": "now", "tab": {"url": "https://site.test/11", "sessionId": "a"}},
+                                                           {"lastModified": "now", "tab": {"url": "https://site.test/11", "sessionId": "b"}}])
+        self.assertEqual(sorted(out["bg"]["__vivarcPeekClosed"]), ["a", "b"])
         self.assertIn("vm-peek-changed", out["events"], "the sidebar lists the promoted tab again")
+
+    def test_an_ambiguous_closed_entry_is_not_claimed(self):
+        out = peek_js(self.PROMOTE_THEN_DISPOSE, self.TABS, self.PREVIEW,
+                      sessions=[{"lastModified": "now", "tab": {"url": "https://site.test/11", "sessionId": "a"}},
+                                {"lastModified": "now", "tab": {"url": "https://site.test/11", "sessionId": "b"}}])
+        self.assertNotIn("__vivarcPeekClosed", out["bg"])
+
+    def test_without_a_promotion_this_wrap_saw_nothing_is_closed(self):
+        out = peek_js("await peek.disposePeek('peek-1', { closeRuntimeTab: false, closeParallelTab: false });", self.TABS, self.PREVIEW)
+        self.assertNotIn(["remove", 11], out["calls"])
+
+    def test_a_runtime_tab_of_another_preview_or_adopted_is_never_closed(self):
+        other = [t if t["id"] != 11 else tab(11, 1, 0, ext={"arcPeekRuntime": {"webviewId": "peek-2"}}, index=4) for t in self.TABS]
+        self.assertNotIn(["remove", 11], peek_js(self.PROMOTE_THEN_DISPOSE, other, self.PREVIEW)["calls"])
+        adopted = [t if t["id"] != 11 else tab(11, 1, 0, ext={"arcPeekRuntime": {"webviewId": "peek-1"}, "arcPeekAdopted": {}}, index=4) for t in self.TABS]
+        self.assertNotIn(["remove", 11], peek_js(self.PROMOTE_THEN_DISPOSE, adopted, self.PREVIEW)["calls"])
+
+    def test_a_promoted_tab_is_listed_again_at_once(self):
+        out = peek_js("await peek._moveParallelTabToMainWindow('peek-1'); calls.push(window.__vm.peek.without(tabs).map((t) => t.id));", self.TABS, self.PREVIEW)
+        self.assertEqual(out["calls"][-1], [1, 2, 10, 3], "10 is the user's tab now; the runtime tab 11 is still the preview's")
+
+    def test_another_windows_live_previews_are_left_out_here_too(self):
+        tabs = self.TABS + [tab(30, 2, 0, index=0), tab(31, 2, 0, index=1)]
+        out = peek_js("calls.push(window.__vm.peek.without(tabs).map((t) => t.id));", tabs, [], bg={"__vivarcPeekLive": {"other-window": [30]}})
+        self.assertEqual(out["calls"][-1], [1, 2, 10, 3, 31], "30 is a preview of the other window; 11 is a runtime tab")
+
+    def test_this_windows_previews_are_shared_with_the_others(self):
+        out = peek_js("tabs.push({ id: 99, windowId: 1, index: 9, vivExtData: '{}', url: 'x' }); listeners.updated.forEach((f) => f(99, {}, tabs[tabs.length - 1]));", self.TABS, self.PREVIEW)
+        self.assertEqual(sorted(next(iter(out["bg"]["__vivarcPeekLive"].values()))), [10, 11])
+
+    def test_broken_peek_records_fail_open(self):
+        out = peek_js("peek.webviews = { values() { throw new Error('changed'); }, get() { throw new Error('changed'); } }; calls.push(window.__vm.peek.without(tabs).map((t) => t.id));"
+                      "await peek._moveParallelTabToMainWindow('peek-1'); await peek.disposePeek('peek-1', { closeRuntimeTab: false });", self.TABS, self.PREVIEW)
+        self.assertEqual(out["calls"][0], [1, 2, 10, 3], "only the marked runtime tab is left out")
+        self.assertNotIn(["remove", 11], out["calls"])
 
     def test_a_dispose_that_closes_its_own_tabs_closes_nothing_more(self):
         out = peek_js("await peek.disposePeek('peek-1', { closeRuntimeTab: true, closeParallelTab: true });", self.TABS, self.PREVIEW)

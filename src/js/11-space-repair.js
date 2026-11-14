@@ -91,24 +91,37 @@
     if (typeof test?.lists === "function") return test.lists();
     return { pref: await readSpaces(), store: window.__vm.native?.record()?.spaces?.() ?? null };
   };
-  // The deleted spaces whose tabs may move this pass ([] when none, or when a guard says no). Asked only when a tab
-  // carries an id the snapshot's list does not have, so a pass without such a tab waits for nothing.
+  // The ids the undelete store (deletedSpaces, Task 9c) can still bring back, read with the store's rejecting read:
+  // [] when the key is missing, null when the read fails or holds something that is not a list of ids or of records with
+  // a numeric id (the heal then does nothing). spaceRepair.test.deleted replaces it (sandbox cases).
+  const readDeleted = async () => {
+    const test = window.__vm.spaceRepair?.test;
+    try {
+      const raw = typeof test?.deleted === "function" ? await test.deleted() : await window.__vm.store.read(DELETED_KEY);
+      return spacesOf.deletedIds(raw);
+    } catch (_) { return null; }
+  };
+  // -> { waited, evidence }: evidence is the heal's go-ahead for this pass ({ ids, list }) or null (nothing may move);
+  // waited says the check slept (the caller then takes a fresh snapshot). Asked only when a tab carries an id the snapshot's
+  // list does not have, so a pass without such a tab waits for nothing. Never in a private window: its store is not the
+  // profile's (05-bootstrap.js), so its undelete list says nothing.
   let lastWhy = null;
   const confirmHeal = async (snap) => {
-    if (!spacesOf.strays(snap.tabs, snap.spaces)) return [];
+    if (!spacesOf.strays(snap.tabs, snap.spaces)) return { waited: false, evidence: null };
+    if (chrome.extension?.inIncognitoContext) return { waited: false, evidence: null };
     const first = await readLists();
     await sleep(HEAL_CONFIRM_MS);
     const second = await readLists();
-    let skip = [];
-    try { skip = (await window.__vm.store?.get(DELETED_KEY, [])) || []; } catch (_) {}
+    const skip = await readDeleted();
     const tabs = await chrome.tabs.query({ windowType: "normal" });
-    const { ids, why } = spacesOf.healGate({ first, second, tabs, skip: Array.isArray(skip) ? skip : [] });
+    const { ids, list, why } = spacesOf.healGate({ first, second, tabs, skip });
     if (why && why !== lastWhy) console.warn(`[vivarc] repair: tabs of a deleted space left as they are: ${why}`);
     lastWhy = why;
-    return ids;
+    return { waited: true, evidence: ids.length ? { ids, list } : null };
   };
 
   let ownWindow = null;
+  const leading = async () => ownWindow != null && spacesOf.leaderOf(await chrome.windows.getAll()) === ownWindow;
   const snapshot = async () => {
     const windows = await chrome.windows.getAll();
     if (ownWindow == null || spacesOf.leaderOf(windows) !== ownWindow) return null;
@@ -117,30 +130,56 @@
     return { windows, tabs, record, spaces: await readSpaces() };
   };
 
-  const carryOut = async (step) => {
+  // One heal step, re-checked at the moment it runs (Task 9a fix round): still the leader, no gesture under way, the tab
+  // still in the planned window on the planned dead id, the lists still valid and the same as the approved ones (so its
+  // space was not re-created), and its space not in the undelete store. -> null (moved) or why it stopped.
+  const rehome = async (step, evidence) => {
+    if (busyFor()) return "a gesture started";
+    if (!(await leading())) return "this window no longer leads";
+    const tab = await chrome.tabs.get(step.tab).catch(() => null);
+    const { pref, store } = await readLists();
+    const why = spacesOf.healStepOk({ step, tab, pref, store, list: evidence.list, skip: await readDeleted() });
+    if (why) return why;
+    await window.__vm.native.setSpace(step.tab, 0, { windowId: step.window });
+    return null;
+  };
+
+  // -> false when the plan must stop here (a heal step that did not go ahead or failed; a switch whose space is gone):
+  // the next pass plans again on what is there then.
+  const carryOut = async (step, evidence) => {
     let line;
     try {
-      if (step.kind === "switch") {
+      if (step.kind === "rehome") {
+        line = `tab ${step.tab} from deleted space ${step.from} to its window's default space`;
+        const why = evidence ? await rehome(step, evidence) : "no evidence";
+        if (why) { console.warn(`[vivarc] repair: ${line} not done (${why}); planning again`); return false; }
+      } else if (step.kind === "switch") {
         line = `window ${step.window} to ${step.space ? `space ${step.space}` : "its default space"}`;
+        // a named space is checked again as the switch runs: never into one that is not (or no longer) listed
+        if (step.space && !spacesOf.spaceList(await readSpaces())?.includes(step.space)) {
+          console.warn(`[vivarc] repair: ${line} not done (the space is not listed); planning again`);
+          return false;
+        }
         await window.__vm.native.switchTo(step.window, step.space);
       } else if (step.kind === "activate") {
         line = `activate tab ${step.tab}`;
         await chrome.tabs.update(step.tab, { active: true });
-      } else if (step.kind === "rehome") {
-        line = `tab ${step.tab} from deleted space ${step.from} to its window's default space`;
-        await window.__vm.native.setSpace(step.tab, 0, { windowId: step.window });
       } else if (step.kind === "gather") {
         line = `gather space ${step.space} into window ${step.window} (tabs ${step.tabs.join(", ")})`;
         await chrome.tabs.move(step.tabs, { windowId: step.window, index: -1 });
       }
       console.log(`[vivarc] repair: ${line}`);
+      return true;
     } catch (error) {
       console.warn(`[vivarc] repair: ${line} failed:`, error);
+      return step.kind !== "rehome"; // a failed heal stops the batch
     }
   };
 
   // One run: up to 3 passes, each planned on a fresh snapshot. -> "done" (nothing left to do, not the leader, or no
-  // record), "wait" (a gesture's mark: try again later) or "stuck" (still drifting after 3 passes).
+  // record), "wait" (a gesture's mark: try again later) or "stuck" (still drifting after 3 passes). healLeft: the last
+  // plan healed as many tabs as a pass may, so more may be waiting (a stuck run then comes back after its rest).
+  let healLeft = false;
   const passes = async () => {
     for (let pass = 1; ; pass++) {
       if (busyFor()) return "wait";
@@ -150,18 +189,28 @@
         warnOnce("record", "[vivarc] repairs are off: Vivaldi's workspace record or switch could not be found");
         return "done";
       }
-      const heal = await confirmHeal(snap);
-      if (busyFor()) return "wait";
-      // The heal waited about 1 s: the whole plan is made on a fresh snapshot (a record from before the wait, beside the
-      // tabs after it, could snap back a switch made in between).
-      if (heal.length) {
+      const { waited, evidence } = await confirmHeal(snap);
+      if (waited) {
+        // The heal's check waited about 1 s (approved or refused): the whole plan is made on a fresh snapshot, with
+        // leadership and the gesture mark looked at again (a record from before the wait could snap back a switch made
+        // in between). The fresh list must still be the approved one, or nothing is healed.
+        if (busyFor()) return "wait";
         snap = await snapshot();
         if (!snap?.record) return "done";
       }
-      const plan = spacesOf.repairPlan(heal.length ? { ...snap, heal } : snap);
+      const fresh = spacesOf.spaceList(snap.spaces);
+      const heal = evidence && fresh && JSON.stringify(fresh) === JSON.stringify(evidence.list) ? evidence.ids : [];
+      const plan = spacesOf.repairPlan({ ...snap, heal });
+      healLeft = plan.filter((p) => p.kind === "rehome").length >= spacesOf.HEAL_MAX;
       if (!plan.length) return "done";
       if (pass > MAX_PASSES) return "stuck";
-      for (const step of plan) await carryOut(step);
+      let nth = 0;
+      for (const step of plan) {
+        // spaceRepair.test.beforeStep(step, n): the sandbox's way to act between two heal steps (R.heal-step-rechecks)
+        if (step.kind === "rehome") await Promise.resolve(window.__vm.spaceRepair?.test?.beforeStep?.(step, nth++)).catch(() => {});
+        if (busyFor()) return "wait";
+        if (!(await carryOut(step, heal.length ? evidence : null))) break;
+      }
       await sleep(SETTLE_MS);
     }
   };
@@ -185,6 +234,7 @@
     if (result === "stuck") {
       warnOnce("stuck", `[vivarc] repair: still drifting after ${MAX_PASSES} passes; resting ${COOL_MS / 1000} s`);
       restUntil = Date.now() + COOL_MS;
+      if (healLeft) schedule(); // capped heal work left: carry on after the rest (schedule waits for restUntil)
     } else if (result === "wait") {
       // a busy mark is looked at again shortly
       schedule(BUSY_CHECK_MS);

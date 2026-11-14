@@ -310,15 +310,15 @@
       if (await minimised(pick.window)) await chrome.windows.update(pick.window, { state: "normal", focused: true });
       return native.focus(pick.window);
     }
-    if (pick.kind === "adopt") {
-      if (tab.active && pick.window !== tab.windowId) {
-        const own = record.activeIn(tab.windowId) ?? 0;
-        const keeper = spaces.recentTab((await chrome.tabs.query({ windowId: tab.windowId })).filter((t) => t.id !== tab.id), own);
-        if (keeper) await chrome.tabs.update(keeper.id, { active: true });
+    if (pick.kind === "adopt") return bringHere(tab, pick.window, pick.space, record);
+    // A named space is checked again as the switch runs (the list may have changed since the bar listed the tab): never
+    // into one that is not listed; such a tab is brought into the space on screen here instead.
+    if (pick.kind === "switch" && pick.space) {
+      const now = await native.spaceIds();
+      if (!now?.includes(pick.space)) {
+        const w = here ?? tab.windowId, on = record.activeIn(w) ?? 0;
+        return bringHere(tab, w, on && now?.includes(on) ? on : 0, record);
       }
-      await native.setSpace(tab.id, pick.space, { windowId: pick.window });
-      await chrome.tabs.update(tab.id, { active: true });
-      return;
     }
     if (pick.kind === "switch") await native.switchTo(pick.window, pick.space);
     await chrome.tabs.update(tab.id, { active: true });
@@ -327,7 +327,45 @@
       await chrome.windows.update(tab.windowId, (await minimised(tab.windowId)) ? { state: "normal", focused: true } : { focused: true });
     }
   };
-  window.__vm.pickTab = pickTab; // shared with the sidebar's New Tab dropdown (Open Tabs, Recently Closed)
+  window.__vm.pickTab = pickTab; // shared with the sidebar's New Tab dropdown (Open Tabs) and Recently Cleaned
+
+  // Into `space` in window `windowId` (setSpace), then on screen there. A tab on screen in another window first hands
+  // that window's screen to its most recent tab of its own space.
+  const bringHere = async (tab, windowId, space, record, { activate = true } = {}) => {
+    const native = window.__vm.native, spaces = window.__vm.workspaces;
+    if (tab.active && windowId !== tab.windowId) {
+      const own = record?.activeIn(tab.windowId) ?? 0;
+      const keeper = spaces.recentTab((await chrome.tabs.query({ windowId: tab.windowId })).filter((t) => t.id !== tab.id), own);
+      if (keeper) await chrome.tabs.update(keeper.id, { active: true });
+    }
+    await native.setSpace(tab.id, space, { windowId });
+    if (activate) await chrome.tabs.update(tab.id, { active: true });
+  };
+
+  // A tab restored from Recently Closed (Byron, 2026-11-14: it comes to the window you clicked in, whatever its space;
+  // Vivaldi puts it back in its old window). workspaces.restorePlan says into which space: its own when that space can
+  // be shown here (the default space, or a live space living here or nowhere), else the one on screen here. The window
+  // switches to that space when it shows another one (a named space checked again first). Without Vivaldi's record or
+  // switch, the tab is only brought into this window and activated.
+  const restoreTab = async (listed) => {
+    const tab = (await chrome.tabs.get(listed.id).catch(() => null)) || listed;
+    const native = window.__vm.native, spaces = window.__vm.workspaces;
+    const here = (await chrome.windows.getCurrent().catch(() => null))?.id ?? tab.windowId;
+    const record = native?.hasSwitch() ? native.record() : null;
+    if (!record || !spaces) {
+      if (tab.windowId !== here) await chrome.tabs.move(tab.id, { windowId: here, index: -1 });
+      return chrome.tabs.update(tab.id, { active: true });
+    }
+    const known = await native.spaceIds();
+    const plan = spaces.restorePlan({ tab, here, hereShown: record.activeIn(here), known, record: record.all(),
+      tabs: await chrome.tabs.query({ windowType: "normal" }) });
+    let space = plan.space;
+    if (space && !(await native.spaceIds())?.includes(space)) space = 0; // gone meanwhile
+    if (tab.windowId !== here || spaces.of(tab) !== space) await bringHere(tab, here, space, record, { activate: false });
+    if (space !== (record.activeIn(here) ?? 0)) await native.switchTo(here, space);
+    await chrome.tabs.update(tab.id, { active: true });
+  };
+  window.__vm.restoreTab = restoreTab; // the sidebar's Recently Closed
 
   const run = (row) => {
     if (!row || (row.type === "search" && !row.query)) return;
@@ -438,7 +476,11 @@
     if (mode) {
       out.push({ type: "search", engine: mode, query: text, label: text || "%s", lead: true });
     } else if (!text) {
-      (await allTabs()).slice(0, 7).forEach((tab) =>
+      // a tab whose space is not known to exist never comes first (Enter would pick it): listed after the others
+      const known = await window.__vm.native?.spaceIds?.();
+      const listed = await allTabs();
+      const live = (t) => window.__vm.workspaces.liveSpace(t, known);
+      [...listed.filter(live), ...listed.filter((t) => !live(t))].slice(0, 7).forEach((tab) =>
         out.push({ type: "tab", tab, url: tab.url, favicon: tab.favIconUrl, label: window.__vm.workspaces.startTitle(tab) || tab.title || tab.url }));
     } else {
       const needle = text.toLowerCase();
@@ -465,7 +507,7 @@
       if (id !== seq) return;
       // A tab whose space was deleted never leads (Enter would run it; task 8y): it is still listed, and picking it brings it here.
       const known = await window.__vm.native?.spaceIds?.();
-      const prefix = matches.find((m) => hostOf(m.url).startsWith(needle) && !(m.type === "tab" && window.__vm.workspaces.deadSpace(m.tab, known)));
+      const prefix = matches.find((m) => hostOf(m.url).startsWith(needle) && !(m.type === "tab" && !window.__vm.workspaces.liveSpace(m.tab, known)));
       const lead = leadRows(text);
       if (lead.url) out.push(lead.url);
       if (prefix) out.push(prefix);
@@ -513,7 +555,7 @@
     const needle = text.toLowerCase();
     const known = await window.__vm.native?.spaceIds?.();
     const hosts = [
-      ...(window.__vm.peek?.without ?? ((tabs) => tabs))(await chrome.tabs.query({ currentWindow: true })).filter((t) => !window.__vm.workspaces.deadSpace(t, known)).map((t) => hostOf(t.url)),
+      ...(window.__vm.peek?.without ?? ((tabs) => tabs))(await chrome.tabs.query({ currentWindow: true })).filter((t) => window.__vm.workspaces.liveSpace(t, known)).map((t) => hostOf(t.url)),
       ...((await chrome.bookmarks.search(text).catch(() => [])).map((b) => hostOf(b.url))),
     ];
     const host = hosts.find((h) => h && h.startsWith(needle) && h.length > needle.length);
