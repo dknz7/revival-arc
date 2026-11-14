@@ -1415,10 +1415,14 @@
     } finally { end?.(); refresh(false); }
   };
   const tabRows = (entries, open) => entries.map((t) => ({ label: spacesOf.startTitle(t) || t.title || t.url, icon: iconEl(t.url, t.favIconUrl), mark: !!t.mark, action: () => open(t) }));
-  const closedSessions = async () => chrome.sessions.getRecentlyClosed({ maxResults: 25 });
+  // without the tabs Peek closed behind its previews (17-peek.js)
+  const closedSessions = async () => {
+    const sessions = await chrome.sessions.getRecentlyClosed({ maxResults: 25 });
+    return window.__vm.peek ? window.__vm.peek.withoutClosed(sessions) : sessions;
+  };
   const openTabsFlyout = async () => {
     const here = myWindow();
-    const tabs = (await chrome.tabs.query({ windowType: "normal" })).filter((t) => !isBlank(t));
+    const tabs = (window.__vm.peek?.without ?? ((tabs) => tabs))(await chrome.tabs.query({ windowType: "normal" })).filter((t) => !isBlank(t));
     const groups = spacesOf.openTabGroups(tabs, state.workspaces, here, state.defaultSpace ? spacesOf.label(state.defaultSpace) : "Home");
     return groups.flatMap((g) => [{ heading: g.heading },
       ...tabRows(g.tabs.map((t) => ({ ...t, mark: t.active && t.windowId === here })), showTab)]);
@@ -1673,7 +1677,8 @@
   };
   let warnedNoRecord = false;
   const loadTabs = async () => {
-    state.allTabs = await chrome.tabs.query({ currentWindow: true });
+    // Peek's tabs behind an open preview are not the user's (17-peek.js)
+    state.allTabs = (window.__vm.peek?.without ?? ((tabs) => tabs))(await chrome.tabs.query({ currentWindow: true }));
     state.workspaces = await readWorkspaces();
     state.dots = await readDots(state.allTabs[0]?.windowId);
     ({ active: state.active, tabs: state.tabs } = spacesOf.scope(state.allTabs, state.workspaces));
@@ -1802,6 +1807,8 @@
     if (naming()) refresh(false); // held until the name is done, like every other re-render
     else render();
   });
+  // a preview made into a tab (or closed): its tab is listed again, or gone
+  window.addEventListener("vm-peek-changed", () => refresh(false));
   window.addEventListener("vm-command-bar-opened", () => {
     const scroller = panel?.querySelector(".vm-scroll");
     scroller?.scrollTo({ top: scroller.scrollHeight, behavior: "smooth" });

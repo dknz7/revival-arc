@@ -76,7 +76,8 @@ Measured on 2026-11-06 in a sandbox Vivaldi 8.2.4133.96 with Vivarc loaded, each
    - `Move to <Space>` (on 8.3; on 8.2 it is Vivaldi's own `moveToWorkspace`);
    - Clean Up's restore of a cleaned tab (into the space it was cleaned from);
    - a tab picked whose space no longer exists (into the space on screen in the window it was picked in; see "A tab picked in the command bar");
-   - repair 0, the one repair that sets a space: a tab whose space no longer exists, into its window's default space.
+   - repair 0, the one repair that sets a space: a tab whose space no longer exists, into its window's default space;
+   - a Peek preview made into a tab (Open in New Tab, Open in Background): its preloaded tab, into the space on screen beside the tab the link was in (`17-peek.js`).
 
    How: on **Vivaldi 8.2** a write of `workspaceId` to the tab's `vivExtData` (`chrome.tabs.update` merges `vivExtData`, so leaving the key out would keep the old space; the default space is written as `workspaceId: 0`, and Vivaldi drops the key when it is 0), with `chrome.tabs.move` first for another window. **Vivaldi 8.3** owns that key: a `workspaceId` written to `vivExtData` is dropped while the other keys still merge, so the space is set with Vivaldi's own tab move, `tabsPrivate.move({ tabIds, target, windowId, workspaceId })` (what its Move to Workspace and tab drop use), always with the window: onto the tab itself, or before the tab at the index asked for. Which Vivaldi it is comes from the move's own argument check, asked once with an empty move (`native.movesByTab`), not from a version number. Either way the tab is read back, and the call throws when the tab is not in that space and window. Its old new-tab stamping is removed: it was redundant, and it undid switches (A8b).
 6. **Every window shows a space that exists and has a tab.** A record pointing at a deleted space, or at a space with no tab in that window, is repaired.

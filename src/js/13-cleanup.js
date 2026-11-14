@@ -86,7 +86,8 @@
     try {
       const tabs = await chrome.tabs.query({ windowType: "normal" });
       const at = now();
-      const pick = (all) => spacesOf.cleanupSet({ tabs: all, now: at, space, window: win, idleMs: idleMs() });
+      // Peek's tabs behind an open preview are not the user's to clean (17-peek.js)
+      const pick = (all) => spacesOf.cleanupSet({ tabs: (window.__vm.peek?.without ?? ((tabs) => tabs))(all), now: at, space, window: win, idleMs: idleMs() });
       // in window order, so the entries (and Undo) keep the order the tabs had
       const order = new Map(tabs.map((t) => [t.id, [t.windowId, t.index]]));
       const ids = pick(tabs).sort((a, b) => order.get(a)[0] - order.get(b)[0] || order.get(a)[1] - order.get(b)[1]);

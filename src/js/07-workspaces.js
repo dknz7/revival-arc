@@ -307,6 +307,27 @@
   // Whether any tab carries a named space that is not in `known` (cheap: the heal then confirms with healGate).
   const strays = (tabs, known) => Array.isArray(known) && (tabs || []).some((t) => deadSpace(t, known));
 
+  // Peek (the optional community link preview) makes two tabs behind a preview: one it preloads (stashed in another
+  // space; Vivaldi 8.3 drops that and leaves it in the default space, task 8y) and the one backing its floating page
+  // (vivExtData.arcPeekRuntime). Neither is the user's: Vivarc's lists leave them out (the isPeekTab idea of upstream
+  // KASOGIT/vivarc#150). ids: the open previews' tab ids (peekIds of Peek's preview records). Only open previews count, so
+  // the preloaded tab is the user's again once "Open in New Tab" has made it a real one.
+  const isPeekTab = (tab, ids) => {
+    if (tab?.id != null && ids?.has?.(tab.id)) return true;
+    try { return !!JSON.parse(tab?.vivExtData || "{}")?.arcPeekRuntime; } catch (_) { return false; }
+  };
+  const peekIds = (previews) => new Set([...(previews || [])].flatMap((d) => [d?.parallelTabId, d?.relatedTabId]).filter((id) => id != null));
+  // Recently Closed without Peek's own tabs (every preview used to leave two entries there, task 8y). closed: [{ url, at }]
+  // (ms), the Peek tabs Vivarc saw close. A tab entry (lastModified in seconds) with the same address, closed within 5 s
+  // of one of them, is Peek's.
+  const PEEK_CLOSED_MS = 5000;
+  const withoutPeekClosed = (sessions, closed) => (sessions || []).filter((s) => !s?.tab || !(closed || []).some((c) =>
+    c && c.url === s.tab.url && Number.isFinite(s.lastModified) && Math.abs(s.lastModified * 1000 - c.at) <= PEEK_CLOSED_MS));
+  // Where Peek's preloaded tab goes when a preview becomes a tab: beside its source (just after it) when the source is
+  // in this window. others: this window's tabs but the preloaded one, sorted by index. -> setSpace's index, or undefined
+  // (the end of the window).
+  const besideSource = (others, sourceId) => { const at = (others || []).findIndex((t) => t.id === sourceId); return at >= 0 ? at + 1 : undefined; };
+
   // A click on a tile that sends its space to a new window: ctrl+shift on Windows, cmd+shift on a Mac.
   const wantsNewWindow = (event, windows = window.__vm.windows) =>
     !!event?.shiftKey && !!(windows ? event.ctrlKey : event.metaKey);
@@ -719,5 +740,5 @@
     return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, strays, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, strays, isPeekTab, peekIds, withoutPeekClosed, PEEK_CLOSED_MS, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

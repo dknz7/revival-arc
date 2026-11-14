@@ -388,7 +388,7 @@
   };
 
   const allTabs = async () =>
-    (await chrome.tabs.query({ currentWindow: true })).filter((t) => !isBlank(t) && t.id !== targetTab);
+    (window.__vm.peek?.without ?? ((tabs) => tabs))(await chrome.tabs.query({ currentWindow: true })).filter((t) => !isBlank(t) && t.id !== targetTab);
 
   const pageBehindBar = async () => {
     if (editing !== null) return chrome.tabs.get(targetTab).catch(() => null);
@@ -513,7 +513,7 @@
     const needle = text.toLowerCase();
     const known = await window.__vm.native?.spaceIds?.();
     const hosts = [
-      ...(await chrome.tabs.query({ currentWindow: true })).filter((t) => !window.__vm.workspaces.deadSpace(t, known)).map((t) => hostOf(t.url)),
+      ...(window.__vm.peek?.without ?? ((tabs) => tabs))(await chrome.tabs.query({ currentWindow: true })).filter((t) => !window.__vm.workspaces.deadSpace(t, known)).map((t) => hostOf(t.url)),
       ...((await chrome.bookmarks.search(text).catch(() => [])).map((b) => hostOf(b.url))),
     ];
     const host = hosts.find((h) => h && h.startsWith(needle) && h.length > needle.length);
