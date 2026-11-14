@@ -34,6 +34,8 @@
   const reopens = new Map(); // tab -> times of automatic re-opens
   let pill = null;
   let cardSeq = 0;
+  let previousTab = null; // the tab active before the last switch, and when that switch was (show)
+  let switchedAt = 0;
   let myWindow = null;
   let activeTab = null;
   let stackMovedAt = 0;
@@ -77,8 +79,8 @@
   // reopened popup would take the cursor (its Deny button is autofocused), an inline rename ends, unchanged, when its field
   // loses focus, and pressing the question's icon is a press outside the Shield's popup, which closes it. A menu stays
   // "open" for a moment after it closes: the item picked in it (Rename...) opens its field a tick later.
-  // The command bar counts as busy too, except where the question belongs to the bar's own tab (`barToo` false): the
-  // fly-up shows it there, so it is brought back while the bar is open (its popup's focus goes back to the bar's input).
+  // `barToo`: whether the open command bar counts. The re-open never counts it (reopen, fix round 1): the fly-up shows the
+  // question, and its popup cannot take the bar's cursor (it lives in Vivaldi's hidden field).
   let busyAt = 0;
   let shieldHeld = false; // the Shield's button is pressed and not yet released (see the listeners at the end)
   const busy = (barToo = true) => {
@@ -227,6 +229,7 @@
   const show = (popup, request) => {
     const entry = cards.get(popup);
     const labels = signature(request);
+
     if (entry && entry.labels === labels) {
       // Only the buttons' enabled state moved (Allow wakes up a second after the popup opens). Written only when it
       // differs: setting `disabled` to the value it has still queues a mutation record, and the observer watches that
@@ -239,10 +242,26 @@
     moved();
     if (entry) { entry.card = card; entry.labels = labels; notify().add({ id: entry.id, tab: entry.tab, type: "permission", el: card }); return; }
     const id = `site-${++cardSeq}`;
-    cards.set(popup, { card, labels, tab: activeTab, id });
+    const entryNew = { card, labels, tab: activeTab, id };
+    cards.set(popup, entryNew);
     dismissed.delete(activeTab);
     notify().add({ id, tab: activeTab, type: "permission", el: card });
     giveBackFocus(popup);
+    // In the moment of a tab switch Vivaldi's field can still show the tab left's popup: drawn then, the card would be filed
+    // under the new tab and stay hidden on return (measured in the sandbox, fix round 1). Within a second of a switch the
+    // card goes to whichever of the two tabs is on the site that asks.
+    const prev = previousTab;
+    if (prev != null && prev !== activeTab && Date.now() - switchedAt < 1000 && request.site) {
+      const origin = (url) => { try { return new URL(url).origin; } catch (_) { return ""; } };
+      const site = origin(request.site) || request.site;
+      Promise.all([chrome.tabs.get(entryNew.tab).catch(() => null), chrome.tabs.get(prev).catch(() => null)]).then(([now, before]) => {
+        if (cards.get(popup) !== entryNew || !before) return;
+        if (origin(now?.url || now?.pendingUrl || "") !== site && origin(before.url || before.pendingUrl || "") === site) {
+          entryNew.tab = prev;
+          notify()?.add({ id, tab: prev, type: "permission", el: card });
+        }
+      }, () => {});
+    }
   };
 
   // `byPopup`: the popup went away by itself, not by the user's answer or dismissal on the card: the question is owed back.
@@ -320,7 +339,10 @@
         await wait(i === 0 ? first : 150);
         if (token !== reopenToken || activeTab !== tab) return;
         if (cards.size) { owed.delete(tab); return; }
-        if (!force && menuOpen(!bar)) { dismissed.add(tab); syncPill(); if (shieldUp()) i--; continue; }
+        // The command bar never holds a question back: its fly-up shows it, and the reopened popup cannot take the bar's
+        // cursor (it lives in Vivaldi's hidden field). Ctrl+L can close Vivaldi's popup just before the bar is up, so this
+        // is decided at each try, not by whether the bar was open when the popup went.
+        if (!force && menuOpen(false)) { dismissed.add(tab); syncPill(); if (shieldUp()) i--; continue; }
         tries++;
         const button = document.querySelector(ICON);
         if (!button) continue;
@@ -342,6 +364,7 @@
   const onActivated = (info) => {
     try {
       if (myWindow == null || info?.windowId !== myWindow) return;
+      if (activeTab !== info.tabId) { previousTab = activeTab; switchedAt = Date.now(); }
       activeTab = info.tabId;
       if (owed.has(info.tabId)) reopen(info.tabId, 150, false, barOpen());
       syncPill();
@@ -392,6 +415,8 @@
     window.addEventListener("pointerdown", (e) => { if (e.target?.closest?.(".vm-dia-shield")) { shieldHeld = true; busyAt = Date.now(); } }, true);
     for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, () => { if (shieldHeld) { shieldHeld = false; busyAt = Date.now(); } }, true);
     new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
+    // For the sandbox's diagnostics: what this window holds (read only).
+    window.__vm.siteRequestsState = () => ({ activeTab, cards: [...cards.values()].map((e) => ({ tab: e.tab, id: e.id, connected: e.card.isConnected })), owed: [...owed], dismissed: [...dismissed] });
     console.log("[vivarc] site requests started");
   } catch (error) {
     warn("start", error);

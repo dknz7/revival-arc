@@ -279,10 +279,13 @@
   };
 
   // Vivaldi refuses some addresses from a mod (a scheme it keeps to its own field): they go through its field instead.
+  // data: and file: addresses load from Vivaldi's own field as typed: measured on 8.3, a data: address set by the bar
+  // (chrome.tabs.update) left the tab where it was without an error, so they never take that path.
   const go = (url) => {
     const id = targetTab;
     const isNew = editing === null && !keepInPlace.has(id);
     close(false);
+    if (/^(data|file):/i.test(url)) { nativeEntry(url, { tabId: id, submit: true }); return; }
     show(id, isNew, url).catch((error) => {
       console.warn("[vivarc] open:", error);
       nativeEntry(url, { tabId: id, submit: true });

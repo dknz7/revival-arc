@@ -2686,8 +2686,9 @@ for (const layout of ["dia", "arc"]) {
       await activate(ctx.tabs.AFA); await sleep(800);
       await afFocusField(ctx.W); await sleep(300);
       const focused = await afState(ctx.W);
-      await h.cdp(ctx.W).send("Input.insertText", { text: "typed-into-nothing" }); await sleep(200);
-      const typed = await afState(ctx.W);
+      await h.cdp(ctx.W).send("Input.insertText", { text: "typed-after-focus" }); await sleep(200);
+      const typed = { ...(await afState(ctx.W)), bar: await BAR_STATE(ctx.W) };
+      await escBar(ctx.W);
       await focusPage(ctx.W); await sleep(200);
       await keyCombo(h.cdp(ctx.W), "l", "KeyL", 76, 2); await sleep(900);
       const bar = await BAR_STATE(ctx.W);
@@ -2696,7 +2697,9 @@ for (const layout of ["dia", "arc"]) {
       await escBar(ctx.W);
       return { focused, typed, bar, after };
     },
-    expect: (s, b, r) => [r.focused.fieldFocused || r.focused.afH !== 0 ? `focus() reached the field: ${J(r.focused)}` : null, String(r.typed.value).includes("typed-into-nothing") ? "typing reached the field" : null,
+    // Fix round 1: Vivaldi's own focus() of the field opens the bar (editing the page), so what is typed goes there.
+    expect: (s, b, r) => [r.focused.fieldFocused || r.focused.afH !== 0 ? `focus() reached the field: ${J(r.focused)}` : null, String(r.typed.value).includes("typed-after-focus") ? "typing reached the field" : null,
+      r.focused.bar && r.typed.bar?.value === "typed-after-focus" ? null : `focus() of the field did not open the bar for the typing (${J(r.typed.bar)})`,
       r.bar.bar && r.bar.inBar && r.bar.selected && !r.bar.fieldFocused ? null : `Ctrl+L did not open the bar on the page's address with the cursor: ${J(r.bar)}`,
       r.after.value === "typed-in-the-bar" ? null : `typing after Ctrl+L went elsewhere (bar holds ${J(r.after.value)})`],
   });
@@ -4122,14 +4125,19 @@ for (const layout of ["dia", "arc"]) {
       const t = await srTab(ctx.W, "A");
       await srAsk(t, "notif"); await sleep(400); await srAsk(t, "geo");
       await srWait(ctx.W, (q) => q.cards.length >= 1);
+      // Away and back: Vivaldi closes both popups, and the return re-opens one (the next comes once it is answered).
+      const away = await h.ev(`chrome.tabs.create(${J({ windowId: ctx.W, url: `${origin}/en-away`, active: true })}).then((x) => x.id)`, ctx.H);
+      await sleep(900); await activate(t.id);
+      const back = await srWait(ctx.W, (q) => q.cards.length === 1 && q.popups === 1, 6000) || await srState(ctx.W);
       await sleep(1300);
+      const before = { ...(await srState(ctx.W)), sr: await h.ev(`window.__vm.siteRequestsState?.() ?? null`, ctx.W), nt: await h.ev(`window.__vm.notify.state?.() ?? null`, ctx.W), tab: t.id };
       await ctrlL(ctx.W);
       const first = await waitFor(async () => { const x = await NB(ctx.W); return x.fly.some((i) => i.cls.includes("vm-site-card")) ? x : null; }, 5000) || await NB(ctx.W);
       await sleep(1200);
       const click = await srClick(ctx.W, "#vm-cmd .vm-cmd-fly .vm-site-card .vm-site-opt:nth-child(2)");
       const second = await waitFor(async () => { const x = await NB(ctx.W); const c = x.fly.find((i) => i.cls.includes("vm-site-card")); return c && c.text !== first.fly.find((i) => i.cls.includes("vm-site-card"))?.text ? x : null; }, 6000) || await NB(ctx.W);
       await escBar(ctx.W);
-      return { first, click, second };
+      return { back, before, first, click, second };
     },
     expect: (s, b, r) => [r.first.fly.some((i) => i.cls.includes("vm-site-card")) ? null : `no first question in the fly-up: ${J(r.first.fly)}`, r.click === "clicked" ? null : `click: ${r.click}`,
       r.second.fly.some((i) => i.cls.includes("vm-site-card")) && !r.second.fly.some((i) => i.cls.includes("vm-site-pill")) ? null : `the second question did not come into the open bar: ${J(r.second.fly)}`],

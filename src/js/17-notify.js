@@ -586,7 +586,8 @@
   };
 
   window.__vm.notify = { add, remove, has: (id) => notes.has(id), render, place, barOpened, barClosed, closeBar, row, rowSources, plainRequest,
-    drop: () => ({ ...drop }), openFieldButton, quietly, build };
+    drop: () => ({ ...drop }), openFieldButton, quietly, build,
+    state: () => ({ activeTab, bar: !!bar, notes: [...notes.values()].map((n) => ({ id: n.id, tab: n.tab, type: n.type, connected: n.el.isConnected })) }) }; // diagnostics, read only
   Promise.resolve(window.__vm.ready).then((cssLoaded) => { if (cssLoaded) start(); }).catch((error) => warn("start", error));
   console.log("[vivarc] notify started");
 })();
