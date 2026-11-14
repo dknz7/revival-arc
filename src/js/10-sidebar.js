@@ -175,7 +175,8 @@
     return true;
   };
 
-  const copy = (text) => navigator.clipboard?.writeText(text).catch(() => {});
+  // Right-click menus' Copy Link (tabs, pins, favorites): through a copy event, which works while the page has focus.
+  const copy = (text) => window.__vm.copyText(text);
 
   // Removing goes to Vivaldi's bookmark trash, so it can be undone from there.
   const discard = (node) => {

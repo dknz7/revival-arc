@@ -1,8 +1,8 @@
 # Changelog
 
 ## Unreleased
+- Fix: **Copy Link** in a tab's or bookmark's right-click menu copies again while the page has the focus (after a click into it). It used to copy nothing, silently. (Ported from KASOGIT/vivarc#153.)
 - Fix: with **Peek** on Vivaldi 8.3, **Open in New Tab** and **Open in Background** now put the page in the space on screen, right beside the tab the link was in. Before, it landed in the default space (Open in New Tab then snapped back out of view, and left a second copy behind). While a preview is open its tabs are no longer listed in the sidebar, Open Tabs, the command bar or Clean Up, and a preview no longer leaves two entries in Recently Closed. (Ported from KASOGIT/vivarc#166.)
-
 - **Move to Space** now moves a tab into a space that is parked in another window (on Vivaldi 8.3): the tab joins that space there, that window keeps showing what it shows, and a toast says the tab went to another window. Before, Vivarc refused ("Show it there first"), though Vivaldi 8.3 can do it. On 8.2 the refusal stays, now naming the space.
 - Fix: deleting a space that is shown in **another window** switches that window to its default space first, so it is never left showing the deleted space (new tabs opened there in that moment used to vanish into it). The window you deleted it from keeps the focus.
 - Fix: tabs left in a **space that no longer exists** (restored from Recently Closed, with Vivaldi's own Reopen Closed Tab, or kept in the session across a restart) now move to their window's default space by themselves, where you can see them again. This also heals a profile that already has such tabs, on its next start. It only happens once Vivaldi's space list has loaded and reads the same twice, so a list still loading at start-up moves nothing. A window is also no longer switched into a deleted space when its last default tab closes.

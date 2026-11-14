@@ -113,7 +113,19 @@
     } finally { vm.synthNow = false; }
   };
 
-  window.__vm = { config, store, shortcut, windows, normalise, tilingOf, setExtData, unsplit, synthetic, press, synthNow: false, synthUntil: 0, onShortcut: (fn) => subscribers.add(fn) };
+  // Copies text the way Vivaldi's own UI does: a copy event fired by execCommand. navigator.clipboard rejects while the
+  // page's webview has the focus (after a click into the page, then a right-click on the sidebar), and the error used
+  // to be swallowed: Copy Link silently copied nothing (measured, task 9a; upstream KASOGIT/vivarc#153). -> true when
+  // the copy event ran with the text.
+  const copyText = (text) => {
+    let done = false;
+    const onCopy = (e) => { e.clipboardData.setData("text/plain", String(text ?? "")); e.preventDefault(); e.stopPropagation(); done = true; };
+    document.addEventListener("copy", onCopy, true);
+    try { document.execCommand("copy"); } catch (_) {} finally { document.removeEventListener("copy", onCopy, true); }
+    return done;
+  };
+
+  window.__vm = { config, store, shortcut, windows, normalise, tilingOf, setExtData, unsplit, synthetic, press, copyText, synthNow: false, synthUntil: 0, onShortcut: (fn) => subscribers.add(fn) };
 
   // Vivaldi re-renders #browser's class list, so the marker classes are re-applied whenever they go missing.
   const markListeners = new Set();
