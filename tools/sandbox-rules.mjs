@@ -201,7 +201,7 @@ async function tabMenu(win, row, label) {
     await h.ev(`(document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), 1)`, win);
     return { error: `no menu item "${label}" (menu: ${J(menu.filter(Boolean))})`, menu };
   }
-  const toast = await waitFor(() => h.ev(`document.querySelector("#vm-copied")?.textContent || null`, win), 2500, 100);
+  const toast = await waitFor(() => h.ev(`document.querySelector(".vm-toast")?.textContent || null`, win), 2500, 100);
   return { menu, toast: toast || null };
 }
 
@@ -775,7 +775,7 @@ def("D.row-icons", {
     await shot(ctx.W, "row-icons-translated");
     r.c2 = await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-translate");
     r.back = await waitFor(async () => { const x = await ICONS_OF(ctx.W); return translateBtn(x)?.state === "idle" ? x : null; }, 10000, 300) || await ICONS_OF(ctx.W);
-    r.toast = await h.ev(`document.querySelector("#vm-copied")?.textContent || null`, ctx.W);
+    r.toast = await h.ev(`document.querySelector(".vm-toast")?.textContent || null`, ctx.W);
     // Task 8w: from the German page to an English one in the same tab, Translate goes again
     await goTo(ctx.W, `${origin}/en-3`);
     r.enAgain = await waitFor(async () => { const x = await ICONS_OF(ctx.W); return translateBtn(x)?.hidden ? x : null; }, 12000, 300) || await ICONS_OF(ctx.W);
@@ -912,8 +912,8 @@ def("D.shield-panel-controls", {
     r.modalAfter ? "the Privacy Report dialog did not close" : null],
 });
 // The Shield with the sidebar hidden (Ctrl+S: the tab bar holding Vivaldi's button is display: none) still shows the popup;
-// from the keyboard (Enter on the Shield) it opens and a second Enter closes it; the cursor going to the address field
-// (Ctrl+L) while it is open drops the mark, so the field floats with what it holds instead of being typed into unseen.
+// from the keyboard (Enter on the Shield) it opens and a second Enter closes it; Ctrl+L while it is open closes it and opens
+// the command bar (Task 9b; the field took the cursor before).
 def("D.shield-hidden-and-keys", {
   layout: "dia",
   setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await goTo(ctx.W, "https://example.com/"); await sleep(2500); },
@@ -937,8 +937,8 @@ def("D.shield-hidden-and-keys", {
     { const c = h.cdp(ctx.W), ctrl = { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 }, l = { key: "l", code: "KeyL", windowsVirtualKeyCode: 76, nativeVirtualKeyCode: 76 };
       await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...ctrl, modifiers: 2 }); await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...l, modifiers: 2 }); await sleep(60);
       await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...l, modifiers: 2 }); await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...ctrl, modifiers: 0 }); await sleep(900); }
-    r.fieldFocused = await h.ev(`(() => { const f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"); return { mark: document.querySelector("#browser").classList.contains("vm-shield-open"),
-      fieldH: Math.round(f.getBoundingClientRect().height), vis: getComputedStyle(f).visibility, active: document.activeElement?.id }; })()`, ctx.W);
+    r.fieldFocused = await h.ev(`(() => { const f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"), i = document.querySelector("#vm-cmd input"); return { mark: document.querySelector("#browser").classList.contains("vm-shield-open"),
+      fieldH: Math.round(f.getBoundingClientRect().height), active: document.activeElement?.id, bar: !!i, inBar: !!i && document.activeElement === i, open: !!document.querySelector(".SiteInfo.button-popup") }; })()`, ctx.W);
     await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(400); await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(600);
     r.end = await SHIELD_STATE(ctx.W);
     return r;
@@ -946,7 +946,7 @@ def("D.shield-hidden-and-keys", {
   expect: (s, b, r) => [r.hidden ? null : "setup: the sidebar did not hide", ...shieldOpenOk(r.openHidden, "sidebar hidden"), r.escHidden && !r.escHidden.open && !r.escHidden.mark ? null : `sidebar hidden, Escape: ${J(r.escHidden)}`,
     ...shieldOpenOk(r.keyOpen, "Enter"), r.keyClose && !r.keyClose.open && !r.keyClose.mark ? null : `a second Enter did not close it: ${J(r.keyClose)}`,
     ...shieldOpenOk(r.open3, "a click after the keys"),
-    r.fieldFocused && r.fieldFocused.active === "urlFieldInput" && !r.fieldFocused.mark && r.fieldFocused.fieldH > 0 && r.fieldFocused.vis === "visible" ? null : `Ctrl+L with the popup open: ${J(r.fieldFocused)}, want the field open with the cursor`,
+    r.fieldFocused && r.fieldFocused.bar && r.fieldFocused.inBar && !r.fieldFocused.mark && !r.fieldFocused.open && r.fieldFocused.fieldH === 0 && r.fieldFocused.active !== "urlFieldInput" ? null : `Ctrl+L with the popup open: ${J(r.fieldFocused)}, want the popup closed and the command bar open with the cursor`,
     r.end && !r.end.mark ? null : `the end: ${J(r.end)}`],
 });
 // Task 8w: this window's sidebar hidden (Ctrl+S) puts the tab bar, and Vivaldi's address field in it, out of the layout
@@ -954,6 +954,8 @@ def("D.shield-hidden-and-keys", {
 // the command bar to edit the address instead, the sidebar staying hidden; Enter there navigates the same tab. Sent as
 // the keyboard sends them (native key codes: Vivaldi's shortcut handling reads them), with the cursor in the page and in
 // the UI. The field must never take the cursor meanwhile (a focusin spy), nor float once the sidebar is back.
+// The device chooser lists this machine's devices: their names are made unreadable before any screenshot.
+const MASK_DEVICES = `(() => { if (!document.getElementById("vm-mask-devices")) { const s = document.createElement("style"); s.id = "vm-mask-devices"; s.textContent = ".device-list-container *, .device-list-container { color: transparent !important; text-shadow: 0 0 9px rgba(150,150,150,0.9) !important; }"; document.head.append(s); } return 1; })()`;
 const keyCombo = async (c, key, code, vk, mods = 0) => {
   const mod = mods & 2 ? { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 } : mods & 1 ? { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 18 } : null;
   if (mod) await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...mod, modifiers: mods });
@@ -1038,10 +1040,10 @@ for (const layout of ["dia", "arc"]) {
       return bad;
     },
   });
-  // A popup Vivaldi opens in the address field that Vivarc does not card (here a page's USB device chooser) floats the field
-  // over the page while the sidebar stays hidden, where it floats with the sidebar shown, and the page does not move. It is
-  // answered with Vivaldi's own Cancel (never Connect: the chooser lists this machine's real devices, read only); the float
-  // goes with it.
+  // A popup Vivaldi opens in the address field that Vivarc does not card (here a page's USB device chooser) drops from
+  // where Vivarc's toasts drop (Task 9b; it floated the field before) while the sidebar stays hidden, and the page does not
+  // move. It is answered with Vivaldi's own Cancel (never Connect: the chooser lists this machine's real devices, read only,
+  // and the screenshot masks their names).
   def(`D.hidden-sidebar-uncarded-popup-${layout}`, {
     layout,
     setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(900); },
@@ -1066,6 +1068,8 @@ for (const layout of ["dia", "arc"]) {
         await sleep(600);
         r.during = await look();
         r.pageDuring = await h.ev(box("#webview-container"), ctx.W);
+        r.dropState = await srState(ctx.W);
+        await h.ev(MASK_DEVICES, ctx.W);
         await shot(ctx.W, "hidden-sidebar-uncarded-popup");
         if (r.during.cancel) {
           for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.cdp(ctx.W).send("Input.dispatchMouseEvent", { type, x: r.during.cancel[0], y: r.during.cancel[1], button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
@@ -1085,14 +1089,14 @@ for (const layout of ["dia", "arc"]) {
       if (r.error) return [r.error];
       const d = r.during, bad = [r.hidden?.hidden ? null : "setup: the sidebar did not hide", r.shown ? null : "no popup appeared for the USB request"];
       if (!d?.popup) return [...bad, "the popup was gone before it was looked at"];
-      bad.push(d.field && d.field[3] > 0 && d.fieldVis === "visible" ? null : `the address field does not show for the popup (${J(d.field)}, ${d.fieldVis})`,
+      bad.push(d.field && d.field[3] === 0 ? null : `the address field shows for the popup (${J(d.field)}, ${d.fieldVis}); Task 9b: only the popup drops`,
         d.onTop ? null : `the popup is not on top (${J(d.popupBox)})`,
         d.popupBox && d.popupBox[0] >= 0 && d.popupBox[1] >= 0 && d.popupBox[2] <= d.W && d.popupBox[3] <= d.H ? null : `the popup is outside the window (${J(d.popupBox)})`,
-        d.field && r.side && Math.abs(d.field[0] - (r.side[0] + 8)) <= 1 && Math.abs(d.field[1] - (r.side[1] + 8)) <= 1 ? null : `the field floats at ${J(d.field)}, want where it floats with the sidebar shown (${J(r.side)} + 8, 8)`,
+        ...srDropped(r.dropState, "the chooser with the sidebar hidden"),
         d.hidden && d.barW === 0 ? null : `the sidebar came back for the popup (${J([d.hidden, d.barW])})`,
         J(r.pageDuring) === J(r.pageBefore) ? null : `the page moved: ${J(r.pageBefore)} -> ${J(r.pageDuring)}`,
         d.cancel ? null : "no Cancel button on the popup");
-      bad.push(r.gone && !r.gone.popup ? null : "Cancel did not close the popup", r.gone && !(r.gone.field && r.gone.field[3] > 0) ? null : `the field still floats after Cancel (${J(r.gone?.field)})`,
+      bad.push(r.gone && !r.gone.popup ? null : "Cancel did not close the popup", r.gone && !(r.gone.field && r.gone.field[3] > 0) ? null : `the field shows after Cancel (${J(r.gone?.field)})`,
         r.answer === "NotFoundError" ? null : `the page's request ended ${J(r.answer)}, want NotFoundError (Cancel)`, J(r.pageAfter) === J(r.pageBefore) ? null : `the page moved after: ${J(r.pageAfter)}`);
       return bad;
     },
@@ -1163,12 +1167,12 @@ const tornWindow = async () => {
   if (n) await h.waitForWin(n);
   return n;
 };
-const toastIn = (n) => waitFor(() => h.ev(`document.querySelector("#vm-copied")?.textContent || null`, n), 6000, 100);
+const toastIn = (n) => waitFor(() => h.ev(`document.querySelector(".vm-toast")?.textContent || null`, n), 6000, 100);
 const seesToast = async () => { const n = await tornWindow(); ctx.toast = n ? await toastIn(n) : null; return "dropped"; };
 const clicksUndo = async () => {
   const n = await tornWindow();
   if (!n) return "no new window";
-  const ok = await waitFor(() => h.ev(`(() => { const b = document.querySelector("#vm-copied .vm-toast-action"); if (!b) return false; b.click(); return true; })()`, n), 6000, 100);
+  const ok = await waitFor(() => h.ev(`(() => { const b = document.querySelector(".vm-toast .vm-toast-action"); if (!b) return false; b.click(); return true; })()`, n), 6000, 100);
   return ok ? "clicked" : "no Undo button on the toast";
 };
 const extOf = (id) => h.ev(`chrome.tabs.get(${id}).then((t) => JSON.parse(t.vivExtData || "{}"))`, ctx.H).catch(() => null);
@@ -2177,7 +2181,7 @@ ntCase("N.open-tabs-pick-minimised", {
 // the toast, Undo, the flyout, the real store, the real chrome.tabs.remove / create, the leader check, the settings toggle.
 const IDLE = 2500;
 const freeze = async (win, at, idle = IDLE) => { await h.ev(`(window.__vm.cleanup.test = { idleMs: ${idle}, now: () => ${at} }, 1)`, win); return at; };
-const toastNow = (win) => h.ev(`document.querySelector("#vm-copied")?.textContent || null`, win);
+const toastNow = (win) => h.ev(`document.querySelector(".vm-toast")?.textContent || null`, win);
 const cleanedList = (win) => h.ev(`window.__vm.cleanup.list().then((l) => l.map((e) => ({ title: e.title, space: e.space, at: e.cleanedAt, url: e.url })))`, win);
 const titles = (s, title) => normal(s).flatMap((w) => w.tabs.filter((t) => t.title === title).map((t) => ({ ...t, win: w.id, space: t.ws ?? 0 })));
 const loaded = (labels) => waitFor(() => h.ev(`Promise.all(${J(labels.map((l) => ctx.tabs[l]))}.map((id) => chrome.tabs.get(id))).then((ts) => ts.every((t) => t.status === "complete"))`, ctx.H), 10000);
@@ -2244,7 +2248,7 @@ cuCase("CU.clean-space", {
   act: async () => {
     const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r };
     const toast = await waitFor(() => toastNow(ctx.W), 6000, 100);
-    const undo = await hasEl(ctx.W, "#vm-copied .vm-toast-action");
+    const undo = await hasEl(ctx.W, ".vm-toast .vm-toast-action");
     await sleep(800);
     return { toast, undo, list: await cleanedList(ctx.W) };
   },
@@ -2256,9 +2260,9 @@ cuCase("CU.clean-space", {
 cuCase("CU.undo", {
   act: async () => {
     const r = await cleanUpFromMenu(); if (r !== "ok") return { error: r };
-    if (!(await waitFor(() => h.ev(`!!document.querySelector("#vm-copied .vm-toast-action")`, ctx.W), 6000, 100))) return { error: "no Undo button" };
+    if (!(await waitFor(() => h.ev(`!!document.querySelector(".vm-toast .vm-toast-action")`, ctx.W), 6000, 100))) return { error: "no Undo button" };
     const mid = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.filter((x) => x.title === "X2" || x.title === "X3").length)`, ctx.H);
-    await h.ev(`document.querySelector("#vm-copied .vm-toast-action").click()`, ctx.W);
+    await h.ev(`document.querySelector(".vm-toast .vm-toast-action").click()`, ctx.W);
     await waitFor(() => h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.filter((x) => x.title === "X2" || x.title === "X3").length === 2)`, ctx.H), 8000, 200);
     await sleep(1200);
     return { mid, list: await cleanedList(ctx.W), toast: await toastNow(ctx.W) };
@@ -2654,39 +2658,39 @@ for (const layout of ["dia", "arc"]) {
     },
     expect: (s, b, r) => [...afQuiet(r.first, "switching back to the tab that remembered the field"), ...afQuiet(r.second, "switching away and back again")],
   });
-  def(`AF.ctrl-l-floats-and-takes-typing-${layout}`, {
+  // Task 9b: the field never takes the cursor (Vivaldi's own focus() of it does nothing), and typing never reaches it; the
+  // keys that ask for it open the command bar on the page's address, and what is typed goes there.
+  def(`AF.the-field-never-takes-the-cursor-the-bar-does-${layout}`, {
     layout, setup: afSetup,
     act: async () => {
-      await activate(ctx.tabs.AFA); await sleep(800); // a quiet tab: no switch within 150 ms of the focus
+      await activate(ctx.tabs.AFA); await sleep(800);
       await afFocusField(ctx.W); await sleep(300);
-      const floated = await afState(ctx.W);
-      await h.cdp(ctx.W).send("Input.insertText", { text: "typed-after-ctrl-l" }); await sleep(200);
-      return { floated, typed: await afState(ctx.W) };
+      const focused = await afState(ctx.W);
+      await h.cdp(ctx.W).send("Input.insertText", { text: "typed-into-nothing" }); await sleep(200);
+      const typed = await afState(ctx.W);
+      await focusPage(ctx.W); await sleep(200);
+      await keyCombo(h.cdp(ctx.W), "l", "KeyL", 76, 2); await sleep(900);
+      const bar = await BAR_STATE(ctx.W);
+      if (bar.inBar) { await h.cdp(ctx.W).send("Input.insertText", { text: "typed-in-the-bar" }); await sleep(200); }
+      const after = await BAR_STATE(ctx.W);
+      await escBar(ctx.W);
+      return { focused, typed, bar, after };
     },
-    expect: (s, b, r) => [r.floated.fieldFocused && r.floated.afH > 0 ? null : `the field did not float on focus: ${J(r.floated)}`, String(r.typed.value).includes("typed-after-ctrl-l") ? null : `typing did not reach the field: ${J(r.typed.value)}`],
+    expect: (s, b, r) => [r.focused.fieldFocused || r.focused.afH !== 0 ? `focus() reached the field: ${J(r.focused)}` : null, String(r.typed.value).includes("typed-into-nothing") ? "typing reached the field" : null,
+      r.bar.bar && r.bar.inBar && r.bar.selected && !r.bar.fieldFocused ? null : `Ctrl+L did not open the bar on the page's address with the cursor: ${J(r.bar)}`,
+      r.after.value === "typed-in-the-bar" ? null : `typing after Ctrl+L went elsewhere (bar holds ${J(r.after.value)})`],
   });
-  def(`AF.typed-text-survives-a-switch-${layout}`, {
-    layout, setup: afSetup,
-    act: async () => {
-      await activate(ctx.tabs.AFA); await sleep(600);
-      await afFocusField(ctx.W); await sleep(300);
-      await h.cdp(ctx.W).send("Input.insertText", { text: "my-typed-draft" }); await sleep(250);
-      await activate(ctx.tabs.AFB); await sleep(700); await activate(ctx.tabs.AFA); await sleep(600);
-      return afState(ctx.W);
-    },
-    expect: (s, b, r) => [String(r.value).includes("my-typed-draft") ? null : `the typed text is gone: ${J(r.value)}`, r.fieldFocused ? null : "Vivaldi's behaviour was not left alone: the field no longer has the cursor"],
-  });
-  def(`AF.popup-in-the-field-is-left-alone-${layout}`, {
+  def(`AF.popup-in-the-field-drops-and-is-left-alone-${layout}`, {
     layout, setup: afSetup,
     act: async () => {
       await afLeaveAfield();
       await h.ev(`(() => { const d = document.createElement("div"); d.className = "addressfield-popup-container"; d.id = "af-fake-popup"; document.querySelector(".UrlBar-AddressField").append(d); return 1; })()`, ctx.W);
       await activate(ctx.tabs.AFA); await sleep(600);
-      const r = await afState(ctx.W);
+      const r = { ...(await afState(ctx.W)), popupThere: await hasEl(ctx.W, "#af-fake-popup"), drop: await srState(ctx.W) };
       await h.ev(`(document.getElementById("af-fake-popup")?.remove(), 1)`, ctx.W);
       return r;
     },
-    expect: (s, b, r) => [r.fieldFocused && r.afH > 0 ? null : `a popup in the field did not keep it: ${J(r)}`],
+    expect: (s, b, r) => [r.popupThere ? null : "the popup in the field was removed", r.fieldFocused ? "the field took the cursor" : null, r.afH === 0 ? null : `the field floated (${r.afH}px)`, ...srDropped(r.drop, "a popup in the field")],
   });
   def(`AF.a-new-tab-still-opens-the-command-bar-${layout}`, {
     layout, setup: afSetup,
@@ -2731,7 +2735,7 @@ const srVal = async (t, expr) => (await t.page.send("Runtime.evaluate", { expres
 // What the page's permission is now, by Vivaldi's own state (read in the page).
 const srPerm = (t, kind) => srVal(t, kind === "notif" ? `Notification.permission` : `navigator.permissions.query({ name: ${J({ geo: "geolocation", cam: "camera", mic: "microphone" }[kind])} }).then((p) => p.state)`);
 const srState = (win) => h.ev(`(() => {
-  const host = document.getElementById("vm-site-requests"), cards = host ? [...host.querySelectorAll(".vm-site-card")] : [];
+  const host = document.getElementById("vm-notify"), cards = host ? [...host.querySelectorAll(".vm-site-card")] : [];
   const af = document.querySelector(".UrlBar-AddressField"), a = document.activeElement, r = cards[0]?.getBoundingClientRect(), wb = [...document.querySelectorAll(".window-buttongroup")].map((g) => g.getBoundingClientRect()).find((g) => g.width && g.bottom > 0);
   const real = [...document.querySelectorAll(".addressfield-popup-container .permission-buttons input")].map((i) => i.value + (i.disabled ? "(disabled)" : ""));
   return { cards: cards.map((c) => ({ site: c.querySelector(".vm-site-name")?.textContent ?? "", ask: c.querySelector(".vm-site-ask")?.textContent ?? "",
@@ -2739,7 +2743,29 @@ const srState = (win) => h.ev(`(() => {
     real, popups: document.querySelectorAll(".addressfield-popup-container").length, carded: document.querySelectorAll(".addressfield-popup-container.vm-site-carded").length,
     afH: af ? Math.round(af.getBoundingClientRect().height) : null, active: a ? a.tagName : null, fieldFocused: a?.id === "urlFieldInput",
     pending: document.querySelectorAll(".UrlBar-AddressField .button-addressfield.permission-popup.is-undecided").length,
-    rect: r ? [r.left, r.top, r.right, r.bottom].map(Math.round) : null, win: [innerWidth, innerHeight], wb: wb && wb.width ? [wb.left, wb.top, wb.right, wb.bottom].map(Math.round) : null }; })()`, win);
+    rect: r ? [r.left, r.top, r.right, r.bottom].map(Math.round) : null, win: [innerWidth, innerHeight], wb: wb && wb.width ? [wb.left, wb.top, wb.right, wb.bottom].map(Math.round) : null,
+    ...(${DROP_STATE}) }; })()`, win);
+// Task 9b: the drop point (17-notify.js), the anchor it comes from (the Dia crumb's text, or the Arc URL bar), Vivaldi's own
+// uncarded popup of the field and the toast stack: where each sits, and whether the popup is on top.
+const DROP_STATE = String.raw`(() => { const b = document.querySelector("#browser"), px = (n) => parseFloat(b.style.getPropertyValue(n)) || null;
+  const rect = (e) => { if (!e) return null; const q = e.getBoundingClientRect(); return q.width && q.height ? [q.left, q.top, q.right, q.bottom].map(Math.round) : null; };
+  const dia = b.classList.contains("vm-dia"), anchor = rect(dia ? document.querySelector("#vm-dia-crumb .vm-dia-text") : document.querySelector("#vm-panel .vm-current-url"));
+  const pop = [...document.querySelectorAll("#tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container, .button-popup)")].find((x) => !x.classList.contains("vm-site-carded"));
+  const pr = rect(pop), at = pr ? document.elementFromPoint((pr[0] + pr[2]) / 2, pr[1] + 12) : null, host = document.getElementById("vm-notify");
+  return { drop: [px("--vm-drop-x"), px("--vm-drop-y")], anchor, popRect: pr, popOnTop: at ? !!at.closest(".addressfield-popup-container, .button-popup") : null,
+    popLabel: pop?.getAttribute("aria-labelledby") ?? null, hostRect: rect(host?.firstElementChild), hostHidden: !!host?.hidden, stacked: !!host?.classList.contains("vm-notify-stacked") }; })()`;
+const near = (a, b, d = 3) => a != null && b != null && Math.abs(a - b) <= d;
+// The card (or any first toast) sits at the drop point, and the drop point is just under the anchor, from its left edge.
+const srAnchored = (s, what = "the card") => {
+  const r = s.rect || s.hostRect;
+  if (!r) return `${what}: not on screen`;
+  if (!near(r[0], s.drop[0]) || !near(r[1], s.drop[1])) return `${what} is at ${J(r)}, not at the drop point ${J(s.drop)}`;
+  if (s.anchor && (!near(s.drop[0], s.anchor[0]) || s.drop[1] < s.anchor[3] || s.drop[1] - s.anchor[3] > 12)) return `the drop point ${J(s.drop)} is not just under the anchor ${J(s.anchor)}`;
+  return r[2] <= s.win[0] ? null : `${what} (${J(r)}) runs out of the ${J(s.win)} window`;
+};
+// Vivaldi's own popup dropped from the same point, on top, the field staying collapsed.
+const srDropped = (s, what) => [s.popRect ? null : `${what}: Vivaldi's popup is not shown`, s.popRect && near(s.popRect[0], s.drop[0]) && near(s.popRect[1], s.drop[1]) ? null : `${what}: the popup is at ${J(s.popRect)}, not at the drop point ${J(s.drop)}`,
+  s.popOnTop ? null : `${what}: the popup is not on top`, s.afH === 0 ? null : `${what}: the address field floated (${s.afH}px)`];
 const srWait = (win, pred, ms = 6000) => waitFor(async () => { const s = await srState(win); return pred(s) ? s : null; }, ms, 150);
 const srClick = async (win, sel) => {
   const p = await h.ev(`(() => { const e = document.querySelector(${J(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, win);
@@ -2750,9 +2776,9 @@ const srClick = async (win, sel) => {
   await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p[0], y: p[1], button: "left", clickCount: 1 });
   return "clicked";
 };
-const srOpt = (n) => `#vm-site-requests .vm-site-card:nth-child(1) .vm-site-actions .vm-site-opt:nth-child(${n})`;
+const srOpt = (n) => `#vm-notify .vm-site-card:nth-child(1) .vm-site-actions .vm-site-opt:nth-child(${n})`;
 const srSetup = async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(900); };
-const srTopRight = (s) => !s.rect ? "no card" : s.rect[2] <= s.win[0] && s.rect[0] > s.win[0] / 2 && s.rect[1] < 120 ? null : `the card is at ${J(s.rect)} in a ${J(s.win)} window, not at the top right`;
+const srTopRight = (s) => srAnchored(s); // Task 9b: the card drops from under the crumb / URL bar (was: the top right)
 const srQuiet = (s, what) => [s.afH === 0 ? null : `${what}: the address field is ${s.afH}px tall (floated open)`, s.fieldFocused ? `${what}: the address field has the cursor` : null, s.active === "WEBVIEW" ? null : `${what}: focus is on ${s.active}, not the page`];
 const srPlain = (list) => list.map((o) => o.replace("(disabled)", ""));
 // Asks for `kind`, waits for the card, waits for Allow to wake (Vivaldi enables it a second after the popup opens).
@@ -2823,7 +2849,7 @@ for (const layout of ["dia", "arc"]) {
     act: async () => {
       const t = await srTab(ctx.W, "A");
       const { ready } = await srAskAndWait(t, "notif");
-      const click = await srClick(ctx.W, "#vm-site-requests .vm-site-x");
+      const click = await srClick(ctx.W, "#vm-notify .vm-site-x");
       await sleep(900);
       const after = await srState(ctx.W);
       return { ready, click, after, perm: await srPerm(t, "notif") };
@@ -2890,7 +2916,7 @@ for (const layout of ["dia", "arc"]) {
     act: async () => {
       const a = await srTab(ctx.W, "A");
       await srAskAndWait(a, "notif");
-      await srClick(ctx.W, "#vm-site-requests .vm-site-x"); await sleep(700);
+      await srClick(ctx.W, "#vm-notify .vm-site-x"); await sleep(700);
       await srTab(ctx.W, "B");
       await activate(a.id); await sleep(2800);
       return { after: await srState(ctx.W), perm: await srPerm(a, "notif") };
@@ -2993,12 +3019,12 @@ for (const layout of ["dia", "arc"]) {
     act: async () => {
       const a = await srTab(ctx.W, "A");
       await srAskAndWait(a, "notif");
-      await srClick(ctx.W, "#vm-site-requests .vm-site-x");
-      const pill = await waitFor(() => h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W), 4000);
+      await srClick(ctx.W, "#vm-notify .vm-site-x");
+      const pill = await waitFor(() => h.ev(`!!document.querySelector("#vm-notify .vm-site-pill")`, ctx.W), 4000);
       const hidden = await srState(ctx.W);
       await shot(ctx.W, "sr-pending-pill");
       await sleep(900);
-      const clicked = await srClick(ctx.W, "#vm-site-requests .vm-site-pill");
+      const clicked = await srClick(ctx.W, "#vm-notify .vm-site-pill");
       const back = await srWait(ctx.W, (s) => s.cards.length === 1, 5000);
       await sleep(1300);
       const click = await srClick(ctx.W, srOpt(2));
@@ -3056,7 +3082,7 @@ for (const layout of ["dia", "arc"]) {
         await sleep(1800); // past every automatic reopen
         const late = await h.ev(`document.querySelectorAll(".vm-menu").length`, ctx.W);
         await shot(ctx.W, `sr-${name}-with-card`);
-        return { early, late, s: await srState(ctx.W), pill: await h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W) };
+        return { early, late, s: await srState(ctx.W), pill: await h.ev(`!!document.querySelector("#vm-notify .vm-site-pill")`, ctx.W) };
       },
       expect: (s, b, r) => [r.early > 0 ? null : "setup: the menu did not open", r.late > 0 ? null : "the menu was closed by the card's reopen", r.s.cards.length === 1 || r.pill ? null : `${r.s.cards.length} cards and no pill (the question must still be reachable)`],
     });
@@ -3113,9 +3139,10 @@ for (const layout of ["dia", "arc"]) {
     },
     expect: (s, b, r) => afQuiet(r, "after a press of Vivarc's own on the field"),
   });
-  // What Vivarc cannot read is left to Vivaldi's own popup, floating the field as before: the decided panel Vivaldi shows
-  // when the user opens an answered permission's icon, and a popup of a kind Vivarc has not seen.
-  def(`SR.a-decided-permission-panel-still-floats-the-field-${layout}`, {
+  // What Vivarc cannot read is left to Vivaldi's own popup, dropped from where the toasts drop (Task 9b; it floated the
+  // field before): the decided panel Vivaldi shows when its answered permission's icon is opened, and a popup of a kind
+  // Vivarc has not seen. The field stays collapsed.
+  def(`SR.a-decided-permission-panel-drops-from-the-anchor-${layout}`, {
     layout, setup: srSetup,
     act: async () => {
       const a = await srTab(ctx.W, "A");
@@ -3125,13 +3152,13 @@ for (const layout of ["dia", "arc"]) {
       const open = await srWait(ctx.W, (s) => s.popups === 1, 4000);
       await sleep(400);
       const s = await srState(ctx.W);
-      await shot(ctx.W, "sr-decided-panel-floats");
+      await shot(ctx.W, "sr-decided-panel-dropped");
       return { open: !!open, s };
     },
     expect: (s, b, r) => [r.open ? null : "setup: the decided panel did not open", r.s.cards.length === 0 ? null : "a card was drawn for a decided panel", r.s.carded === 0 ? null : "the panel was marked as carded",
-      r.s.afH > 0 ? null : "the field did not float for the decided panel (a question Vivarc cannot read must stay visible)"],
+      ...srDropped(r.s, "the decided panel")],
   });
-  def(`SR.an-unrecognised-popup-floats-the-field-${layout}`, {
+  def(`SR.an-unrecognised-popup-drops-from-the-anchor-${layout}`, {
     layout, setup: srSetup,
     act: async () => {
       await h.ev(`(() => { const d = document.createElement("div"); d.className = "addressfield-popup-container"; d.id = "sr-fake"; d.innerHTML = "<section><h1>Something else asks</h1><div class=permission-buttons><input type=button value=Fine></div></section>"; document.querySelector(".UrlBar-AddressField").append(d); return 1; })()`, ctx.W);
@@ -3140,9 +3167,9 @@ for (const layout of ["dia", "arc"]) {
       await h.ev(`(document.getElementById("sr-fake")?.remove(), 1)`, ctx.W);
       return s;
     },
-    expect: (s, b, r) => [r.cards.length === 0 ? null : "a card for a popup Vivarc cannot read", r.carded === 0 ? null : "marked as carded", r.afH > 0 ? null : "the field did not float for an unrecognised popup"],
+    expect: (s, b, r) => [r.cards.length === 0 ? null : "a card for a popup Vivarc cannot read", r.carded === 0 ? null : "marked as carded", ...srDropped(r, "an unrecognised popup")],
   });
-  def(`SR.a-question-with-a-control-the-card-cannot-show-floats-the-field-${layout}`, {
+  def(`SR.a-question-with-a-control-the-card-cannot-show-drops-from-the-anchor-${layout}`, {
     layout, setup: srSetup,
     act: async () => {
       const fake = (extra) => `(() => { const d = document.createElement("div"); d.className = "addressfield-popup-container"; d.id = "sr-fake-extra"; d.setAttribute("aria-labelledby", "popup-label-permissionprompt");
@@ -3159,7 +3186,7 @@ for (const layout of ["dia", "arc"]) {
       return { withExtra, plain };
     },
     expect: (s, b, r) => [r.plain.cards.length === 1 && r.plain.afH === 0 ? null : `setup: the plain stand-in question did not card (${r.plain.cards.length} cards, field ${r.plain.afH}px)`,
-      r.withExtra.cards.length === 0 && r.withExtra.afH > 0 ? null : `a question with a control the card cannot show was carded: ${r.withExtra.cards.length} cards, field ${r.withExtra.afH}px`],
+      r.withExtra.cards.length === 0 ? null : `a question with a control the card cannot show was carded: ${r.withExtra.cards.length} cards`, ...srDropped(r.withExtra, "a question with a control the card cannot show")],
   });
   def(`SR.the-site-info-panel-is-not-a-card-${layout}`, {
     layout, setup: srSetup,
@@ -3168,12 +3195,12 @@ for (const layout of ["dia", "arc"]) {
       await h.ev(`(() => { const b = document.querySelector(".UrlBar-AddressField .SiteInfoButton button"); for (const t of ["pointerdown","mousedown","pointerup","mouseup","click"]) b.dispatchEvent(new (t.startsWith("pointer") ? PointerEvent : MouseEvent)(t, { bubbles: true, cancelable: true, button: 0, view: window })); return 1; })()`, ctx.W);
       await sleep(900);
       const open = await srState(ctx.W);
-      await shot(ctx.W, "sr-site-info-floats");
+      await shot(ctx.W, "sr-site-info-dropped");
       return open;
     },
-    expect: (s, b, r) => [r.cards.length === 0 ? null : "a card for the site-info panel", r.afH > 0 ? null : "the field did not float for the site-info panel the user opened"],
+    expect: (s, b, r) => [r.cards.length === 0 ? null : "a card for the site-info panel", ...srDropped(r, "the site-info panel")],
   });
-  def(`SR.the-card-sits-clear-of-the-window-buttons-synthetic-${layout}`, {
+  def(`SR.the-card-drops-from-the-anchor-clear-of-the-window-buttons-synthetic-${layout}`, {
     layout, setup: srSetup,
     act: async () => {
       const a = await srTab(ctx.W, "A");
@@ -3187,7 +3214,8 @@ for (const layout of ["dia", "arc"]) {
       await h.ev(`(document.getElementById("sr-fake-wb")?.remove(), window.dispatchEvent(new Event("resize")), 1)`, ctx.W);
       return s;
     },
-    expect: (s, b, r) => [r.wb && r.wb[1] >= 0 && r.rect ? null : `setup: the button group is not on screen (wb ${J(r.wb)}, card ${J(r.rect)}): the case proves nothing`, r.rect && r.wb && r.rect[1] >= r.wb[3] ? null : `the card (${J(r.rect)}) overlaps the window buttons (${J(r.wb)})`, srTopRight(r)],
+    expect: (s, b, r) => [r.wb && r.wb[1] >= 0 && r.rect ? null : `setup: the button group is not on screen (wb ${J(r.wb)}, card ${J(r.rect)}): the case proves nothing`,
+      r.rect && r.wb && (r.rect[1] >= r.wb[3] || r.rect[2] <= r.wb[0]) ? null : `the card (${J(r.rect)}) overlaps the window buttons (${J(r.wb)})`, srAnchored(r)],
   });
   // Task 8o's guard stands down only for a popup Vivarc left floating: with a carded popup in the field a stuck tab's
   // refocus of the collapsed field still goes back to the page.
@@ -3219,7 +3247,7 @@ def("SR.the-shield-waits-for-a-pending-question", {
     const a = await srTab(ctx.W, "A");
     const asked = await srAskAndWait(a, "notif");
     if (!asked.first) return { error: "no card for the question" };
-    const pill = () => h.ev(`!!document.querySelector("#vm-site-requests .vm-site-pill")`, ctx.W);
+    const pill = () => h.ev(`!!document.querySelector("#vm-notify .vm-site-pill")`, ctx.W);
     // A click as a hand makes it: the button held 300 ms (Vivaldi closes the question's popup on the press, the Shield
     // opens on the click). A spy counts the cards drawn meanwhile: the question must not come back during the hold.
     const p = await h.ev(`(() => { const r = document.querySelector("#vm-dia-crumb .vm-dia-shield").getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()`, ctx.W);
@@ -3561,6 +3589,402 @@ ntCase("N.start-page-navigate-away-clears", {
   expect: (s, b, r) => [r.marked === true ? null : `not marked at first (${J(r.marked)})`, r.cleared === "yes" ? null : "navigating away did not clear the mark", r.remarked === "yes" ? null : "a page navigated to the start page was not marked",
     r.barOverRemarked ? "a bar opened over the re-marked start page" : null, r.cleared2 === "yes" ? null : "the second navigation away did not clear the mark", r.laterBar ? null : "a later new tab did not get the bar"],
 });
+
+// ---------- Task 9b: the command bar takes the address field's place; Vivarc's notifications ----------
+// Toasts drop from under the Dia crumb or the Arc URL bar (17-notify.js); with the command bar open everything for its tab
+// is in a fly-up above its input; Vivaldi's own field popups drop from the same point. Both layouts. Real CDP keys and mouse.
+const NB = (win) => h.ev(`(() => { const host = document.getElementById("vm-notify"), fly = document.querySelector("#vm-cmd .vm-cmd-fly");
+  const box = (e) => { const q = e.getBoundingClientRect(); return [q.left, q.top, q.right, q.bottom].map(Math.round); };
+  const items = (root) => root ? [...root.children].map((e) => ({ cls: e.className.toString(), text: e.textContent.trim().slice(0, 80), box: box(e) })) : [];
+  const b = document.querySelector("#browser"), px = (n) => parseFloat(b.style.getPropertyValue(n)) || null;
+  return { host: items(host), hidden: !!host?.hidden, stacked: !!host?.classList.contains("vm-notify-stacked"), fly: fly && !fly.hidden ? items(fly) : [], bar: !!document.querySelector("#vm-cmd"),
+    drop: [px("--vm-drop-x"), px("--vm-drop-y")], win: [innerWidth, innerHeight] }; })()`, win);
+const nbAt = (x, what) => { const r = x.host[0]?.box; return !r ? `${what}: nothing in the stack` : near(r[0], x.drop[0]) && near(r[1], x.drop[1]) ? null : `${what}: the first toast is at ${J(r)}, not at the drop point ${J(x.drop)}`; };
+const ctrlL = async (win) => { await focusPage(win); await sleep(200); await keyCombo(h.cdp(win), "l", "KeyL", 76, 2); await sleep(900); };
+const keyEnter = async (win) => { const c = h.cdp(win); await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: String.fromCharCode(13) });
+  await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }); };
+const keyArrow = async (win, key) => { const c = h.cdp(win), vk = key === "ArrowDown" ? 40 : 38; for (const type of ["rawKeyDown", "keyUp"]) await c.send("Input.dispatchKeyEvent", { type, key, code: key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }); };
+const SCROLL_STATE = `(() => { const tc = document.querySelector("#tabs-container"), side = document.querySelector("#tabs-tabbar-container")?.getBoundingClientRect(), panel = document.querySelector("#vm-panel")?.getBoundingClientRect();
+  const f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"), i = document.querySelector("#vm-cmd input");
+  return { scrollLeft: tc ? tc.scrollLeft : null, shift: side && panel ? Math.round(panel.left - side.left) : null, fieldH: f ? Math.round(f.getBoundingClientRect().height) : null,
+    fieldFocused: document.activeElement?.id === "urlFieldInput", bar: !!i, inBar: !!i && document.activeElement === i, value: i?.value ?? null }; })()`;
+const nbSetup = async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await goTo(ctx.W, `${origin}/en-1`); await sleep(1500); };
+const nbReady = () => waitFor(() => h.ev(`!!document.querySelector("#vm-panel") && !!document.querySelector("#tabs-tabbar-container .UrlBar-AddressField")`, ctx.W), 6000);
+for (const layout of ["dia", "arc"]) {
+  // The address keys open the command bar on the page's address with the sidebar shown too (8w did it with it hidden), and
+  // Vivaldi's field never takes the cursor, from the page or from the UI.
+  def(`9B.address-keys-open-the-bar-with-the-sidebar-shown-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const r = {}, c = h.cdp(ctx.W);
+      await h.ev(FIELD_SPY, ctx.W);
+      r.url = (await activeUrl(ctx.W)).url;
+      await focusPage(ctx.W); await sleep(200);
+      await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900);
+      r.ctrlL = await BAR_STATE(ctx.W);
+      await shot(ctx.W, "ctrl-l-command-bar");
+      await escBar(ctx.W);
+      await focusUi(ctx.W); await sleep(200); await keyCombo(c, "F6", "F6", 117, 0); await sleep(900); r.f6 = await BAR_STATE(ctx.W); await escBar(ctx.W);
+      await focusPage(ctx.W); await sleep(200); await keyCombo(c, "d", "KeyD", 68, 1); await sleep(900); r.altD = await BAR_STATE(ctx.W); await escBar(ctx.W);
+      await focusUi(ctx.W); await sleep(200); await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900); r.ctrlLui = await BAR_STATE(ctx.W); await escBar(ctx.W);
+      await sleep(400);
+      r.end = { ...(await BAR_STATE(ctx.W)), scroll: await h.ev(SCROLL_STATE, ctx.W) };
+      return r;
+    },
+    expect: (s, b, r) => {
+      const opened = (x, what, url) => !x?.bar ? `${what}: no command bar (${J(x)})` : [!x.inBar ? `${what}: the bar has no cursor` : null,
+        url != null && (x.value !== url || !x.selected) ? `${what}: the bar holds ${J(x.value)} (selected ${x.selected}), want the page's address selected` : null,
+        x.hidden ? `${what}: the sidebar hid` : null, x.fieldFocused ? `${what}: the address field has the cursor` : null].filter(Boolean).join("; ") || null;
+      return [opened(r.ctrlL, "Ctrl+L from the page", r.url), opened(r.f6, "F6 from the UI", r.url), opened(r.altD, "Alt+D from the page", r.url), opened(r.ctrlLui, "Ctrl+L from the UI", r.url),
+        r.end.spy === 0 ? null : `Vivaldi's field took the cursor ${r.end.spy} times`, r.end.fieldH === 0 ? null : `the field shows (${r.end.fieldH}px)`,
+        r.end.scroll.scrollLeft === 0 && r.end.scroll.shift === 0 ? null : `the sidebar moved: ${J(r.end.scroll)}`];
+    },
+  });
+  // A new private window opens the command bar over its introduction page; Esc closes it. Byron's bug: the window came up
+  // with Vivaldi's field focused and floating, and the sidebar shifted left (measured, task 9b: the field, wider than the
+  // sidebar, scrolled #tabs-container sideways when it took the cursor). Vivaldi focusing its field again changes nothing.
+  def(`9B.a-private-window-opens-the-bar-without-a-shift-${layout}`, {
+    layout, setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await sleep(800); }, ready: nbReady,
+    act: async () => {
+      const r = {};
+      try {
+        const pid = await openPrivate();
+        if (pid == null) return { error: "no private window" };
+        const ev = (expr) => h.cdp(pid).eval(expr, 15000);
+        r.launch = await waitFor(async () => { const x = await ev(SCROLL_STATE); return x.inBar ? x : null; }, 5000, 150) || await ev(SCROLL_STATE);
+        r.url = await ev(`chrome.tabs.query({ active: true, currentWindow: true }).then(([t]) => t.url)`);
+        await sleep(600);
+        await shot(pid, "private-window-at-launch");
+        // Vivaldi putting the cursor in its field again (it does on a new window): nothing moves, the bar keeps it.
+        await ev(`(document.getElementById("urlFieldInput")?.focus(), 1)`); await sleep(300);
+        r.refocus = await ev(SCROLL_STATE);
+        await ev(`(document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), 1)`); await sleep(500);
+        r.esc = { ...(await ev(SCROLL_STATE)), tabs: await ev(`chrome.tabs.query({ currentWindow: true }).then((t) => t.length)`) };
+        return r;
+      } finally { await closePrivate(); }
+    },
+    expect: (s, b, r) => r.error ? [r.error] : [r.launch.bar && r.launch.inBar && r.launch.value === "" ? null : `no empty command bar with the cursor at launch: ${J(r.launch)}`,
+      /private-intro/.test(r.url || "") ? null : `setup: the private window is on ${J(r.url)}, not its introduction page`,
+      !r.launch.fieldFocused && r.launch.fieldH === 0 ? null : `Vivaldi's field at launch: ${J(r.launch)}`, r.launch.scrollLeft === 0 && r.launch.shift === 0 ? null : `the sidebar shifted at launch: ${J(r.launch)}`,
+      !r.refocus.fieldFocused && r.refocus.fieldH === 0 && r.refocus.scrollLeft === 0 && r.refocus.shift === 0 && r.refocus.inBar ? null : `Vivaldi focusing its field again: ${J(r.refocus)}`,
+      !r.esc.bar && r.esc.tabs === 1 && r.esc.scrollLeft === 0 && r.esc.shift === 0 ? null : `after Esc: ${J(r.esc)}`],
+  });
+  // With the bar closed a site's question is a toast just under the crumb / URL bar; Deny on it is Vivaldi's own (recorded).
+  def(`9B.a-question-is-a-toast-under-the-anchor-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "A");
+      const { ready } = await srAskAndWait(t, "notif");
+      const x = await NB(ctx.W);
+      await shot(ctx.W, "toast-under-the-anchor");
+      const click = await srClick(ctx.W, srOpt(2));
+      await srWait(ctx.W, (q) => q.cards.length === 0);
+      return { ready, x, click, perm: await srPerm(t, "notif") };
+    },
+    expect: (s, b, r) => [r.ready.cards.length === 1 ? null : "no card", srAnchored(r.ready), nbAt(r.x, "the question"), r.x.bar ? "the command bar opened by itself" : null,
+      r.click === "clicked" && r.perm === "denied" ? null : `Deny on the toast: ${r.click}, permission ${r.perm}`],
+  });
+  // The bar open: a question already up moves into the fly-up (nothing in the stack), and one asked while the bar is open
+  // goes there too; its buttons are Vivaldi's, a press in the fly-up does not close the question (or the bar).
+  def(`9B.with-the-bar-open-a-question-is-a-fly-up-row-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const r = {};
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "notif");
+      await ctrlL(ctx.W);
+      r.moved = await NB(ctx.W);
+      await shot(ctx.W, "fly-up");
+      await sleep(600);
+      r.click = await srClick(ctx.W, "#vm-cmd .vm-cmd-fly .vm-site-card .vm-site-opt:nth-child(1)");
+      r.permA = await waitFor(async () => (await srPerm(a, "notif")) === "granted" ? "granted" : null, 4000) || await srPerm(a, "notif");
+      r.afterA = await NB(ctx.W);
+      await escBar(ctx.W);
+      // Asked while the bar is open
+      const g = await srTab(ctx.W, "G");
+      await ctrlL(ctx.W);
+      await srAsk(g, "geo");
+      r.asked = await waitFor(async () => { const x = await NB(ctx.W); return x.fly.some((i) => i.cls.includes("vm-site-card")) ? x : null; }, 6000) || await NB(ctx.W);
+      await sleep(1300);
+      r.click2 = await srClick(ctx.W, "#vm-cmd .vm-cmd-fly .vm-site-card .vm-site-opt:nth-child(2)");
+      r.permG = await waitFor(async () => (await srPerm(g, "geo")) === "denied" ? "denied" : null, 4000) || await srPerm(g, "geo");
+      r.end = await NB(ctx.W);
+      await escBar(ctx.W);
+      return r;
+    },
+    expect: (s, b, r) => [r.moved.bar ? null : "Ctrl+L opened no bar", r.moved.fly.some((i) => i.cls.includes("vm-site-card")) ? null : `the question is not in the fly-up: ${J(r.moved.fly)}`,
+      r.moved.hidden && !r.moved.host.length ? null : `the stack still shows while the bar is open: ${J(r.moved.host)}`,
+      r.click === "clicked" && r.permA === "granted" ? null : `Allow in the fly-up: ${r.click}, permission ${r.permA}`, r.afterA.bar ? null : "a press in the fly-up closed the bar",
+      r.asked.fly.some((i) => i.cls.includes("vm-site-card")) && !r.asked.host.length ? null : `a question asked with the bar open is not a fly-up row: ${J(r.asked)}`,
+      r.click2 === "clicked" && r.permG === "denied" ? null : `Deny in the fly-up: ${r.click2}, permission ${r.permG}`],
+  });
+  // Up to three notifications are three rows, one under another; a fourth folds them into one stack, which opens on a click.
+  def(`9B.four-notifications-fold-into-a-stack-that-opens-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const r = {};
+      const addNote = (i) => h.ev(`(window.__vm.notify.add({ id: "nb-${i}", tab: null, type: "message", text: "Notification ${i}", actions: [{ label: "OK", run: () => true }] }), 1)`, ctx.W);
+      try {
+        for (const i of [1, 2, 3]) { await addNote(i); await sleep(150); }
+        await sleep(400); r.three = await NB(ctx.W); await shot(ctx.W, "three-rows");
+        await addNote(4); await sleep(500); r.four = await NB(ctx.W); await shot(ctx.W, "stack-collapsed");
+        r.click = await clickOn(ctx.W, `document.querySelector("#vm-notify .vm-note-more")`); await sleep(500);
+        r.open = await NB(ctx.W); await shot(ctx.W, "stack-expanded");
+        r.click2 = await clickOn(ctx.W, `document.querySelector("#vm-notify .vm-note-more")`); await sleep(400);
+        r.closed = await NB(ctx.W);
+      } finally { await h.ev(`([1, 2, 3, 4].forEach((i) => window.__vm.notify.remove("nb-" + i)), 1)`, ctx.W); }
+      return r;
+    },
+    expect: (s, b, r) => {
+      const notes = (x) => x.host.filter((i) => i.cls.includes("vm-note-item"));
+      const rows = notes(r.three);
+      return [rows.length === 3 && !r.three.stacked ? null : `three: ${rows.length} rows, stacked ${r.three.stacked}`, nbAt(r.three, "three rows"),
+        rows.every((n, i) => i === 0 || n.box[1] >= rows[i - 1].box[3]) ? null : `the three rows are not one under another: ${J(rows.map((n) => n.box))}`,
+        r.four.stacked && notes(r.four).length === 1 && r.four.host.some((i) => i.cls.includes("vm-note-more") && /4 notifications/.test(i.text)) ? null : `four did not fold into one stack: ${J(r.four.host)}`,
+        r.click && notes(r.open).length === 4 && !r.open.stacked ? null : `the stack did not open to all four: ${J(r.open.host)}`,
+        r.click2 && r.closed.stacked && notes(r.closed).length === 1 ? null : `Show less did not fold it again: ${J(r.closed.host)}`];
+    },
+  });
+  // Notifications belong to their tab: a question and a tab's own toast hide on a switch and come back on return; Vivarc's
+  // own message (no tab) stays.
+  def(`9B.a-tabs-notifications-hide-on-a-switch-and-come-back-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const a = await srTab(ctx.W, "A");
+      await srAskAndWait(a, "notif");
+      await h.ev(`(window.__vm.notify.add({ id: "nb-tab", tab: ${a.id}, type: "popupBlocked", text: "A's own toast" }), window.__vm.notify.add({ id: "nb-any", tab: null, type: "message", text: "Vivarc's message" }), 1)`, ctx.W);
+      await sleep(400);
+      const before = await NB(ctx.W);
+      const bId = await h.ev(`chrome.tabs.create(${J({ windowId: ctx.W, url: `${origin}/en-b`, active: true })}).then((t) => t.id)`, ctx.H);
+      await sleep(1200);
+      const away = await NB(ctx.W);
+      await activate(a.id); await sleep(1800);
+      const back = await NB(ctx.W);
+      await h.ev(`(window.__vm.notify.remove("nb-tab"), window.__vm.notify.remove("nb-any"), 1)`, ctx.W);
+      return { before, away, back, bId };
+    },
+    expect: (s, b, r) => {
+      const has = (x, what) => x.host.some((i) => i.text.includes(what) || (what === "card" && i.cls.includes("vm-site-card")));
+      return [has(r.before, "card") && has(r.before, "A's own toast") && has(r.before, "Vivarc's message") ? null : `setup: ${J(r.before.host)}`,
+        !has(r.away, "card") && !has(r.away, "A's own toast") ? null : `another tab still shows A's notifications: ${J(r.away.host)}`, has(r.away, "Vivarc's message") ? null : "Vivarc's own message hid on the switch",
+        has(r.back, "card") && has(r.back, "A's own toast") ? null : `back on A they did not come back: ${J(r.back.host)}`];
+    },
+  });
+  // x on a question keeps it pending (a pill stays); opening the bar brings it into the fly-up, answerable there.
+  def(`9B.close-keeps-a-question-pending-and-the-fly-up-has-it-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "A");
+      await srAskAndWait(t, "notif");
+      const click = await srClick(ctx.W, "#vm-notify .vm-site-x");
+      await sleep(900);
+      const closed = { ...(await NB(ctx.W)), perm: await srPerm(t, "notif") };
+      await ctrlL(ctx.W);
+      const fly = await waitFor(async () => { const x = await NB(ctx.W); return x.fly.some((i) => i.cls.includes("vm-site-card")) ? x : null; }, 5000) || await NB(ctx.W);
+      await sleep(1300);
+      const allow = await srClick(ctx.W, "#vm-cmd .vm-cmd-fly .vm-site-card .vm-site-opt:nth-child(1)");
+      const perm = await waitFor(async () => (await srPerm(t, "notif")) === "granted" ? "granted" : null, 4000) || await srPerm(t, "notif");
+      await escBar(ctx.W);
+      return { click, closed, fly, allow, perm };
+    },
+    expect: (s, b, r) => [r.click === "clicked" ? null : `x: ${r.click}`, r.closed.perm === "default" ? null : `x answered the question (${r.closed.perm})`,
+      r.closed.host.some((i) => i.cls.includes("vm-site-pill")) ? null : `no pending pill after x: ${J(r.closed.host)}`,
+      r.fly.fly.some((i) => i.cls.includes("vm-site-card")) ? null : `the pending question is not in the fly-up: ${J(r.fly.fly)}`,
+      r.allow === "clicked" && r.perm === "granted" ? null : `Allow in the fly-up: ${r.allow}, permission ${r.perm}`],
+  });
+  // A blocked pop-up: a short toast with Allow (which opens it, through Vivaldi's own popup), then a fly-up row.
+  def(`9B.a-blocked-pop-up-is-a-toast-then-a-row-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "P");
+      await srVal(t, `(window.open(${J(t.origin + "/opened-" + layout)}), 1)`);
+      const toast = await waitFor(async () => { const x = await NB(ctx.W); return x.host.some((i) => i.text.includes("Pop-up blocked")) ? x : null; }, 4000) || await NB(ctx.W);
+      await shot(ctx.W, "popup-blocked-toast");
+      const allow = await clickOn(ctx.W, `[...document.querySelectorAll("#vm-notify .vm-note-btn")].find((b) => b.textContent === "Allow")`);
+      const opened = await waitFor(() => h.ev(`chrome.tabs.query({}).then((ts) => ts.some((x) => (x.pendingUrl || x.url || "").includes("/opened-${layout}")))`, ctx.H), 5000);
+      await focus(ctx.W); await activate(t.id); await sleep(600);
+      await ctrlL(ctx.W);
+      const fly = await NB(ctx.W);
+      await escBar(ctx.W);
+      await h.ev(`chrome.tabs.query({}).then((ts) => Promise.all(ts.filter((x) => (x.pendingUrl || x.url || "").includes("/opened-")).map((x) => chrome.tabs.remove(x.id)))).then(() => 1)`, ctx.H).catch(() => {});
+      return { toast, allow, opened, fly };
+    },
+    expect: (s, b, r) => [r.toast.host.some((i) => i.text.includes("Pop-up blocked") && i.text.includes("Allow")) ? null : `no "Pop-up blocked · Allow" toast: ${J(r.toast.host)}`, nbAt(r.toast, "the pop-up toast"),
+      r.allow && r.opened ? null : `Allow did not open the blocked pop-up (${r.allow}, ${r.opened})`,
+      r.fly.fly.some((i) => i.cls.includes("vm-fly-indicator") && /pop-?up/i.test(i.text)) ? null : `no blocked pop-up row in the fly-up: ${J(r.fly.fly)}`],
+  });
+  // A zoom change (Ctrl+=) gets a small toast with Reset; Reset is Vivaldi's own zoom back to 100 %.
+  def(`9B.zoom-toast-with-reset-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const id = (await activeUrl(ctx.W)).id;
+      await sleep(1600); // past the navigation's own zoom
+      await focusPage(ctx.W); await sleep(200);
+      await keyCombo(h.cdp(ctx.W), "=", "Equal", 187, 2); await sleep(700);
+      const toast = await NB(ctx.W);
+      const zoomed = await h.ev(`chrome.tabs.getZoom(${id})`, ctx.W);
+      await shot(ctx.W, "zoom-toast");
+      const reset = await clickOn(ctx.W, `[...document.querySelectorAll("#vm-notify .vm-note-btn")].find((b) => b.textContent === "Reset")`);
+      await sleep(600);
+      const after = { zoom: await h.ev(`chrome.tabs.getZoom(${id})`, ctx.W), ...(await NB(ctx.W)) };
+      await h.ev(`chrome.tabs.setZoom(${id}, 0).then(() => 1)`, ctx.W).catch(() => {});
+      return { toast, zoomed, reset, after };
+    },
+    expect: (s, b, r) => [r.zoomed > 1 ? null : `setup: Ctrl+= did not zoom (${r.zoomed})`, r.toast.host.some((i) => /Zoom 1\d\d%/.test(i.text) && i.text.includes("Reset")) ? null : `no zoom toast with Reset: ${J(r.toast.host)}`,
+      nbAt(r.toast, "the zoom toast"), r.reset && Math.abs(r.after.zoom - 1) < 0.001 ? null : `Reset did not put the zoom back (${r.after.zoom})`, r.after.host.some((i) => i.text.includes("Zoom")) ? "the zoom toast stayed after Reset" : null],
+  });
+  // Ctrl+D bookmarks the page silently in Vivaldi: Vivarc says "Bookmarked" with Edit, which opens Vivaldi's own editor,
+  // dropped from the anchor.
+  def(`9B.ctrl-d-toast-with-edit-${layout}`, {
+    layout, setup: async () => { await mkWin("W", { width: 1100 }); await focus(ctx.W); await goTo(ctx.W, `${origin}/en-bm-${layout}-${Date.now()}`); await sleep(1500); }, ready: nbReady,
+    act: async () => {
+      await focusPage(ctx.W); await sleep(200);
+      await keyCombo(h.cdp(ctx.W), "d", "KeyD", 68, 2); await sleep(1200);
+      const toast = await NB(ctx.W);
+      await shot(ctx.W, "ctrl-d-toast");
+      const edit = await clickOn(ctx.W, `[...document.querySelectorAll("#vm-notify .vm-note-btn")].find((b) => b.textContent === "Edit")`);
+      await sleep(1000);
+      const editor = await srState(ctx.W);
+      await shot(ctx.W, "ctrl-d-editor-dropped");
+      await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(500);
+      return { toast, edit, editor, count: await h.ev(`chrome.bookmarks.search({}).then((all) => all.filter((n) => n.url && n.url.includes("/en-bm-${layout}")).length)`, ctx.H) };
+    },
+    expect: (s, b, r) => [r.toast.host.some((i) => i.text.includes("Bookmarked") && i.text.includes("Edit")) ? null : `no "Bookmarked · Edit" toast: ${J(r.toast.host)}`, nbAt(r.toast, "the bookmark toast"),
+      r.count >= 1 ? null : "setup: Ctrl+D added no bookmark", r.edit ? null : "no Edit button",
+      r.editor.popLabel === "dialog-bookmark-title" ? null : `Edit did not open Vivaldi's bookmark editor (${J(r.editor.popLabel)})`, ...srDropped(r.editor, "the bookmark editor")],
+  });
+  // A device chooser (USB) stays Vivaldi's own, dropped from the anchor; the field does not come with it. Cancel only, never
+  // Connect: the list is this machine's real devices (read only), masked before the screenshot.
+  def(`9B.a-device-chooser-drops-from-the-anchor-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "UD");
+      if (!t.page) return { error: "no page target" };
+      try {
+        await t.page.send("Runtime.evaluate", { expression: `navigator.usb.requestDevice({ filters: [] }).then(() => window.__r = "connected", (e) => window.__r = e.name)`, userGesture: true });
+        const st = await srWait(ctx.W, (q) => !!q.popRect, 6000) || await srState(ctx.W);
+        await sleep(500);
+        const during = await srState(ctx.W);
+        await h.ev(MASK_DEVICES, ctx.W);
+        await shot(ctx.W, "device-chooser-dropped-names-masked");
+        const cancel = await clickOn(ctx.W, `[...document.querySelectorAll("#tabs-tabbar-container .addressfield-popup-container input, #tabs-tabbar-container .addressfield-popup-container button")].find((b) => (b.value || b.textContent).trim() === "Cancel")`);
+        await sleep(800);
+        return { st, during, cancel, answer: await srVal(t, "window.__r ?? null"), after: await srState(ctx.W) };
+      } finally {
+        if (await h.ev(`!!document.querySelector("#tabs-tabbar-container .addressfield-popup-container:not(.vm-site-carded)")`, ctx.W).catch(() => false)) await pressKey(ctx.W, "Escape", "Escape", 27).catch(() => {});
+        t.page.close();
+      }
+    },
+    expect: (s, b, r) => r.error ? [r.error] : [...srDropped(r.during, "the device chooser"), r.during.cards.length === 0 ? null : "the chooser was carded",
+      r.cancel && r.answer === "NotFoundError" ? null : `Cancel: ${r.cancel}, the page's request ended ${J(r.answer)}`, r.after.popRect ? "the chooser stayed after Cancel" : null],
+  });
+  // Vivarc's own toast (the tear-off's Undo here, the same message the sidebar sends) joins the same stack, under a question.
+  def(`9B.the-undo-toast-joins-the-stack-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "A");
+      await srAskAndWait(t, "notif");
+      await h.ev(`(window.__undone = false, window.dispatchEvent(new CustomEvent("vm-toast", { detail: { message: "Opened in a new window", ms: 8000, action: { label: "Undo", run: () => { window.__undone = true; } } } })), 1)`, ctx.W);
+      await sleep(500);
+      const x = await NB(ctx.W);
+      await shot(ctx.W, "undo-in-the-stack");
+      const undo = await clickOn(ctx.W, `document.querySelector("#vm-notify .vm-toast .vm-toast-action")`);
+      await sleep(400);
+      return { x, undo, undone: await h.ev("window.__undone", ctx.W), after: await NB(ctx.W) };
+    },
+    expect: (s, b, r) => {
+      const card = r.x.host.findIndex((i) => i.cls.includes("vm-site-card")), toast = r.x.host.findIndex((i) => i.cls.includes("vm-toast"));
+      return [card === 0 && toast === 1 ? null : `the stack is not question then Undo: ${J(r.x.host.map((i) => i.cls))}`, nbAt(r.x, "the stack"),
+        toast > 0 && r.x.host[toast].box[1] >= r.x.host[card].box[3] && near(r.x.host[toast].box[0], r.x.drop[0]) ? null : "the Undo toast is not under the question in the same column",
+        r.undo && r.undone ? null : "Undo did not run", r.after.host.some((i) => i.cls.includes("vm-toast")) ? "the Undo toast stayed" : null];
+    },
+  });
+  // Ported from KASOGIT/vivarc#142: the bar grows with a window past 1920 x 1080 (up to 1.2x), unchanged below.
+  def(`9B.the-bar-grows-with-a-large-window-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const width = () => h.ev(`(() => { const s = document.querySelector("#vm-cmd .vm-cmd-stack"), i = document.querySelector("#vm-cmd input"); return s ? { w: Math.round(s.getBoundingClientRect().width), font: parseFloat(getComputedStyle(i).fontSize), win: [innerWidth, innerHeight] } : null; })()`, ctx.W);
+      const r = {};
+      try {
+        await ctrlL(ctx.W); r.small = await width(); await escBar(ctx.W);
+        await h.ev(`chrome.windows.update(${ctx.W}, { left: 0, top: 0, width: 2500, height: 1380 }).then(() => 1)`, ctx.H); await sleep(1500);
+        await ctrlL(ctx.W); r.big = await width(); await escBar(ctx.W);
+      } finally { await h.ev(`chrome.windows.update(${ctx.W}, { left: 40, top: 60, width: 1100, height: 640 }).then(() => 1)`, ctx.H); await sleep(800); }
+      return r;
+    },
+    expect: (s, b, r) => {
+      const scale = r.big ? Math.min(r.big.win[0] / 1920, r.big.win[1] / 1080) : 0;
+      const want = Math.min(888, Math.max(740, 370 + 370 * scale));
+      return [r.small?.w === 740 && r.small.font === 24 ? null : `in a ${J(r.small?.win)} window the bar is ${r.small?.w}px, font ${r.small?.font} (want 740, 24)`,
+        scale > 1.05 ? null : `setup: the large window is only ${J(r.big?.win)}`, r.big && Math.abs(r.big.w - Math.min(want, r.big.win[0] * 0.92)) <= 3 && r.big.font > 24 ? null : `in a ${J(r.big?.win)} window the bar is ${r.big?.w}px, font ${r.big?.font} (want ~${Math.round(want)})`];
+    },
+  });
+  // Ported from KASOGIT/vivarc#129: the row the arrow keys pick fills the field around what was typed (the rest selected);
+  // back on the first row the field is what was typed.
+  def(`9B.an-arrowed-to-suggestion-fills-the-field-${layout}`, {
+    layout, setup: async () => { await nbSetup(); await h.ev(`chrome.tabs.create(${J({ windowId: ctx.W, url: `${origin}/en-fill-target`, active: false })}).then(() => 1)`, ctx.H); await sleep(1500); }, ready: nbReady,
+    act: async () => {
+      await h.ev(`(window.dispatchEvent(new CustomEvent("vm-open-command-bar")), 1)`, ctx.W);
+      if (!(await waitFor(() => h.ev(`document.activeElement === document.querySelector("#vm-cmd input")`, ctx.W), 3000))) return { error: "no bar" };
+      const typed = `${origin.replace("http://", "")}/en-fi`;
+      await h.cdp(ctx.W).send("Input.insertText", { text: typed }); await sleep(1500);
+      const field = () => h.ev(`(() => { const i = document.querySelector("#vm-cmd input"); return { value: i.value, start: i.selectionStart, end: i.selectionEnd, sel: [...document.querySelectorAll("#vm-cmd .vm-cmd-row")].findIndex((r) => r.classList.contains("sel")),
+        rows: [...document.querySelectorAll("#vm-cmd .vm-cmd-row")].map((r) => r.textContent.slice(0, 60)) }; })()`, ctx.W);
+      const before = await field();
+      const target = before.rows.findIndex((t) => t.includes("EN-fill-target"));
+      for (let i = 0; i < target; i++) { await keyArrow(ctx.W, "ArrowDown"); await sleep(120); }
+      const down = await field();
+      for (let i = 0; i < target; i++) { await keyArrow(ctx.W, "ArrowUp"); await sleep(120); }
+      const up = await field();
+      await escBar(ctx.W);
+      return { typed, before, target, down, up };
+    },
+    expect: (s, b, r) => {
+      if (r.error) return [r.error];
+      const full = `${r.typed}ll-target`;
+      return [r.target > 0 ? null : `setup: no row for the tab below the first (${J(r.before.rows)})`,
+        r.down.value === full && r.down.start === r.typed.length && r.down.end === full.length ? null : `arrowed to the tab, the field is ${J(r.down)}, want ${J(full)} with the rest selected`,
+        r.up.value === r.typed && r.up.sel === 0 ? null : `back on the first row the field is ${J(r.up.value)}, want what was typed`];
+    },
+  });
+  // Ported from KASOGIT/vivarc#143: Move Tab to Space… in the command bar lists the other spaces; the tab moves there and you
+  // go with it (the window shows that space, the tab active), with Vivarc's own move.
+  def(`9B.move-tab-to-space-picker-${layout}`, {
+    layout, setup: async () => { await mkWin("W", { width: 1100 }); await tab(ctx.W, "MV1", 0, { active: true }); await focus(ctx.W); await sleep(1200); }, ready: () => ctx.W ? waitTile(ctx.W, "Y") : true,
+    act: async () => {
+      await ctrlL(ctx.W);
+      await h.cdp(ctx.W).send("Input.insertText", { text: "move" }); await sleep(1200);
+      const action = await clickOn(ctx.W, `[...document.querySelectorAll("#vm-cmd .vm-cmd-row")].find((r) => r.textContent.includes("Move Tab to Space"))`);
+      await sleep(500);
+      const picker = await h.ev(`({ chip: document.querySelector("#vm-cmd .vm-cmd-chip")?.textContent ?? null, rows: [...document.querySelectorAll("#vm-cmd .vm-cmd-row")].map((r) => r.querySelector(".vm-cmd-title")?.textContent) })`, ctx.W);
+      await h.cdp(ctx.W).send("Input.insertText", { text: "Y" }); await sleep(500);
+      await keyEnter(ctx.W); await sleep(2500);
+      return { action, picker, bar: await hasEl(ctx.W, "#vm-cmd") };
+    },
+    expect: (s, b, r) => [r.action ? null : "no Move Tab to Space… row for \"move\"", r.picker.chip === "Move to Space" ? null : `no picker chip (${J(r.picker.chip)})`,
+      ["X", "Y", "Z"].every((n) => r.picker.rows.includes(n)) ? null : `the picker lists ${J(r.picker.rows)}, want the spaces X, Y, Z`, r.bar ? "the bar stayed open" : null,
+      tabIs(s, "MV1", { win: ctx.W, space: sp("Y") }), activeOf(s, ctx.W)?.id === ctx.tabs.MV1 ? null : "MV1 is not the active tab (you did not go with it)",
+      s.perWin[ctx.W] === sp("Y") ? null : `the window shows ${J(s.perWin[ctx.W])}, not Y`],
+  });
+  // Ported from KASOGIT/vivarc#119: one click outside the bar, on a sidebar row, closes the bar and reaches the row (it took
+  // two: the first only closed the bar).
+  def(`9B.one-click-outside-the-bar-reaches-the-sidebar-row-${layout}`, {
+    layout, setup: async () => { await mkWin("W", { width: 1100 }); await tab(ctx.W, "C1", 0, { active: true }); await tab(ctx.W, "C2", 0); await focus(ctx.W); await sleep(1200); },
+    act: async () => {
+      await waitFor(() => h.ev(`performance.now() > 6000`, ctx.W), 12000); // the bar ignores new tabs in a window's first 5 s
+      const blank = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W} }).then((t) => t.id)`, ctx.H);
+      if (!(await waitFor(() => hasEl(ctx.W, "#vm-cmd"), 3000))) return { error: "the new tab opened no bar" };
+      await sleep(800);
+      const p = await h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((x) => x.textContent.includes("C2")); if (!r) return null; const q = r.getBoundingClientRect(); return { x: q.left + 60, y: q.top + q.height / 2 }; })()`, ctx.W);
+      if (!p) return { error: "no C2 row" };
+      try { await mouse(ctx.W, "mouseMoved", p.x, p.y); await mouse(ctx.W, "mousePressed", p.x, p.y); } finally { await mouse(ctx.W, "mouseReleased", p.x, p.y); }
+      await sleep(1200);
+      return { bar: await hasEl(ctx.W, "#vm-cmd"), blank, blankLeft: await h.ev(`chrome.tabs.get(${blank}).then(() => true, () => false)`, ctx.H) };
+    },
+    expect: (s, b, r) => r.error ? [r.error] : [r.bar ? "the bar is still open" : null, activeOf(s, ctx.W)?.id === ctx.tabs.C2 ? null : `one click did not reach C2 (active: ${activeOf(s, ctx.W)?.title})`,
+      r.blankLeft ? "the bar's blank tab was left" : null],
+  });
+}
 
 // ---------- running ----------
 async function setLayout(dia) {
