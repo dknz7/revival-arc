@@ -161,6 +161,36 @@ class Restore(unittest.TestCase):
         self.assertEqual(run("return edit.deletedNote({ deletedAt: NOW, tabs: [1] }, NOW)", NOW=40 * DAY), "1 tab · today")
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class Edit(unittest.TestCase):
+    """Order maths, names, and the folder-first rename's check."""
+
+    def test_move_left_and_right_stop_at_the_ends(self):
+        self.assertEqual(run("return [edit.moved([1, 2, 3], 2, -1), edit.moved([1, 2, 3], 2, 1), edit.moved([1, 2, 3], 1, -1), edit.moved([1, 2, 3], 3, 1), edit.moved([1, 2], 9, 1)]"),
+                         [[2, 1, 3], [1, 3, 2], None, None, None])
+
+    def test_a_new_space_gets_a_free_name(self):
+        self.assertEqual(run("return [edit.newSpaceName([]), edit.newSpaceName([{ name: 'new space' }]), edit.newSpaceName([{ name: 'New Space' }, { name: 'New Space 2' }])]"),
+                         ["New Space", "New Space 2", "New Space 3"])
+
+    FOLDERS = [{"id": "f0", "title": "Vivarc"}, {"id": "fx", "title": "Arc - X"}, {"id": "fy", "title": "Y"}, {"id": "stray", "title": "Old"}]
+
+    def check(self, name, id=X):
+        return run("return edit.renameCheck({ name, id, list, folders });", name=name, id=id, list=LIST, folders=self.FOLDERS)
+
+    def test_rename_refuses_a_name_that_would_take_someone_elses_pins(self):
+        self.assertEqual(self.check("  Work "), {"name": "Work"})
+        self.assertEqual(self.check("X"), {"same": True})
+        self.assertEqual(self.check(""), {"why": "A space needs a name"})
+        self.assertEqual(self.check("y")["why"], "There is already a space called “y”")
+        self.assertEqual(self.check("vivarc")["why"], "“vivarc” is another space's Pinned folder", "the default space's folder")
+        self.assertEqual(self.check("Old")["why"], "“Old” is another space's Pinned folder")
+        self.assertEqual(self.check("x "), {"name": "x"}, "its own folder's name, another case: fine")
+
+    def test_the_folder_keeps_its_arc_prefix(self):
+        self.assertEqual(run("return [edit.folderTitle('Arc - X', 'Work'), edit.folderTitle('X', 'Work')]"), ["Arc - Work", "Work"])
+
+
 # The parts that talk to Vivaldi, against fakes: chrome.*, vivaldi.prefs, Vivaldi's manager and route manager in the
 # webpack chunks, Vivarc's store and native.
 RUNTIME = """
@@ -305,6 +335,16 @@ class DeleteAndUndelete(unittest.TestCase):
         self.assertEqual([x for x in r["calls"] if x[0] != "warn"], [], "nothing touched, not even the busy mark")
         self.assertEqual(len(r["store"]["deletedSpaces"]), 1, "the entry stays")
 
+    def test_rename_renames_the_folder_first(self):
+        r = runtime("await edit.rename(101, 'Work', { id: 'fx', title: 'Arc - X' }); return window.__vm.spaceEdit.renaming(101);", list=LIST)
+        steps = [x for x in r["calls"] if x[0] in ("folder", "setName")]
+        self.assertEqual(steps, [["folder", "fx", "Arc - Work"], ["setName", X, "Work"]])
+        self.assertFalse(r["out"], "the mark is gone once it is done")
+
+    def test_plus_makes_a_space_in_the_background_with_the_default_icon(self):
+        r = runtime("return edit.create('New Space');", list=LIST)
+        self.assertEqual(r["out"], 999)
+        self.assertIn(["create", "New Space", "<svg>default</svg>", True], r["calls"])
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")

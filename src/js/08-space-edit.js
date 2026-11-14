@@ -115,6 +115,38 @@
     return `${n} tab${n === 1 ? "" : "s"} · ${ws().cleanedAgo(entry.deletedAt, now)}`;
   };
 
+  // ---- pure: editing ----
+  // Move a space one place left (-1) or right (+1) in Vivaldi's list. -> the new list, or null at the end.
+  const moved = (ids, id, delta) => {
+    const at = (ids || []).indexOf(id), to = at + delta;
+    if (at < 0 || to < 0 || to >= ids.length) return null;
+    const next = [...ids];
+    [next[at], next[to]] = [next[to], next[at]];
+    return next;
+  };
+  // A name for a space made by +: "New Space", else "New Space 2", 3, ...
+  const newSpaceName = (list, base = "New Space") => {
+    const taken = new Set((list || []).map((w) => String(w.name || "").trim().toLowerCase()));
+    if (!taken.has(base.toLowerCase())) return base;
+    for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`;
+  };
+  // Can space `id` be called `name`? A space takes its Pinned folder by name (07-workspaces.js assign), so a name another
+  // space has, or another folder's, would hand it someone else's pins. folders: the bookmark folders that hold a Pinned
+  // folder; list: Vivaldi's spaces. -> { name } (trimmed), { same: true } (unchanged), or { why }.
+  const renameCheck = ({ name, id, list, folders }) => {
+    const clean = String(name ?? "").trim();
+    if (!clean) return { why: "A space needs a name" };
+    const me = (list || []).find((w) => w.id === id);
+    if (me && me.name === clean) return { same: true };
+    const same = (a, b) => a.trim().toLowerCase() === b.trim().toLowerCase();
+    if ((list || []).some((w) => w.id !== id && same(String(w.name || ""), clean))) return { why: `There is already a space called “${clean}”` };
+    const mine = ws().assign(folders || [], list || []).byId[id] ?? null;
+    if ((folders || []).some((f) => f.id !== mine?.id && same(ws().label(f), clean))) return { why: `“${clean}” is another space's Pinned folder` };
+    return { name: clean };
+  };
+  // The space's bookmark folder title for its new name, keeping an "Arc - " prefix (upstream #126).
+  const folderTitle = (title, name) => (String(title || "").startsWith("Arc - ") ? `Arc - ${name}` : name);
+
   // ---- Vivaldi's manager, routes and icons (kept once found, looked for at most every 5 s) ----
   // Vivaldi's webpack require, taken out of its chunk array again at once (07-workspaces.js requireOf explains why; this file
   // has its own copy, as 15-dia.js does, so it can be loaded on its own).
@@ -295,8 +327,38 @@
     } finally { restoring.delete(id); end?.(); }
   };
 
+  // ---- editing (the space tile's right-click menu, and +) ----
+  // Renames space `id`: its Pinned folder FIRST, so its pins stay with it (upstream #126), then the space. While that
+  // runs, no window makes the space an empty folder for a name that does not match yet (10-sidebar.js applySpace asks
+  // renaming()). folder: its bookmark folder or null.
+  const RENAME_MARK = "__vivarcSpaceRename";
+  const renaming = (id) => { const m = page()[RENAME_MARK]; return !!m && m.until > Date.now() && (id == null || m.id === id); };
+  const rename = async (id, name, folder) => {
+    const mgr = manager();
+    if (!mgr) throw new Error("Vivaldi's workspace manager was not found");
+    page()[RENAME_MARK] = { id, until: Date.now() + 5000 };
+    try {
+      if (folder) await chrome.bookmarks.update(folder.id, { title: folderTitle(folder.title, name) });
+      await mgr.setName(id, name);
+      await until(async () => (await spaceList())?.find((w) => w.id === id)?.name === name, 3000);
+    } finally { delete page()[RENAME_MARK]; }
+  };
+  const setOrder = async (ids) => { const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setOrder(ids); };
+  const setIcon = async (id, index) => { const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setIcon(id, index); };
+  const setEmoji = async (id, emoji) => { const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setEmoji(id, emoji || undefined); };
+  // A new space at once, named and with Vivaldi's default icon, not shown (the empty space would open the command bar
+  // over its rename). -> its id.
+  const create = async (name) => {
+    const mgr = manager();
+    if (!mgr) throw new Error("Vivaldi's workspace manager was not found");
+    const id = await mgr.addWorkspace(name, defaultIcon(), undefined, null, true);
+    if (!(await until(async () => (await spaceList())?.some((w) => w.id === id), 3000))) throw new Error("Vivaldi did not list the new space");
+    return id;
+  };
+
   window.__vm.spaceEdit = {
     DELETED_KEY, KEEP_MS, KEEP_MAX, deletedEntry, keepDeleted, held, sameDeleted, matchSessions, orderAfter, restorePlan, inOrder, deletedNote,
-    findManager, findRoutes, findIcons, manager, icons, list, remember, noteClosed, undelete, forget,
+    moved, newSpaceName, renameCheck, folderTitle, findManager, findRoutes, findIcons,
+    manager, icons, list, remember, noteClosed, undelete, forget, rename, renaming, setOrder, setIcon, setEmoji, create,
   };
 })();
