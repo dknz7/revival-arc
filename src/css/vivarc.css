@@ -862,7 +862,8 @@
   background-attachment: scroll, scroll, scroll, fixed !important;
 }
 @media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
-  #browser.vm-on.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container { background-image: none !important; }
+  #browser.vm-on.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container,
+  #browser.vm-on.vm-glass.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container { background-image: none !important; }
 }
 
 /* Liquid glass (setting "glass"), after Apple's Human Interface Guidelines, Materials: glass is for the layer of controls

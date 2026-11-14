@@ -933,10 +933,13 @@
   // Move to New Window is the tear-off (the tab leaves its space for the new window's default one, with the Undo toast),
   // and Move to Window the cross-window drop (the tab joins the space that window shows, activated there), so the space
   // rules hold either way: upstream's bare chrome.tabs.move would leave the tab parked there (C1).
+  // Windows of this profile side only: a private window does not take a normal window's tab, nor the other way round.
   const otherWindows = async () => {
     const here = myWindow();
+    const privateHere = !!chrome.extension?.inIncognitoContext;
     try {
-      return (await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] })).filter((w) => w.type === "normal" && w.id !== here);
+      return (await chrome.windows.getAll({ populate: true, windowTypes: ["normal"] }))
+        .filter((w) => w.type === "normal" && w.id !== here && !!w.incognito === privateHere);
     } catch (_) { return []; }
   };
   const cut = (text, max = 40) => (text.length > max ? `${text.slice(0, max - 1).trimEnd()}…` : text);
@@ -990,7 +993,12 @@
   };
   const pickedTabs = () => state.tabs.filter((t) => picked.includes(t.id)).sort((a, b) => a.index - b.index);
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") clearPicked(); });
-  window.__vm?.onShortcut((key) => { if (key === "esc") clearPicked(); });
+  // Every window hears Escape: only the one it was pressed in lets go (the event's window id, as Ctrl+S).
+  window.__vm?.onShortcut((key, _combo, pressedIn) => {
+    if (key !== "esc") return;
+    if (typeof pressedIn === "number" && typeof window.vivaldiWindowId === "number" && pressedIn !== window.vivaldiWindowId) return;
+    clearPicked();
+  });
   // A plain click anywhere in the sidebar lets go, except on a folder's head, which only opens or shuts the folder (so a
   // shut folder can be opened to pick more).
   document.addEventListener("click", (e) => {

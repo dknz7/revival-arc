@@ -3868,8 +3868,10 @@ const backButton = async (win) => { const ok = await clickOn(win, `[...document.
 const closedToOpener = (s) => [find(s, ctx.tabs.CHILD) ? "the opened tab is still open" : null, tabIs(s, "OPENER", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X"))];
 backCase("X.back-closes-key", true, { act: async () => { await altLeft(ctx.W); return "ok"; }, expect: (s) => closedToOpener(s) });
 backCase("X.back-closes-mouse", true, { act: () => mouseBack(bkUrl("child")), expect: (s) => closedToOpener(s) });
-backCase("X.back-closes-button", true, { act: () => backButton(ctx.W), expect: (s) => closedToOpener(s) });
+// the Back button sits in the sidebar's toolbar in the Arc layout and in the top row in Dia: both layouts
+backCase("X.back-closes-button", true, { gesture: true, act: () => backButton(ctx.W), expect: (s) => closedToOpener(s) });
 backCase("X.back-off-does-nothing-new", false, {
+  gesture: true, // the Back button is in a different place in each layout
   act: async () => { await altLeft(ctx.W); await mouseBack(bkUrl("child")); return backButton(ctx.W); },
   expect: (s, b) => [unchanged(b, s), tabIs(s, "CHILD", { win: ctx.W, active: true })],
 });

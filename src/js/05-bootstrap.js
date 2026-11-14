@@ -1,6 +1,7 @@
 // Sets up a Vivaldi profile that the installer has not configured (for example one created later): tabs on
 // the left, Cmd+T freed for the command bar, Cmd+S freed for Vivarc's own sidebar hide (12-sidebar-hide.js), Ctrl+Tab
-// freed for the tab switcher (25-tab-switcher.js), toolbar tidy-up. All of it applies live.
+// freed for the tab switcher (25-tab-switcher.js), toolbar tidy-up. All of it applies live, apart from the keys, which
+// Vivaldi reads at launch (measured on 8.2; the sandbox's 8.3 switcher worked after a restart).
 (() => {
   // Vivaldi's actions table with `key` taken off every command that holds it: { table: a new table, freed: the commands
   // that lost it, in table order }. Nothing else changes, and running it again frees nothing. Keys match however written.

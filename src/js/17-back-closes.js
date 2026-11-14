@@ -61,12 +61,14 @@
 
   // `how`: which Back it was (for the log and the tests); history: canGoBack read at the press; check(tab): a last look
   // (the keys ask the page whether its cursor is in a text field).
-  const tryClose = async (how, history, check) => {
+  // `only`: the tab Back was pressed in, when the press names one (the mouse's message): nothing else closes.
+  const tryClose = async (how, history, check, only = null) => {
     Object.assign(last, { at: Date.now(), how, closed: null, why: null });
     if (!on()) { last.why = "off"; return; }
     try {
       const windowId = myWindowId ?? (await chrome.windows.getCurrent()).id;
       const [tab] = await chrome.tabs.query({ active: true, windowId });
+      if (only != null && tab?.id !== only) { last.why = "not the tab on screen"; return; }
       if (!tab || closing.has(tab.id)) { last.why = "no tab"; return; }
       const openerId = openers.get(tab.id);
       const opener = openerId != null ? await chrome.tabs.get(openerId).catch(() => null) : null;
@@ -88,11 +90,12 @@
       console.warn("[vivarc] back closes:", error);
     }
   };
-  // Every remembered tab's history is read before the first await, for the reason given at canGoBack.
-  const onBack = (how, check) => {
+  // Every remembered tab's history is read before the first await, for the reason given at canGoBack (a caller that has
+  // to wait before it knows whether to act takes the reading first and hands it over).
+  const readHistory = () => new Map([...openers.keys()].map((id) => [id, canGoBack(id)]));
+  const onBack = (how, check, history = readHistory(), only = null) => {
     if (!on()) { Object.assign(last, { at: Date.now(), how, closed: null, why: "off" }); return; }
-    const history = new Map([...openers.keys()].map((id) => [id, canGoBack(id)]));
-    tryClose(how, history, check);
+    tryClose(how, history, check, only);
   };
 
   // The page's own answer to "is the cursor in a text field" (a key that is Back for Vivaldi also moves the caret there).
@@ -126,7 +129,8 @@
     return typeof pressedIn === "number" && typeof own === "number" ? pressedIn === own : !!focused;
   };
   window.__vm.onShortcut((key, _combo, pressedIn) => {
-    if (!keys.includes(key)) return;
+    if (!keys.includes(key) || !on()) return;
+    const history = readHistory(); // now, in the press's own turn, even when the window check below has to wait
     const act = (focused) => {
       if (!here(pressedIn, focused)) return;
       if (uiEditing()) return;
@@ -134,7 +138,7 @@
       onBack("key", async (tab) => {
         const editing = await pageEditing(tab);
         return editing === false || (editing === null && !caret);
-      });
+      }, history);
     };
     if (typeof pressedIn === "number" && typeof window.vivaldiWindowId === "number") act(false);
     else chrome.windows.getCurrent().then((win) => act(win.focused), () => {});
@@ -162,7 +166,7 @@
     if (window.__vivarcBackMouse) return;
     window.__vivarcBackMouse = true;
     addEventListener("mouseup", (e) => {
-      if (e.button === 3 && window.navigation && navigation.canGoBack === false) chrome.runtime.sendMessage({ vivarcBack: "mouse" });
+      if (e.isTrusted && e.button === 3 && window.navigation && navigation.canGoBack === false) chrome.runtime.sendMessage({ vivarcBack: "mouse" });
     }, true);
   })();`;
   const listen = (tabId) => {
@@ -177,7 +181,7 @@
   chrome.runtime.onMessage.addListener((message, sender) => {
     if (message?.vivarcBack !== "mouse" || !sender?.tab || sender.frameId) return;
     if (myWindowId == null || sender.tab.windowId !== myWindowId) return;
-    onBack("mouse");
+    onBack("mouse", undefined, readHistory(), sender.tab.id);
   });
 
   window.__vm.back.onBack = onBack;
