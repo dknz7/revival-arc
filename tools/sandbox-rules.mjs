@@ -16,6 +16,7 @@
 // a state the repairs would fix at once (a split), it raises the shared busy mark tile gestures use, so repairs wait.
 import http from "node:http";
 import { mkdirSync, writeFileSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
 import { Harness, Cdp, targets, sleep, tabUrl, BG_REQUIRE } from "./sandbox-lib.mjs";
 
 const J = JSON.stringify;
@@ -80,6 +81,7 @@ async function start() {
 
 // One window (H) on its default space with one default tab, no spaces, no test bookmarks.
 async function reset() {
+  if (ctx.stopRec) { await ctx.stopRec().catch(() => {}); ctx.stopRec = null; } // a record watch a failed case left running
   await busy();
   await h.refresh();
   const H = ctx.H;
@@ -526,8 +528,14 @@ const menuCase = (id, other, row, target, expect) => def(id, { setup: menuSetup(
 menuCase("M.inactive", null, "X2", "Y", (s, b, r) => [r.error ?? null, tabIs(s, "X2", { win: ctx.W, space: sp("Y") }), recIs(s, ctx.W, sp("X")), tabIs(s, "X1", { active: true })]);
 menuCase("M.active-stays", null, "X1", "Y", (s, b, r) => [r.error ?? null, tabIs(s, "X1", { win: ctx.W, space: sp("Y"), active: false }), recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X"))]);
 menuCase("M.shown-elsewhere", "shown", "X2", "Z", (s, b, r) => [r.error ?? null, tabIs(s, "X2", { win: ctx.O, space: sp("Z") }), recIs(s, ctx.O, sp("Z")), recIs(s, ctx.W, sp("X")), tabIs(s, "X1", { active: true })]);
-menuCase("M.parked-elsewhere-refused", "parked", "X2", "Z", (s, b, r) => [r.error ?? null, unchanged(b, s),
-  /another window/.test(r.toast || "") ? null : `toast ${J(r.toast)}, want "That space is in another window. Show it there first, then move the tab."`]);
+// Task 9a (8y bug 2): into a space PARKED in another window. On 8.3 Vivaldi's move (setSpace with that window) takes the tab
+// there and the space stays parked: O keeps showing its default space and its own tab. On 8.2 (asked with the holding window
+// the tab lands in that window's shown space) the move is still refused, nothing moves, and the toast says why.
+def("MTS.parked-other-window", { setup: menuSetup("parked"), ready: () => waitTile(ctx.W, "X"),
+  act: async () => { ctx.byTab = await h.ev(`window.__vm.native.movesByTab()`, ctx.W); return tabMenu(ctx.W, "X2", "Move to Z"); },
+  expect: (s, b, r) => ctx.byTab ? [r.error ?? null, tabIs(s, "X2", { win: ctx.O, space: sp("Z"), active: false }), recIs(s, ctx.O, 0), activeOf(s, ctx.O)?.id === activeOf(b, ctx.O)?.id ? null : "O's tab on screen changed",
+    recIs(s, ctx.W, sp("X")), tabIs(s, "X1", { win: ctx.W, active: true }), /Moved to Z/.test(r.toast || "") ? null : `toast ${J(r.toast)}, want one saying it moved to Z in another window`]
+    : [r.error ?? null, unchanged(b, s), /parked in another window/.test(r.toast || "") ? null : `toast ${J(r.toast)}, want the 8.2 refusal`] });
 
 // The Dia layout's sidebar button (Task 8c): between Vivaldi's menu button and Back, hides and shows the sidebar.
 const ROW = `document.querySelector("#main > .mainbar .toolbar-mainbar")`;
@@ -3562,6 +3570,386 @@ ntCase("N.start-page-navigate-away-clears", {
     r.barOverRemarked ? "a bar opened over the re-marked start page" : null, r.cleared2 === "yes" ? null : "the second navigation away did not clear the mark", r.laterBar ? null : "a later new tab did not get the bar"],
 });
 
+// ---------- Task 9a: deleted spaces, the orphan heal, Move to Space across windows, Peek on 8.3, Copy Link ----------
+// 8y: Vivaldi 8.3 restores a closed tab of a deleted space with the dead workspaceId (its own bug). Vivarc must never show
+// a dead space (no window's record on a deleted id, ever), must bring a picked dead tab into the space on screen in the
+// window clicked in (Byron's ruling), and its repairs heal what is left. Restored tabs get new ids, so they are found by
+// their label (the title of their data: page).
+const tabsOf = (s) => normal(s).flatMap((w) => w.tabs.map((t) => ({ ...t, win: w.id, space: t.ws ?? 0 })));
+const knownIn = (s) => new Set(s.spaces.map(([id]) => id));
+const deadIn = (s) => { const known = knownIn(s); return tabsOf(s).filter((t) => t.ws && !known.has(t.ws)); };
+const noDead = (s) => { const d = deadIn(s); return d.length ? `tabs left on a deleted space: ${d.map((t) => `${labelOf(t)}@${roleOf(t.win)}`).join(",")}` : null; };
+const labelIs = (s, label, { win, space, active } = {}) => {
+  const all = tabsOf(s).filter((t) => labelOf(t) === label);
+  if (!all.length) return `${label} is not open`;
+  if (all.length > 1) return `${all.length} tabs ${label}`;
+  const t = all[0], bad = [];
+  if (win !== undefined && t.win !== win) bad.push(`in ${roleOf(t.win)} not ${roleOf(win)}`);
+  if (space !== undefined && t.space !== (space || 0)) bad.push(`in ${spaceName(t.space)} not ${spaceName(space)}`);
+  if (active !== undefined && t.active !== active) bad.push(active ? "not active" : "active");
+  return bad.length ? `${label} ${bad.join(", ")}` : null;
+};
+// Every 100 ms until stopped: any window Vivaldi's record shows on a space that is not in its list (a dead space on screen).
+const DEAD_REC = String.raw`(() => { const s = window.__sbx; const known = new Set((s.ws.getWorkspaces?.() || []).map((w) => w.id));
+  return [...s.ws.getActiveWorkspaces()].filter(([sp]) => sp && !known.has(sp)).map(([sp, w]) => [w, sp]); })()`;
+const watchRecord = () => {
+  const seen = new Set(); let stop = false;
+  const loop = (async () => { while (!stop) { const r = await h.ev(DEAD_REC, ctx.H).catch(() => []); for (const [w, sp] of r || []) seen.add(`${roleOf(w)} recorded on the deleted space ${spaceName(sp)}`); await sleep(100); } })();
+  ctx.stopRec = async () => { stop = true; await loop; return [...seen]; };
+};
+const recordStayedLive = async () => { if (!ctx.stopRec) return "the record was not watched"; const seen = await ctx.stopRec(); ctx.stopRec = null; return seen.length ? seen.join("; ") : null; };
+// Vivarc's own delete, as a user does it: right-click the tile, then the confirmation's row.
+async function deleteSpace(win, name) {
+  if (!(await waitTile(win, name))) return "no tile";
+  const first = await h.ev(`(async () => { const p = ${pillOf(name)}; const b = p.getBoundingClientRect();
+    p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 4, clientY: b.top + 4 }));
+    for (let i = 0; i < 40; i++) { const m = document.querySelector(".vm-menu .vm-menu-item"); if (m) { const t = m.textContent; m.click(); return t; } await new Promise((r) => setTimeout(r, 100)); }
+    return null; })()`, win);
+  if (!first?.startsWith("Delete")) return `no delete row (${first})`;
+  await waitFor(async () => !(await h.snap(ctx.H)).spaces.some(([id]) => id === sp(name)), 8000);
+  return "ok";
+}
+const titled = (labels) => Promise.all(labels.map((l) => waitFor(() => h.ev(`chrome.tabs.get(${ctx.tabs[l]}).then((t) => t.title === ${J(l)} && t.status === "complete")`, ctx.H), 8000)));
+// Vivaldi's own Reopen Closed Tab (no Vivarc code): the newest closed tab comes back, with its old workspaceId.
+const rawRestore = (n = 1) => h.ev(`(async () => { for (let i = 0; i < ${n}; i++) await chrome.sessions.restore(); return 1; })()`, ctx.H);
+// W: X1 (X) and DY1..DYn (Y), W shows Y with DY1 on screen; O (unless oShows is false): Z1, Z2, O shows Z. Then Y is
+// deleted from W's tile (Vivaldi switches W to default and closes DY1..DYn, which go to Recently Closed). The busy mark
+// stands throughout, so no repair runs before the act.
+const SET_DEL = async ({ oShows = true, n = 4, x = true } = {}) => {
+  await mkWin("W", { width: 900 });
+  if (x) await tab(ctx.W, "X1", sp("X"));
+  const ys = Array.from({ length: n }, (_, i) => `DY${i + 1}`);
+  for (const l of ys) await tab(ctx.W, l, sp("Y"), { active: l === "DY1" });
+  await show(ctx.W, sp("Y")); await activate(ctx.tabs.DY1);
+  if (oShows) { await mkWin("O", { width: 900 }); await tab(ctx.O, "Z1", sp("Z"), { active: true }); await tab(ctx.O, "Z2", sp("Z")); await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1); }
+  await titled(ys);
+  await focus(ctx.W); await busy();
+  const r = await deleteSpace(ctx.W, "Y");
+  if (r !== "ok") throw new Error(`setup: delete Y: ${r}`);
+  await sleep(1200); await busy();
+};
+// One Recently Closed row, picked from a window's New Tab dropdown (the user's way back to a tab of a deleted space).
+def("DEL.restore-one", {
+  gesture: true, setup: () => SET_DEL(),
+  act: () => { watchRecord(); return pickFrom(ctx.W, "Recently Closed", "DY1"); },
+  expect: async (s) => [await recordStayedLive(), labelIs(s, "DY1", { win: ctx.W, space: 0, active: true }), recIs(s, ctx.W, 0), noDead(s), recIs(s, ctx.O, sp("Z"))],
+});
+// Byron's ruling: a restored tab comes to the window you clicked in, into the space it shows (Vivaldi puts it back in its
+// old window, W).
+def("DEL.restore-from-other-window", {
+  gesture: true, setup: async () => { await SET_DEL(); await focus(ctx.O); },
+  act: () => { watchRecord(); return pickFrom(ctx.O, "Recently Closed", "DY1"); },
+  expect: async (s) => [await recordStayedLive(), labelIs(s, "DY1", { win: ctx.O, space: sp("Z"), active: true }), recIs(s, ctx.O, sp("Z")), recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0), noDead(s)],
+});
+// Two picked from the dropdown, two with Vivaldi's own Reopen Closed Tab (which no Vivarc pick sees): none stays dead.
+def("DEL.restore-all", {
+  gesture: true, setup: () => SET_DEL(),
+  act: async () => {
+    watchRecord();
+    for (const l of ["DY1", "DY2"]) { const r = await pickFrom(ctx.W, "Recently Closed", l); if (r !== "ok") return `${l}: ${r}`; }
+    await h.ev(`(async () => { for (let i = 0; i < 2; i++) await chrome.sessions.restore(); return 1; })()`, ctx.W);
+    return "ok";
+  },
+  expect: async (s) => [await recordStayedLive(), ...["DY1", "DY2", "DY3", "DY4"].map((l) => labelIs(s, l, { win: ctx.W, space: 0 })), recIs(s, ctx.W, 0), noDead(s)],
+});
+// Dead tabs beside W's last default tab, which closes: Chromium puts a dead tab on screen, and repair 2 must not switch W
+// into its space (8y 3b). The repairs are held until the act is done.
+def("DEL.no-default-tab", {
+  busyThroughAct: true,
+  setup: async () => { await SET_DEL({ oShows: false, n: 2, x: false }); await rawRestore(2); await sleep(800); await busy(); },
+  act: async () => {
+    watchRecord();
+    const s = await h.snap(ctx.H);
+    const own = s.wins.find((w) => w.id === ctx.W).tabs.filter((t) => !t.ws).map((t) => t.id);
+    if (!own.length) return "W has no default tab to close";
+    await h.ev(`chrome.tabs.remove(${J(own)}).then(() => 1)`, ctx.H);
+    return "ok";
+  },
+  expect: async (s) => [await recordStayedLive(), labelIs(s, "DY1", { win: ctx.W, space: recOf(s, ctx.W) }), labelIs(s, "DY2", { win: ctx.W, space: recOf(s, ctx.W) }), noDead(s)],
+});
+// The command bar over a new tab in W (on X), with a dead tab of a real site in W: typing the start of its host must not
+// put that tab's "Switch to Tab" first nor autocomplete into it, and Enter keeps W on X (8y 3c: the window flashed to the
+// dead space and fell back to default, and the new tab was gone).
+def("DEL.bar-switch-to-dead", {
+  busyThroughAct: true,
+  setup: async () => {
+    await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"), { active: true });
+    ctx.deadUrl = `${origin}/deadsite-${Date.now()}`;
+    const id = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(ctx.deadUrl)}, active: true }).then((t) => t.id)`, ctx.H);
+    ctx.tabs.DEADSITE = id; await putInSpace([id], sp("Y"));
+    await show(ctx.W, sp("Y")); await activate(id);
+    await waitFor(() => h.ev(`chrome.tabs.get(${id}).then((t) => t.status === "complete" && !!t.title)`, ctx.H), 8000);
+    await busy();
+    if ((await deleteSpace(ctx.W, "Y")) !== "ok") throw new Error("setup: delete Y");
+    await rawRestore(1); await sleep(800);
+    await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); await busy();
+    const back = tabsOf(await h.snap(ctx.H)).find((t) => t.url.startsWith(ctx.deadUrl));
+    if (!back || !back.ws || back.ws !== sp("Y")) throw new Error(`setup: the restored tab is not on the deleted space (${J(back)})`);
+    ctx.tabs.DEADSITE = back.id;
+  },
+  act: async () => {
+    watchRecord();
+    // the bar as + New Tab opens it (Ctrl+T's blank tab is held back from it while the window's last pick is in another space)
+    await h.ev(`(window.dispatchEvent(new CustomEvent("vm-open-command-bar")), 1)`, ctx.W);
+    if (!(await waitFor(() => hasEl(ctx.W, "#vm-cmd input"), 4000))) return { error: "the bar did not open" };
+    await h.ev(`document.querySelector("#vm-cmd input").focus(), 1`, ctx.W);
+    const c = h.cdp(ctx.W);
+    for (const ch of "127.0.0") { await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: ch, text: ch }); await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch }); await sleep(120); }
+    await sleep(900);
+    const seen = await h.ev(`({ value: document.querySelector("#vm-cmd input")?.value, rows: [...document.querySelectorAll("#vm-cmd .vm-cmd-row")].map((r) => r.textContent) })`, ctx.W);
+    for (const type of ["keyDown", "keyUp"]) await c.send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) });
+    await sleep(2500);
+    return { ...seen, done: "ok" };
+  },
+  expect: async (s, b, r) => [r.error ?? null, await recordStayedLive(),
+    /deadsite/i.test(r.rows?.[0] || "") ? `the first row is the dead tab's: ${J(r.rows?.[0])}` : null,
+    r.value === "127.0.0" ? null : `the bar autocompleted to ${J(r.value)}`,
+    recIs(s, ctx.W, sp("X")), showsSpace(s, ctx.W, sp("X")), labelIs(s, "X1", { win: ctx.W, space: sp("X") }), noDead(s)],
+});
+// Deleting, from O's tile, a space shown in W: W is switched off it first, so W's record never names the deleted id
+// (8y: about 0.5 s on it, when any new tab would have been filed under the dead id).
+def("DEL.shown-elsewhere", {
+  gesture: true,
+  setup: async () => {
+    await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "X2", sp("X")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
+    await mkWin("O", { width: 900 }); await tab(ctx.O, "Z1", sp("Z"), { active: true }); await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1); await focus(ctx.O);
+  },
+  ready: () => waitTile(ctx.O, "X"),
+  act: async () => { watchRecord(); return deleteSpace(ctx.O, "X"); },
+  expect: async (s) => [await recordStayedLive(), recIs(s, ctx.W, 0), showsSpace(s, ctx.W, 0), recIs(s, ctx.O, sp("Z")), inSpace(s, sp("X")).length ? "X's tabs are still open" : null, noDead(s), focusIs(s, ctx.O)],
+});
+// The orphan heal: dead tabs of two deleted spaces in two windows (put back by Vivaldi's own Reopen Closed Tab, while the
+// repairs were held), then the repairs run. Each moves to its window's default space, in place, and is logged; a live
+// space's tab is untouched.
+const LOGS = String.raw`(() => { if (!window.__w9a) { window.__w9a = []; for (const k of ["log", "warn"]) { const o = console[k]; console[k] = (...a) => { if (String(a[0]).startsWith("[vivarc]")) window.__w9a.push(a.map(String).join(" ")); return o.apply(console, a); }; } } window.__w9a.length = 0; return 1; })()`;
+const healLines = () => h.ev(`(window.__w9a || []).filter((l) => /deleted space/.test(l))`, ctx.H);
+const SET_ORPHANS = async ({ twoWindows = true } = {}) => {
+  await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"));
+  for (const l of ["DY1", "DY2", "DY3"]) await tab(ctx.W, l, sp("Y"), { active: l === "DY1" });
+  await show(ctx.W, sp("Y")); await activate(ctx.tabs.DY1);
+  if (twoWindows) { await mkWin("O", { width: 900 }); await tab(ctx.O, "DZ1", sp("Z")); await tab(ctx.O, "DZ2", sp("Z")); }
+  await titled(["DY1", "DY2", "DY3", ...(twoWindows ? ["DZ1", "DZ2"] : [])]);
+  await busy();
+  if (twoWindows) await h.ev(`window.__sbx.mgr.removeWorkspace(${ctx.O}, ${sp("Z")}).then(() => 1)`, ctx.H);
+  await h.ev(`window.__sbx.mgr.removeWorkspace(${ctx.W}, ${sp("Y")}).then(() => 1)`, ctx.H);
+  await sleep(1200); await busy();
+  await rawRestore(twoWindows ? 5 : 3); await sleep(1000);
+  const dead = deadIn(await h.snap(ctx.H)).length;
+  if (dead !== (twoWindows ? 5 : 3)) throw new Error(`setup: ${dead} dead tabs, want ${twoWindows ? 5 : 3}`);
+  await focus(ctx.W); await busy();
+};
+def("R.heal-orphans", {
+  busyThroughAct: true, setup: () => SET_ORPHANS(),
+  act: async () => { await h.ev(LOGS, ctx.H); watchRecord(); return "ok"; },
+  expect: async (s) => {
+    const lines = await healLines();
+    return [await recordStayedLive(), noDead(s), ...["DY1", "DY2", "DY3"].map((l) => labelIs(s, l, { win: ctx.W, space: 0 })), ...["DZ1", "DZ2"].map((l) => labelIs(s, l, { win: ctx.O, space: 0 })),
+      tabIs(s, "X1", { win: ctx.W, space: sp("X") }), lines.length === 5 ? null : `${lines.length} heal lines logged, want 5: ${J(lines)}`];
+  },
+});
+// The heal's guards (the leader's list reads replaced through spaceRepair.test.lists): with a list that is not loaded yet
+// or cannot be trusted, nothing is healed and nothing else moves; with the real reads back, the tabs heal.
+def("R.heal-guard-unloaded", {
+  busyThroughAct: true, setup: () => SET_ORPHANS({ twoWindows: false }),
+  act: async () => {
+    await h.ev(LOGS, ctx.H);
+    const known = (await h.snap(ctx.H)).spaces.map(([id]) => id);
+    const variants = {
+      "the workspace list cannot be read": `async () => ({ pref: null, store: ${J(known)} })`,
+      "Vivaldi's store has not loaded the list yet": `async () => ({ pref: ${J(known)}, store: [] })`,
+      "the store and the pref disagree": `async () => ({ pref: ${J(known)}, store: ${J(known.slice(1))} })`,
+      "the list changes between the two reads": `(() => { let n = 0; return async () => { n++; const l = n % 2 ? ${J(known)} : ${J([...known, 4242])}; return { pref: l, store: l }; }; })()`,
+      "no space is listed": `async () => ({ pref: [], store: [] })`,
+      "Vivaldi's store is not found": `async () => ({ pref: ${J(known)}, store: null })`,
+    };
+    const out = {};
+    let first = true;
+    for (const [why, fn] of Object.entries(variants)) {
+      await h.ev(`(window.__vm.spaceRepair.test = { lists: ${fn} }, 1)`, ctx.H);
+      if (first) { await unbusy(); first = false; } else await h.ev(`(window.__vm.spaceRepair.schedule(), 1)`, ctx.H);
+      await sleep(3500);
+      out[why] = deadIn(await h.snap(ctx.H)).length;
+    }
+    await h.ev(`(delete window.__vm.spaceRepair.test, window.__vm.spaceRepair.schedule(), 1)`, ctx.H);
+    await sleep(3500);
+    out.healedAfter = deadIn(await h.snap(ctx.H)).length;
+    out.lines = await healLines();
+    return { done: "ok", ...out };
+  },
+  expect: (s, b, r) => [...Object.entries(r).filter(([k]) => !["done", "healedAfter", "lines"].includes(k)).map(([why, n]) => n === 3 ? null : `${why}: ${3 - n} tab(s) healed, want none`),
+    r.healedAfter === 0 ? null : `with the real reads, ${r.healedAfter} tabs still dead`, noDead(s), tabIs(s, "X1", { win: ctx.W, space: sp("X") }),
+    ...["DY1", "DY2", "DY3"].map((l) => labelIs(s, l, { win: ctx.W, space: 0 }))],
+});
+// A restart with dead tabs in the session (one of them on screen at shutdown): Vivaldi's start-up seeds W's record from
+// its active tab without checking it exists (8y). Graceful Browser.close, relaunch on the same profile: within 20 s no tab
+// or record names a deleted space, the dead tabs are in their window's default space, and a live space's tab kept its
+// space (the start-up guard: a list read while Vivaldi was still loading healed nothing it should not).
+const SBX = `${process.env.TEMP}\\vivarc-sandbox`;
+const sbxProcs = () => Number(execFileSync("powershell", ["-NoProfile", "-Command",
+  `@(Get-CimInstance Win32_Process -Filter "name='vivaldi.exe'" | Where-Object { $_.CommandLine -like '*vivarc-sandbox*' }).Count`], { encoding: "utf8" }).trim() || 0);
+const portUp = async () => { try { await fetch("http://127.0.0.1:9333/json/version"); return true; } catch (_) { return false; } };
+async function restartSandbox() {
+  const v = await (await fetch("http://127.0.0.1:9333/json/version")).json();
+  const c = await Cdp.open(v.webSocketDebuggerUrl);
+  await c.send("Browser.close", {}, 15000).catch(() => {});
+  c.close(); h.close();
+  for (let i = 0; i < 120 && ((await portUp()) || sbxProcs()); i++) await sleep(500);
+  if (sbxProcs()) throw new Error("the sandbox did not exit after Browser.close");
+  await sleep(1500);
+  spawn(`${SBX}\\app\\vivaldi.exe`, [`--user-data-dir=${SBX}\\profile`, "--remote-debugging-port=9333", "--no-first-run", "--no-default-browser-check"], { detached: true, stdio: "ignore" }).unref();
+  const t0 = Date.now();
+  if (!(await waitFor(portUp, 30000, 300))) throw new Error("the sandbox did not come back on 9333");
+  await waitFor(async () => (await h.refresh()).length >= 2 && (await h.ev(`!!window.__vm?.spaceRepair && !!window.__sbx`, Math.min(...h.byWin.keys())).catch(() => false)), 30000, 300);
+  ctx.H = Math.min(...h.byWin.keys()); h.driver = ctx.H; ctx.roles = { H: ctx.H };
+  return t0;
+}
+def("DEL.restart", {
+  busyThroughAct: true,
+  setup: async () => {
+    await SET_DEL({ oShows: false, n: 2 }); await rawRestore(2); await sleep(800);
+    const s = await h.snap(ctx.H);
+    const dy1 = tabsOf(s).find((t) => labelOf(t) === "DY1");
+    if (!dy1 || !dy1.ws) throw new Error("setup: DY1 is not on the deleted space");
+    await activate(dy1.id); await busy();
+    await sleep(5000); await busy(); // tabs made in the last second before an exit can be lost (Part 1)
+  },
+  act: async () => {
+    const t0 = await restartSandbox();
+    const s0 = await h.snap(ctx.H);
+    const w = tabsOf(s0).find((t) => labelOf(t) === "X1")?.win;
+    if (w != null) { ctx.W = w; ctx.roles.W = w; }
+    const healed = await waitFor(async () => !deadIn(await h.snap(ctx.H)).length && !(await h.ev(DEAD_REC, ctx.H)).length, 20000, 250);
+    return { done: "ok", healedMs: healed ? Date.now() - t0 : null, windows: s0.wins.length };
+  },
+  expect: (s, b, r) => [r.healedMs != null ? null : "dead tabs or a dead record still there 20 s after the restart", noDead(s),
+    labelIs(s, "DY1", { win: ctx.W, space: 0 }), labelIs(s, "DY2", { win: ctx.W, space: 0 }), labelIs(s, "X1", { win: ctx.W, space: sp("X") })],
+});
+// Move to Space into a space SHOWN in another window (the guard for MTS.parked-other-window): M.shown-elsewhere.
+ALIASES["MTS.shown-other-window"] = ["M.shown-elsewhere"];
+// B2: a tab folder in a named space on 8.3, with the calls the sidebar makes (createFolder, joinFolder, leaveFolder in
+// 10-sidebar.js): every tab keeps its space X. Not a bug on 8.3.4191 (8y); a guard for a Vivaldi that drops the space.
+def("F.folder-named-space", {
+  setup: async () => { await mkWin("W", { width: 900 }); for (const l of ["X1", "X2", "X3", "X4"]) await tab(ctx.W, l, sp("X"), { active: l === "X1" }); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); },
+  act: async () => {
+    const T = ctx.tabs;
+    return h.ev(`(async () => {
+      const byTab = await window.__vm.native.movesByTab();
+      const move = (args) => (async () => vivaldi.tabsPrivate.move({ ...args, debug: "sbx" }))();
+      const ext = async (id) => JSON.parse((await chrome.tabs.get(id)).vivExtData || "{}");
+      const made = await move({ tabIds: [${T.X2}, ${T.X3}], target: ${T.X2}, tweaks: byTab ? ["do-not-reparent", "create-new-group"] : ["do-not-reparent", "create-new-group", "target-is-tab"] });
+      if (!made?.group) return { error: "no folder: " + JSON.stringify(made) };
+      await new Promise((r) => setTimeout(r, 600));
+      const anchor = await ext(${T.X3});
+      await move({ tabIds: [${T.X4}], target: anchor.ext_id || ${T.X3}, windowId: ${ctx.W}, tweaks: byTab ? ["into", "do-not-reparent"] : ["target-is-tab", "into", "do-not-reparent"] });
+      await new Promise((r) => setTimeout(r, 600));
+      const joined = await ext(${T.X4});
+      const x1 = await chrome.tabs.get(${T.X1});
+      await move({ tabIds: [${T.X2}], target: byTab ? ${T.X1} : x1.index, windowId: ${ctx.W}, tweaks: ["ungroup"] });
+      await new Promise((r) => setTimeout(r, 600));
+      return { done: "ok", group: made.group, joined: joined.group ?? null, left: (await ext(${T.X2})).group ?? null, x3: (await ext(${T.X3})).group ?? null };
+    })()`, ctx.W);
+  },
+  expect: (s, b, r) => [r.error ?? null, ...["X1", "X2", "X3", "X4"].map((l) => tabIs(s, l, { win: ctx.W, space: sp("X") })),
+    r.joined === r.group ? null : `X4 did not join the folder (${J(r)})`, r.left ? `X2 is still in a folder (${J(r)})` : null, r.x3 === r.group ? null : `X3 left the folder (${J(r)})`],
+});
+// B1, Peek on 8.3 (cases declared `peek`: SKIP when Peek is not in this sandbox, see tools/sandbox.ps1 -WithPeek). A preview
+// is opened the way shift+click does (ArcPeekDebug.openPeek), then Peek's own buttons. While it previews, its tabs are in no
+// Vivarc list; "Open in New Tab" / "Open in Background" leave exactly one tab, in the space on screen, beside its source.
+const hasPeek = (win) => h.ev(`!!window.ArcPeekDebug`, win).catch(() => false);
+const peekOf = (url) => (s) => tabsOf(s).filter((t) => t.url.startsWith(url));
+const SET_PEEK = async (space) => {
+  await mkWin("W", { width: 1100 });
+  if (!(await waitFor(() => hasPeek(ctx.W), 6000))) { const e = new Error("Peek is not in this sandbox"); e.skip = "Peek is not in this sandbox (tools/sandbox.ps1 -WithPeek)"; throw e; }
+  await tab(ctx.W, "X1", sp("X")); await tab(ctx.W, "Y1", sp("Y"), { active: true }); await tab(ctx.W, "Y2", sp("Y"));
+  if (space) { await show(ctx.W, sp(space)); await activate(ctx.tabs[`${space}1`]); }
+  else { const d0 = (await h.snap(ctx.H)).wins.find((w) => w.id === ctx.W).tabs.find((t) => !t.ws); await activate(d0.id); }
+  await focus(ctx.W);
+  ctx.peekUrl = `${origin}/peek-${Date.now()}`;
+};
+const openPeek = async () => {
+  await h.ev(`(window.ArcPeekDebug.openPeek(${J(ctx.peekUrl)}), 1)`, ctx.W);
+  return !!(await waitFor(async () => peekOf(ctx.peekUrl)(await h.snap(ctx.H)).length >= 1 && (await hasEl(ctx.W, "[aria-label='Open in New Tab']")), 8000));
+};
+const peekButton = (label) => h.ev(`(() => { const b = document.querySelector(${J(`[aria-label='${label}']`)}); if (!b) return false; b.click(); return true; })()`, ctx.W);
+const sidebarTitles = (win) => h.ev(`[...document.querySelectorAll("#vm-panel .vm-tab")].map((r) => r.textContent.trim())`, win);
+const peekCase = (id, { button, space = "Y", active }) => def(id, {
+  peek: true, gesture: true, setup: () => SET_PEEK(space),
+  act: async () => {
+    if (!(await openPeek())) return { error: "the preview did not open" };
+    await sleep(1500);
+    const during = { rows: await sidebarTitles(ctx.W), tabs: peekOf(ctx.peekUrl)(await h.snap(ctx.H)).length };
+    if (!(await peekButton(button))) return { error: `no ${button} button` };
+    await sleep(3000);
+    return { done: "ok", during };
+  },
+  expect: (s, b, r) => {
+    const mine = peekOf(ctx.peekUrl)(s), src = find(s, ctx.tabs[`${space}1`]);
+    const t = mine[0];
+    return [r.error ?? null, r.during?.rows?.some((x) => /peek-/i.test(x)) ? `the preview's tabs were listed while previewing: ${J(r.during.rows)}` : null,
+      mine.length === 1 ? null : `${mine.length} tabs of the previewed page, want 1 (${mine.map((x) => `${roleOf(x.win)}/${spaceName(x.ws)}`).join(", ")})`,
+      t && t.win !== ctx.W ? `it is in ${roleOf(t.win)}` : null, t && t.space !== sp(space) ? `it is in ${spaceName(t.space)}, want ${space}` : null,
+      t && t.active !== active ? (active ? "it is not on screen" : "it took the screen") : null,
+      t && src && Math.abs(t.index - src.index) !== 1 ? `it is at ${t.index}, not beside its source (${src.index})` : null,
+      recIs(s, ctx.W, sp(space)), active ? null : tabIs(s, `${space}1`, { active: true })];
+  },
+});
+peekCase("PEEK.promote-new-tab", { button: "Open in New Tab", active: true });
+peekCase("PEEK.promote-background", { button: "Open in Background", active: false });
+// Previewing from the default space (where 8.3 leaves Peek's two tabs): no row in the sidebar or in Open Tabs while it is
+// open, and after Close no entry in Recently Closed.
+def("PEEK.preview-hidden", {
+  peek: true, gesture: true, setup: () => SET_PEEK(null),
+  act: async () => {
+    if (!(await openPeek())) return { error: "the preview did not open" };
+    await sleep(1500);
+    const rows = await sidebarTitles(ctx.W);
+    if (!(await openDropdown(ctx.W)) || !(await openFly(ctx.W, "Open Tabs"))) return { error: "no Open Tabs flyout" };
+    const open = await rowsOf(ctx.W, ".vm-menu-flyout > div");
+    const shut = () => h.ev(`(window.dispatchEvent(new Event("blur")), 1)`, ctx.W); // Escape would close the preview too
+    await shut(); await sleep(300);
+    if (!(await peekButton("Close"))) return { error: "no Close button" };
+    await sleep(2000);
+    if (!(await openDropdown(ctx.W)) || !(await openFly(ctx.W, "Recently Closed"))) return { error: "no Recently Closed flyout" };
+    const closed = await rowsOf(ctx.W, ".vm-menu-flyout > div");
+    await shut();
+    return { done: "ok", rows, open, closed };
+  },
+  expect: (s, b, r) => [r.error ?? null, r.rows?.some((x) => /peek-/i.test(x)) ? `sidebar rows ${J(r.rows)}` : null, r.open?.some((x) => /peek-/i.test(x)) ? `Open Tabs ${J(r.open)}` : null,
+    r.closed?.some((x) => /peek-/i.test(x)) ? `Recently Closed ${J(r.closed)}` : null, peekOf(ctx.peekUrl)(s).length ? "a tab of the preview is still open" : null],
+});
+// #153: Copy Link in a tab row's right-click menu while the page has focus (a real click into the page, then a real
+// right-click on the row and on the item). Read from the system clipboard; what was on it before is put back.
+const clip = { get: () => execFileSync("powershell", ["-NoProfile", "-Command", "Get-Clipboard -Raw"], { encoding: "utf8" }).replace(/\r?\n$/, ""),
+  set: (text) => execFileSync("powershell", ["-NoProfile", "-Command", "$input | Set-Clipboard"], { input: text ?? "", encoding: "utf8" }) };
+const rmouse = (win, type, x, y, button = "left") => h.cdp(win).send("Input.dispatchMouseEvent", { type, x, y, button, buttons: type === "mousePressed" ? (button === "right" ? 2 : 1) : 0, clickCount: type === "mouseMoved" ? 0 : 1 });
+def("CL.copy-link-page-focused", {
+  setup: async () => {
+    await mkWin("W", { width: 1100 });
+    ctx.copyUrl = `${origin}/copy-${Date.now()}`;
+    const id = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(ctx.copyUrl)}, active: true }).then((t) => t.id)`, ctx.H);
+    ctx.tabs.COPY = id; await putInSpace([id], sp("X")); await show(ctx.W, sp("X")); await activate(id);
+    await waitFor(() => h.ev(`chrome.tabs.get(${id}).then((t) => t.status === "complete")`, ctx.H), 8000); await focus(ctx.W);
+  },
+  act: async () => {
+    let saved = null;
+    try { saved = clip.get(); } catch (_) {}
+    try {
+      clip.set("vivarc-sandbox-before-copy");
+      const p = await h.ev(`(() => { const r = document.querySelector("#webview-container").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, ctx.W);
+      await rmouse(ctx.W, "mouseMoved", p[0], p[1]); await rmouse(ctx.W, "mousePressed", p[0], p[1]); await rmouse(ctx.W, "mouseReleased", p[0], p[1]); await sleep(500);
+      const focusBefore = await h.ev(`document.activeElement?.tagName || null`, ctx.W);
+      const row = await centre(ctx.W, `[...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.title === ${J(ctx.copyUrl)} || r.textContent.includes("copy-"))`);
+      if (!row) return { error: "no sidebar row for the page" };
+      await rmouse(ctx.W, "mouseMoved", row.x, row.y); await rmouse(ctx.W, "mousePressed", row.x, row.y, "right"); await rmouse(ctx.W, "mouseReleased", row.x, row.y, "right"); await sleep(400);
+      const item = await centre(ctx.W, `[...document.querySelectorAll(".vm-menu .vm-menu-item")].find((d) => d.textContent === "Copy Link")`);
+      if (!item) return { error: "no Copy Link item" };
+      await rmouse(ctx.W, "mouseMoved", item.x, item.y); await rmouse(ctx.W, "mousePressed", item.x, item.y); await rmouse(ctx.W, "mouseReleased", item.x, item.y); await sleep(800);
+      return { done: "ok", focusBefore, copied: clip.get() };
+    } finally { try { clip.set(saved ?? ""); } catch (_) {} }
+  },
+  expect: (s, b, r) => [r.error ?? null, r.copied === ctx.copyUrl ? null : `the clipboard holds ${J(r.copied)}, want ${J(ctx.copyUrl)} (focus was on ${r.focusBefore})`],
+});
+
 // ---------- running ----------
 async function setLayout(dia) {
   await h.refresh();
@@ -3610,7 +3998,7 @@ async function runCase(c, layout) {
   } catch (e) {
     // SKIP only for a case that declares it builds a split (split: true); any other case refused that way FAILs, so
     // leftover state or a regression cannot quietly drop it out of the count.
-    if (e.skip && c.split) Object.assign(out, { pass: null, skip: e.skip, bad: [`${e.message || e}`], ms: Date.now() - t0 });
+    if (e.skip && (c.split || c.peek)) Object.assign(out, { pass: null, skip: e.skip, bad: [`${e.message || e}`], ms: Date.now() - t0 });
     else if (e.skip) Object.assign(out, { pass: false, bad: [`error: ${e.message || e} (refused as a split, but this case does not declare one)`], ms: Date.now() - t0 });
     else Object.assign(out, { pass: false, bad: [`error: ${e.message || e}`], ms: Date.now() - t0 });
   }
@@ -3648,7 +4036,7 @@ for (const layout of layouts) {
   }
   results.push(...mine);
   const n = mine.filter((r) => r.pass).length, skipped = mine.filter((r) => r.pass === null).length;
-  console.log(`${layout}: ${n} pass, ${mine.length - n - skipped} fail${skipped ? `, ${skipped} skipped (${SPLIT_REFUSED})` : ""}`);
+  console.log(`${layout}: ${n} pass, ${mine.length - n - skipped} fail${skipped ? `, ${skipped} skipped by declaration (a split 8.3 refuses, or Peek not in this sandbox)` : ""}`);
 }
 await reset().catch(() => {});
 await setLayout(false).catch(() => {});
