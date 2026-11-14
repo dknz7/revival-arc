@@ -137,6 +137,50 @@ class PatchPreferences(unittest.TestCase):
         new, _ = vivarc.patch_preferences({}, [DEFAULTS])
         self.assertEqual(new["vivaldi"]["status_bar"]["display"], 2)
 
+    def test_a_second_apply_keeps_the_users_auto_hide_panel_and_status_bar_choices(self):
+        once, _ = vivarc.patch_preferences({}, [DEFAULTS])
+        choices = {"enabled": False, "panel": False, "tab_bar": True, "address_bar": True,
+                   "status_bar": True, "bookmarks_bar": True, "show_introduction": True}
+        once["vivaldi"]["auto_hide"] = choices.copy()
+        once["vivaldi"]["panels"]["position"] = 0
+        once["vivaldi"]["status_bar"]["display"] = 0
+
+        twice, _ = vivarc.patch_preferences(once, [DEFAULTS], reapply=True)
+
+        self.assertEqual(twice["vivaldi"]["auto_hide"], choices)
+        self.assertEqual(twice["vivaldi"]["panels"]["position"], 0)
+        self.assertEqual(twice["vivaldi"]["status_bar"]["display"], 0)
+        first, _ = vivarc.patch_preferences(once, [DEFAULTS], reapply=False)
+        self.assertEqual(first["vivaldi"]["auto_hide"]["enabled"], True)
+        self.assertEqual(first["vivaldi"]["auto_hide"]["tab_bar"], False)
+        self.assertEqual(first["vivaldi"]["panels"]["position"], 1)
+        self.assertEqual(first["vivaldi"]["status_bar"]["display"], 2)
+
+    def test_reapply_keeps_default_valued_preferences_absent(self):
+        for given in ({}, {"vivaldi": {"auto_hide": {}, "panels": {}, "status_bar": {}}}):
+            with self.subTest(prefs=given):
+                new, _ = vivarc.patch_preferences(given, [DEFAULTS], reapply=True)
+                self.assertEqual(new["vivaldi"].get("auto_hide", {}), {})
+                self.assertNotIn("position", new["vivaldi"].get("panels", {}))
+                self.assertNotIn("display", new["vivaldi"].get("status_bar", {}))
+
+    def test_a_fresh_profile_gets_all_auto_hide_panel_and_status_bar_defaults(self):
+        new, _ = vivarc.patch_preferences({}, [DEFAULTS])
+        self.assertEqual(new["vivaldi"]["auto_hide"], {
+            "enabled": True, "panel": True, "tab_bar": False, "address_bar": False,
+            "status_bar": False, "bookmarks_bar": False, "show_introduction": False})
+        self.assertEqual(new["vivaldi"]["panels"]["position"], 1)
+        self.assertEqual(new["vivaldi"]["status_bar"]["display"], 2)
+
+    def test_first_configuration_overwrites_existing_choices(self):
+        mine = {"vivaldi": {"auto_hide": {"enabled": False, "panel": False}, "panels": {"position": 0}}}
+        new, _ = vivarc.patch_preferences(mine, [DEFAULTS])
+        self.assertEqual(new["vivaldi"]["auto_hide"], {
+            "enabled": True, "panel": True, "tab_bar": False, "address_bar": False,
+            "status_bar": False, "bookmarks_bar": False, "show_introduction": False})
+        self.assertEqual(new["vivaldi"]["panels"]["position"], 1)
+        self.assertEqual(new["vivaldi"]["status_bar"]["display"], 2)
+
     def test_keeps_a_sidebar_width_the_user_already_chose(self):
         mine = {"vivaldi": {"tabs": {"bar": {"width": 500}}}}
         new, _ = vivarc.patch_preferences(mine, [DEFAULTS])

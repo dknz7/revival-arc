@@ -212,8 +212,8 @@ def swap_vpn_for_downloads(items):
     return out
 
 
-def patch_preferences(prefs, default_actions):
-    """Return (patched copy, snapshot of the original values of everything touched)."""
+def patch_preferences(prefs, default_actions, *, reapply=False):
+    """Return (patched copy, snapshot of touched keys in prefs); reapply skips initial UI defaults."""
     new = copy.deepcopy(prefs)
     snap = _snapshot(prefs)
     existing = _get(new, ("vivaldi", "actions"))
@@ -255,12 +255,15 @@ def patch_preferences(prefs, default_actions):
     after = _get(new, ("vivaldi", "toolbars", "tabbar_after"))
     after = swap_vpn_for_downloads([] if after is _MISSING else after)
     _set(new, ("vivaldi", "toolbars", "tabbar_after"), after if "AccountButton" in after else list(SIDEBAR_BOTTOM))
-    _set(new, ("vivaldi", "panels", "position"), 1)
-    _set(new, ("vivaldi", "auto_hide", "enabled"), True)
-    for key, value in (("panel", True), ("tab_bar", False), ("address_bar", False), ("status_bar", False),
-                       ("bookmarks_bar", False), ("show_introduction", False)):
-        _set(new, ("vivaldi", "auto_hide", key), value)
-    _set(new, ("vivaldi", "status_bar", "display"), 2)  # overlay: only appears on hover
+    # Vivaldi does not write prefs equal to their defaults (docs/HOW-IT-WORKS.md).
+    # On re-apply, absent keys may therefore be user resets; first setup applies the full layout.
+    if not reapply:
+        _set(new, ("vivaldi", "panels", "position"), 1)
+        _set(new, ("vivaldi", "auto_hide", "enabled"), True)
+        for key, value in (("panel", True), ("tab_bar", False), ("address_bar", False), ("status_bar", False),
+                           ("bookmarks_bar", False), ("show_introduction", False)):
+            _set(new, ("vivaldi", "auto_hide", key), value)
+        _set(new, ("vivaldi", "status_bar", "display"), 2)  # overlay: only appears on hover
     # Extensions hidden with "Hide Button" open in a drop-down from the puzzle piece instead of more icons in the row.
     _set(new, ("vivaldi", "address_bar", "extensions", "render_in_dropdown"), True)
     if _get(new, ("vivaldi", "tabs", "bar", "width")) is _MISSING:
@@ -288,9 +291,26 @@ def looks_configured(prefs):
     if actions is _MISSING or not actions:
         return False
     table = actions[0]
+    # Sparse overrides omit untouched commands, whose default still owns Ctrl/Cmd+T.
+    if "COMMAND_NEW_TAB" not in table:
+        return False
+    norm = lambda combo: "+".join(sorted(part.strip() for part in combo.lower().split("+")))
     copy_url = table.get("COMMAND_PAGE_COPY_URL", {}).get("shortcuts", [])
     new_tab = table.get("COMMAND_NEW_TAB", {}).get("shortcuts", [])
-    return COPY_URL_KEY in copy_url and FREED_KEY not in new_tab
+    return norm(COPY_URL_KEY) in map(norm, copy_url) and norm(FREED_KEY) not in map(norm, new_tab)
+
+
+def has_vivarc_sidebar(prefs):
+    """The installer writes numeric side positions; the runtime writes their enum names."""
+    position = _get(prefs, ("vivaldi", "tabs", "bar", "position"))
+    toolbar = _get(prefs, ("vivaldi", "toolbars", "tabbar_before"))
+    return position in (1, 2, "left", "right") and isinstance(toolbar, list) and "AddressField" in toolbar
+
+
+def is_configured_profile(directory, prefs, state):
+    sidebar, shortcuts = has_vivarc_sidebar(prefs), looks_configured(prefs)
+    # Saved profiles tolerate user edits to either marker; unknown profiles need both.
+    return (sidebar or shortcuts) if directory in state["profiles"] else (sidebar and shortcuts)
 
 
 def style_script(element_id, css):
@@ -712,9 +732,14 @@ def cmd_install(args):
         os.makedirs(os.path.join(backup, directory), exist_ok=True)
         shutil.copy2(prefs_path, os.path.join(backup, directory, "Preferences"))
         prefs = read_json(prefs_path)
-        new, snap = patch_preferences(prefs, actions)
-        state["profiles"][directory] = merge_snapshot(state["profiles"].get(directory, {}), snap)
+        reapply = is_configured_profile(directory, prefs, state)
+        new, snap = patch_preferences(prefs, actions, reapply=reapply)
+        # Only reset a saved snapshot when both setup markers are gone. Runtime-only profiles
+        # have no originals on disk: uninstall uses Vivaldi defaults, as it does without state.
+        previous = state["profiles"].get(directory, blank_snapshot()) if reapply else {}
+        state["profiles"][directory] = merge_snapshot(previous, snap)
         write_json(prefs_path, new)
+        save_state(state)
         say(f"  {name}: configured")
 
     state["version"] = VERSION
@@ -833,23 +858,7 @@ def cmd_uninstall(args):
     resources = resource_dir(args.app)
     ensure_vivaldi_closed()
     preflight(resources)
-    state = load_state()
-    for directory, snap in state["profiles"].items():
-        prefs_path = os.path.join(args.data_dir, directory, "Preferences")
-        if os.path.exists(prefs_path):
-            write_json(prefs_path, restore_preferences(read_json(prefs_path), snap))
-            say(f"  {directory}: restored")
-    ls_path = os.path.join(args.data_dir, "Local State")
-    if os.path.exists(ls_path):
-        blank = blank_snapshot()
-        for directory, _name in find_profiles(read_json(ls_path)):
-            prefs_path = os.path.join(args.data_dir, directory, "Preferences")
-            if directory in state["profiles"] or not os.path.exists(prefs_path):
-                continue
-            prefs = read_json(prefs_path)
-            if looks_configured(prefs):
-                write_json(prefs_path, restore_preferences(prefs, blank))  # set up by the JS later: defaults were the original
-                say(f"  {directory}: reset to Vivaldi defaults (configured by Vivarc at runtime)")
+    # Disable the runtime before restoring prefs so a partial uninstall cannot reconfigure them.
     html_path = os.path.join(resources, "window.html")
     try:
         if os.path.exists(html_path):
@@ -860,6 +869,27 @@ def cmd_uninstall(args):
             os.remove(bundle)
     except PermissionError as error:
         permission_hint(error)
+    state = load_state()
+    saved_profiles = dict(state["profiles"])
+    for directory, snap in saved_profiles.items():
+        prefs_path = os.path.join(args.data_dir, directory, "Preferences")
+        if os.path.exists(prefs_path):
+            write_json(prefs_path, restore_preferences(read_json(prefs_path), snap))
+            say(f"  {directory}: restored")
+        del state["profiles"][directory]
+        if os.path.exists(os.path.join(HOME_DIR, "state.json")):
+            save_state(state)
+    ls_path = os.path.join(args.data_dir, "Local State")
+    if os.path.exists(ls_path):
+        blank = blank_snapshot()
+        for directory, _name in find_profiles(read_json(ls_path)):
+            prefs_path = os.path.join(args.data_dir, directory, "Preferences")
+            if directory in saved_profiles or not os.path.exists(prefs_path):
+                continue
+            prefs = read_json(prefs_path)
+            if looks_configured(prefs):
+                write_json(prefs_path, restore_preferences(prefs, blank))  # set up by the JS later: defaults were the original
+                say(f"  {directory}: reset to Vivaldi defaults (configured by Vivarc at runtime)")
     remove_update_command(UPDATE_COMMAND)
     remove_update_command(LEGACY_UPDATE_COMMAND)
     if not IS_WINDOWS:
