@@ -106,7 +106,7 @@ async function reset() {
   if ((await h.ev(`vivaldi.prefs.get("vivaldi.tabs.visible").then((r) => r?.value ?? r)`, H)) === false) await h.ev(`vivaldi.prefs.set({ path: "vivaldi.tabs.visible", value: true }).then(() => 1)`, H);
   // Task 8n: no test clock, the daily toggle off, nothing cleaned, no daily run recorded (per profile, shared by the windows)
   await h.ev(`(async () => { const c = window.__vm.cleanup; if (c) c.test = null; if (window.__vm.settings.get("cleanupDaily")) window.__vm.settings.set("cleanupDaily", false);
-    await window.__vm.store.set("cleaned", []); await window.__vm.store.set("lastCleanup", 0); return 1; })()`, H).catch(() => {});
+    await window.__vm.store.set("cleaned", []); await window.__vm.store.set("lastCleanup", 0); await window.__vm.store.set("deletedSpaces", []); return 1; })()`, H).catch(() => {});
   ctx.roles = { H }; ctx.tabs = {}; ctx.spaces = {};
   for (const k of ["W", "O", "V", "N"]) delete ctx[k];
   await unbusy(true);
@@ -207,13 +207,25 @@ async function tabMenu(win, row, label) {
   return { menu, toast: toast || null };
 }
 
-// A space tile's right-click: the delete confirmation's first label, then Cancel.
+// A space tile's right-click menu (Task 9c: Rename, Change Icon, Move Left/Right, Delete Space…): its row `label` is
+// clicked. -> the menu's labels, or null when there is no such tile or row.
+const TILE_MENU = (name, label) => String.raw`(async () => { const p = ${pillOf(name)}; if (!p) return null; const b = p.getBoundingClientRect();
+    p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 4, clientY: b.top + 4 }));
+    for (let i = 0; i < 30; i++) {
+      const rows = [...document.querySelectorAll(".vm-menu .vm-menu-item")];
+      const row = rows.find((m) => m.textContent.trim() === ${J(label)});
+      if (row) { const labels = rows.map((m) => m.textContent.trim() + (m.classList.contains("disabled") ? " (disabled)" : "")); row.click(); return labels; }
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return null; })()`;
+const tileMenu = async (win, name, label) => ((await waitTile(win, name)) ? h.ev(TILE_MENU(name, label), win) : null);
+// The confirmation Delete Space… opens: its first row (the red one) once it is there.
+const CONFIRM_ROW = String.raw`(async () => { for (let i = 0; i < 30; i++) { const m = document.querySelector(".vm-menu .vm-menu-item.danger"); if (m && m.textContent.startsWith("Delete “")) return m; await new Promise((r) => setTimeout(r, 100)); } return null; })()`;
+// A space tile's right-click, Delete Space…: the delete confirmation's first label, then Cancel.
 async function deleteLabel(win, name) {
   if (!(await waitTile(win, name))) return { error: "no tile" };
-  const label = await h.ev(`(async () => { const p = ${pillOf(name)}; const b = p.getBoundingClientRect();
-    p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 4, clientY: b.top + 4 }));
-    for (let i = 0; i < 30; i++) { const m = document.querySelector(".vm-menu .vm-menu-item"); if (m) return m.textContent; await new Promise((r) => setTimeout(r, 100)); }
-    return null; })()`, win);
+  if (!(await tileMenu(win, name, "Delete Space…"))) return { error: "no Delete Space row" };
+  const label = await h.ev(`${CONFIRM_ROW}.then((m) => m?.textContent ?? null)`, win);
   await h.ev(`(() => { const c = [...document.querySelectorAll(".vm-menu-item")].find((d) => d.textContent === "Cancel"); if (c) c.click(); return 1; })()`, win);
   return { label };
 }
@@ -1510,7 +1522,7 @@ def("D.drag-across-same-window-unchanged", {
 const NT_MENU = ".vm-menu:not(.vm-menu-flyout)";
 const NT_ROW = `document.querySelector("#vm-panel .vm-newtab")`;
 const NT_CHEV = `document.querySelector("#vm-panel .vm-newtab-chev")`;
-const NT_LABELS = ["Search Tabs…", "Start Page", "Open Tabs", "Recently Closed", "Recently Closed Windows", "Recently Cleaned", "---", "Clean Up Tabs", "Clean Up Daily", "---", "Mute All Tabs", "Close All Tabs"];
+const NT_LABELS = ["Search Tabs…", "Start Page", "Open Tabs", "Recently Closed", "Recently Closed Windows", "Recently Deleted Spaces", "Recently Cleaned", "---", "Clean Up Tabs", "Clean Up Daily", "---", "Mute All Tabs", "Close All Tabs"];
 const mouse = (win, type, x, y) => h.cdp(win).send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1 });
 const centre = (win, expr) => h.ev(`(() => { const e = ${expr}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const b = e.getBoundingClientRect(); return b.width && b.height ? { x: b.x + b.width / 2, y: b.y + b.height / 2 } : null; })()`, win);
 const hoverOn = async (win, expr) => { const p = await waitFor(() => centre(win, expr), 6000); if (!p) return false; await mouse(win, "mouseMoved", p.x, p.y); return p; };
@@ -3601,10 +3613,10 @@ const recordStayedLive = async () => { if (!ctx.stopRec) return "the record was 
 // Vivarc's own delete, as a user does it: right-click the tile, then the confirmation's row.
 async function deleteSpace(win, name) {
   if (!(await waitTile(win, name))) return "no tile";
-  const first = await h.ev(`(async () => { const p = ${pillOf(name)}; const b = p.getBoundingClientRect();
-    p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 4, clientY: b.top + 4 }));
-    for (let i = 0; i < 40; i++) { const m = document.querySelector(".vm-menu .vm-menu-item"); if (m) { const t = m.textContent; m.click(); return t; } await new Promise((r) => setTimeout(r, 100)); }
-    return null; })()`, win);
+  if (!(await tileMenu(win, name, "Delete Space…"))) return "no Delete Space row";
+  // the confirmation ignores a click in its first 400 ms (a double-click on the row that opened it must not confirm)
+  await sleep(500);
+  const first = await h.ev(`${CONFIRM_ROW}.then((m) => { if (!m) return null; const t = m.textContent; m.click(); return t; })`, win);
   if (!first?.startsWith("Delete")) return `no delete row (${first})`;
   await waitFor(async () => !(await h.snap(ctx.H)).spaces.some(([id]) => id === sp(name)), 8000);
   return "ok";
@@ -3615,7 +3627,7 @@ const rawRestore = (n = 1) => h.ev(`(async () => { for (let i = 0; i < ${n}; i++
 // W: X1 (X) and DY1..DYn (Y), W shows Y with DY1 on screen; O (unless oShows is false): Z1, Z2, O shows Z. Then Y is
 // deleted from W's tile (Vivaldi switches W to default and closes DY1..DYn, which go to Recently Closed). The busy mark
 // stands throughout, so no repair runs before the act.
-const SET_DEL = async ({ oShows = true, n = 4, x = true } = {}) => {
+const SET_DEL = async ({ oShows = true, n = 4, x = true, forget = false } = {}) => {
   await mkWin("W", { width: 900 });
   if (x) await tab(ctx.W, "X1", sp("X"));
   const ys = Array.from({ length: n }, (_, i) => `DY${i + 1}`);
@@ -3627,6 +3639,7 @@ const SET_DEL = async ({ oShows = true, n = 4, x = true } = {}) => {
   const r = await deleteSpace(ctx.W, "Y");
   if (r !== "ok") throw new Error(`setup: delete Y: ${r}`);
   await sleep(1200); await busy();
+  if (forget) await forgetDeleted(); // Task 9c: as after the undelete entry expires, so the heal is what is tested
 };
 // One Recently Closed row, picked from a window's New Tab dropdown (the user's way back to a tab of a deleted space).
 def("DEL.restore-one", {
@@ -3643,7 +3656,7 @@ def("DEL.restore-from-other-window", {
 });
 // Two picked from the dropdown, two with Vivaldi's own Reopen Closed Tab (which no Vivarc pick sees): none stays dead.
 def("DEL.restore-all", {
-  gesture: true, setup: () => SET_DEL(),
+  gesture: true, setup: () => SET_DEL({ forget: true }),
   act: async () => {
     watchRecord();
     for (const l of ["DY1", "DY2"]) { const r = await pickFrom(ctx.W, "Recently Closed", l); if (r !== "ok") return `${l}: ${r}`; }
@@ -3656,7 +3669,7 @@ def("DEL.restore-all", {
 // into its space (8y 3b). The repairs are held until the act is done.
 def("DEL.no-default-tab", {
   busyThroughAct: true,
-  setup: async () => { await SET_DEL({ oShows: false, n: 2, x: false }); await rawRestore(2); await sleep(800); await busy(); },
+  setup: async () => { await SET_DEL({ oShows: false, n: 2, x: false, forget: true }); await rawRestore(2); await sleep(800); await busy(); },
   act: async () => {
     watchRecord();
     const s = await h.snap(ctx.H);
@@ -3681,6 +3694,7 @@ def("DEL.bar-switch-to-dead", {
     await waitFor(() => h.ev(`chrome.tabs.get(${id}).then((t) => t.status === "complete" && !!t.title)`, ctx.H), 8000);
     await busy();
     if ((await deleteSpace(ctx.W, "Y")) !== "ok") throw new Error("setup: delete Y");
+    await sleep(1200); await forgetDeleted(); // Task 9c: the heal is what is tested (see UD.held-then-heals)
     await rawRestore(1); await sleep(800);
     await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); await busy();
     const back = tabsOf(await h.snap(ctx.H)).find((t) => t.url.startsWith(ctx.deadUrl));
@@ -3808,7 +3822,7 @@ async function restartSandbox() {
 def("DEL.restart", {
   busyThroughAct: true,
   setup: async () => {
-    await SET_DEL({ oShows: false, n: 2 }); await rawRestore(2); await sleep(800);
+    await SET_DEL({ oShows: false, n: 2, forget: true }); await rawRestore(2); await sleep(800);
     const s = await h.snap(ctx.H);
     const dy1 = tabsOf(s).find((t) => labelOf(t) === "DY1");
     if (!dy1 || !dy1.ws) throw new Error("setup: DY1 is not on the deleted space");
@@ -3826,6 +3840,268 @@ def("DEL.restart", {
   expect: (s, b, r) => [r.healedMs != null ? null : "dead tabs or a dead record still there 20 s after the restart", noDead(s),
     labelIs(s, "DY1", { win: ctx.W, space: 0 }), labelIs(s, "DY2", { win: ctx.W, space: 0 }), labelIs(s, "X1", { win: ctx.W, space: sp("X") })],
 });
+// ---------- Task 9c: undelete a space, edit a space (upstream #126), and staying in an empty space ----------
+// Vivarc's delete now keeps the space under `deletedSpaces` (08-space-edit.js), and while it is there the heal leaves
+// its tabs alone, for undelete to bring them back with the space. The 9a cases above whose subject is the heal itself
+// (DEL.restore-all, DEL.no-default-tab, DEL.bar-switch-to-dead, DEL.restart) forget the entry first, which is the state
+// after it expires (or a space deleted outside Vivarc); UD.held-then-heals checks the hold and then the expiry.
+const DELETED = `window.__vm.store.get("deletedSpaces", [])`;
+const forgetDeleted = () => h.ev(`window.__vm.store.set("deletedSpaces", []).then(() => 1)`, ctx.H);
+const prefList = () => h.ev(`vivaldi.prefs.get("vivaldi.workspaces.list").then((r) => (r?.value ?? r ?? []).map((w) => ({ id: w.id, name: w.name, emoji: w.emoji ?? "", icon: w.icon ?? "", iconId: w.iconId ?? null })))`, ctx.H);
+const prefRules = () => h.ev(`vivaldi.prefs.get("vivaldi.workspaces.link_routes").then((r) => r?.value ?? r ?? [])`, ctx.H);
+// Vivaldi's own link-route manager and its 20 workspace icons, found as Vivarc finds them (08-space-edit.js).
+const VIV_FIND = (marker, test) => String.raw`(() => { const load = ${BG_REQUIRE("sbx9c")};
+  for (const [id, f] of Object.entries(load.m)) { if (!String(f).includes(${J(marker)})) continue; let mod; try { mod = load(id); } catch (_) { continue; }
+    for (const v of Object.values(mod || {})) if (${test}) return v; } return null; })()`;
+const addRule = (type, expression, space) => h.ev(`${VIV_FIND("addLinkRoutingRule(", "typeof v?.addLinkRoutingRule === 'function'")}.addLinkRoutingRule(${J(type)}, ${J(expression)}, ${space}).then(() => 1)`, ctx.H);
+const vivIcons = () => h.ev(`${VIV_FIND("getRandomIcon(){", "Array.isArray(v) && v.length > 1 && typeof v[0] === 'string'")}`, ctx.H);
+const themeOf = (space) => h.ev(`window.__vm.store.get("theme:space:${space}", null)`, ctx.H);
+const orderOf = (list) => list.map((w) => spaceName(w.id));
+// The tabs labelled `labels`, each open once in `win` and `space`, in that order in the window.
+const inOrderIn = (s, labels, win, space) => {
+  const bad = labels.map((l) => labelIs(s, l, { win, space })).filter(Boolean);
+  if (bad.length) return bad.join("; ");
+  const idx = labels.map((l) => tabsOf(s).find((t) => labelOf(t) === l).index);
+  return idx.every((v, i) => !i || v > idx[i - 1]) ? null : `out of order: ${labels.map((l, i) => `${l}@${idx[i]}`).join(" ")}`;
+};
+// W: X1 (X) and DY1..DY4 (Y), W shows Y with DY1 on screen; Y has an emoji, a link rule and a theme. Then Y is deleted
+// from W's tile, as a user does it. ctx.before keeps what Y was.
+const SET_UD = async ({ other = false } = {}) => {
+  await mkWin("W", { width: 900 });
+  await tab(ctx.W, "X1", sp("X"));
+  const ys = ["DY1", "DY2", "DY3", "DY4"];
+  if (other) { await mkWin("O", { width: 900 }); await tab(ctx.O, "Z1", sp("Z"), { active: true }); }
+  const holder = other ? ctx.O : ctx.W;
+  for (const l of ys) await tab(holder, l, sp("Y"), { active: l === "DY1" });
+  await show(holder, sp("Y")); await activate(ctx.tabs.DY1);
+  await h.ev(`(window.__sbx.mgr.setEmoji(${sp("Y")}, "🎯"), 1)`, ctx.H);
+  await addRule("CONTAINS", "ud-shop", sp("Y"));
+  await h.ev(`window.__vm.store.set("theme:space:${sp("Y")}", { on: true, hue: 123, sat: 40, light: 30, grain: 10 }).then(() => 1)`, ctx.H);
+  await titled(ys);
+  await sleep(500);
+  ctx.before = { list: await prefList(), rules: (await prefRules()).filter((r) => r.workspaceId === sp("Y")).map((r) => [r.type, r.expression]) };
+  await focus(holder); await busy();
+  const r = await deleteSpace(holder, "Y");
+  if (r !== "ok") throw new Error(`setup: delete Y: ${r}`);
+  await sleep(1500); await busy(); // the delete notes each tab's Recently Closed entry just after
+  const kept = await h.ev(DELETED, ctx.H);
+  if (kept.length !== 1 || kept[0].id !== sp("Y")) throw new Error(`setup: deletedSpaces holds ${J(kept.map((e) => e.id))}, want Y`);
+  // the theme key is cleared, so the check below sees undelete put it back from the entry
+  await h.ev(`window.__vm.store.set("theme:space:${sp("Y")}", null).then(() => 1)`, ctx.H);
+};
+// What undelete must give back: the tile, its name and emoji, its place, its rule and theme, the 4 tabs in order in
+// `win`, shown there, the entry gone.
+const undeleted = async (s, win, { shownIn = win } = {}) => {
+  const list = await prefList(), y = list.find((w) => w.id === sp("Y"));
+  const before = ctx.before.list.find((w) => w.id === sp("Y"));
+  const rules = (await prefRules()).filter((r) => r.workspaceId === sp("Y")).map((r) => [r.type, r.expression]);
+  const theme = await themeOf(sp("Y"));
+  const left = await h.ev(DELETED, ctx.H);
+  return [y ? null : "Y is not back in Vivaldi's list (same id)", y && y.name !== "Y" ? `named ${J(y.name)}` : null,
+    y && y.emoji !== before.emoji ? `emoji ${J(y.emoji)}, want ${J(before.emoji)}` : null, y && y.icon !== before.icon ? "its icon changed" : null,
+    J(orderOf(list)) === J(orderOf(ctx.before.list)) ? null : `order ${J(orderOf(list))}, want ${J(orderOf(ctx.before.list))}`,
+    J(rules) === J(ctx.before.rules) ? null : `rules ${J(rules)}, want ${J(ctx.before.rules)}`,
+    theme?.hue === 123 ? null : `theme ${J(theme)}`,
+    inOrderIn(s, ["DY1", "DY2", "DY3", "DY4"], win, sp("Y")), recIs(s, shownIn, sp("Y")), showsSpace(s, shownIn, sp("Y")),
+    (await waitTile(shownIn, "Y")) ? null : "no Y tile", left.length ? `deletedSpaces still holds ${J(left.map((e) => e.id))}` : null];
+};
+def("UD.undelete", {
+  gesture: true, setup: () => SET_UD(),
+  act: async () => {
+    watchRecord();
+    if (!(await openDropdown(ctx.W)) || !(await openFly(ctx.W, "Recently Deleted Spaces"))) return { error: "no Recently Deleted Spaces flyout" };
+    const rows = await rowsOf(ctx.W, ".vm-menu-flyout > div");
+    const note = await h.ev(`[...document.querySelectorAll(".vm-menu-flyout .vm-menu-item")].map((n) => [n.querySelector(".vm-menu-label")?.textContent, n.querySelector(".vm-menu-note")?.textContent, n.querySelector(".vm-space-ico")?.textContent])`, ctx.W);
+    await shot(ctx.W, "9c-recently-deleted-flyout");
+    if (!(await clickOn(ctx.W, flyRow("Y")))) return { error: `no Y row: ${J(rows)}` };
+    await sleep(2500);
+    await waitFor(() => h.ev(`chrome.tabs.query({ windowType: "normal" }).then((t) => t.every((x) => x.status === "complete"))`, ctx.H), 8000, 200);
+    await shot(ctx.W, "9c-restored-space");
+    return { done: "ok", rows, note };
+  },
+  expect: async (s, b, r) => [r.error ?? null, J(r.note) === J([["Y", "4 tabs · today", "🎯"]]) ? null : `flyout row ${J(r.note)}`, await recordStayedLive(), ...(await undeleted(s, ctx.W))],
+});
+// After a restart the Recently Closed entries have new ids: found again by address and title, else opened anew.
+def("UD.after-restart", {
+  busyThroughAct: true, setup: async () => { await SET_UD(); await sleep(5000); await busy(); }, // Part 1: tabs made just before an exit can be lost
+  act: async () => {
+    await restartSandbox();
+    const s0 = await h.snap(ctx.H);
+    const w = tabsOf(s0).find((t) => labelOf(t) === "X1")?.win;
+    if (w == null) return { error: "X1 did not come back" };
+    ctx.W = w; ctx.roles.W = w;
+    await focus(ctx.W);
+    if (!(await waitFor(() => hasEl(ctx.W, "#vm-panel .vm-newtab-chev"), 15000))) return { error: "no sidebar after the restart" };
+    const held = await h.ev(DELETED, ctx.H);
+    const r = await pickFrom(ctx.W, "Recently Deleted Spaces", "Y");
+    if (r !== "ok") return { error: r };
+    await sleep(2500);
+    return { done: "ok", held: held.map((e) => e.id) };
+  },
+  expect: async (s, b, r) => [r.error ?? null, J(r.held) === J([sp("Y")]) ? null : `after the restart deletedSpaces held ${J(r.held)}`, ...(await undeleted(s, ctx.W))],
+});
+// The window Y lived in is gone: Y comes back in the window that asked.
+def("UD.old-window-gone", {
+  gesture: true, setup: async () => { await SET_UD({ other: true }); await h.ev(`chrome.windows.remove(${ctx.O}).then(() => 1)`, ctx.H); await sleep(1500); await focus(ctx.W); await busy(); },
+  act: () => pickFrom(ctx.W, "Recently Deleted Spaces", "Y"),
+  expect: async (s) => [normal(s).some((w) => w.id === ctx.O) ? "O is still open" : null, ...(await undeleted(s, ctx.W))],
+});
+// While Y's entry is held, two of its tabs brought back by Vivaldi's own Reopen Closed Tab stay on Y's id (undelete
+// would revive them), and no window's record ever names it; once the entry is past its 30 days, they heal.
+def("UD.held-then-heals", {
+  busyThroughAct: true, setup: async () => { await SET_UD(); await rawRestore(2); await sleep(800); await busy(); },
+  act: async () => {
+    await h.ev(LOGS, ctx.H);
+    watchRecord();
+    await unbusy(); await sleep(4500);
+    const heldDead = deadIn(await h.snap(ctx.H)).map(labelOf).sort();
+    // the entry ages past 30 days (its deletedAt moved back): the next pass heals its tabs
+    await h.ev(`(async () => { const all = await ${DELETED}; await window.__vm.store.set("deletedSpaces", all.map((e) => ({ ...e, deletedAt: Date.now() - 31 * 24 * 3600 * 1000 }))); window.__vm.spaceRepair.schedule(); return 1; })()`, ctx.H);
+    const healed = await waitFor(async () => (deadIn(await h.snap(ctx.H)).length ? null : "yes"), 10000, 250);
+    return { done: "ok", heldDead, healed: healed === "yes", lines: await healLines() };
+  },
+  expect: async (s, b, r) => [await recordStayedLive(), r.heldDead?.length === 2 ? null : `while held, dead tabs ${J(r.heldDead)}, want 2 (DY4, DY3)`,
+    r.healed ? null : "the expired entry's tabs did not heal", noDead(s), r.lines?.length === 2 ? null : `${r.lines?.length} heal lines, want 2`, tabIs(s, "X1", { win: ctx.W, space: sp("X") })],
+});
+
+// Edit a space (upstream #126): from the tile's right-click menu.
+const SET_ED = async () => {
+  await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "Y1", sp("Y"));
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W);
+};
+const typeAndEnter = async (win, text) => {
+  const c = h.cdp(win);
+  await h.ev(`(() => { const f = document.activeElement; if (f && "value" in f) f.select?.(); return 1; })()`, win);
+  await c.send("Input.insertText", { text });
+  await sleep(200);
+  for (const type of ["keyDown", "keyUp"]) await c.send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) });
+};
+// The pins follow: X's Pinned folder (with a pin in it) is renamed first, so the renamed space keeps it, and no
+// empty folder is made for either name.
+def("ED.rename", {
+  setup: async () => {
+    await SET_ED();
+    const folder = await waitFor(async () => (await folders()).X ?? null, 8000);
+    if (!folder?.pinned) throw new Error("setup: X has no Pinned folder");
+    ctx.pinUrl = `${origin}/ed-pin-${Date.now()}`;
+    await bookmark(folder.pinned, "ED pin", ctx.pinUrl);
+    await waitFor(() => h.ev(`!![...document.querySelectorAll("#vm-panel .vm-row.vm-link")].find((r) => r.title.includes(${J(ctx.pinUrl)}))`, ctx.W), 8000);
+    ctx.folderCount = Object.keys(await folders()).length;
+  },
+  act: async () => {
+    const menu = await tileMenu(ctx.W, "X", "Rename…");
+    if (!menu) return { error: "no Rename row" };
+    if (!(await waitFor(() => h.ev(`document.activeElement?.classList.contains("vm-space-rename")`, ctx.W), 4000))) return { error: "the rename field did not open", menu };
+    await shot(ctx.W, "9c-rename-in-place");
+    await typeAndEnter(ctx.W, "Work");
+    await sleep(2500);
+    return { done: "ok", menu };
+  },
+  expect: async (s, b, r) => {
+    const list = await prefList(), all = await folders();
+    const x = list.find((w) => w.id === sp("X"));
+    const pinShown = await h.ev(`!![...document.querySelectorAll("#vm-panel .vm-row.vm-link")].find((r) => r.title.includes(${J(ctx.pinUrl)}))`, ctx.W);
+    return [r.error ?? null, J(r.menu) === J(["Rename…", "Change Icon…", "Move Left (disabled)", "Move Right", "Delete Space…"]) ? null : `the tile menu ${J(r.menu)}`,
+      x?.name === "Work" ? null : `X is named ${J(x?.name)}`, all.Work ? null : `no "Work" folder: ${J(Object.keys(all))}`, all.X ? `a folder "X" is still there: ${J(Object.keys(all))}` : null,
+      Object.keys(all).length === ctx.folderCount ? null : `${Object.keys(all).length} space folders, want ${ctx.folderCount} (an empty one was made)`,
+      pinShown ? null : "the pin is not in the sidebar after the rename", recIs(s, ctx.W, sp("X")), unchanged(b, s)];
+  },
+});
+def("ED.icon", {
+  setup: SET_ED,
+  act: async () => {
+    if (!(await tileMenu(ctx.W, "Y", "Change Icon…"))) return { error: "no Change Icon row" };
+    if (!(await waitFor(() => hasEl(ctx.W, ".vm-icon-picker .vm-icon-choice"), 4000))) return { error: "no icon picker" };
+    const count = await h.ev(`document.querySelectorAll(".vm-icon-picker .vm-icon-choice").length`, ctx.W);
+    await shot(ctx.W, "9c-icon-picker");
+    await h.ev(`(document.querySelectorAll(".vm-icon-picker .vm-icon-choice")[2].click(), 1)`, ctx.W);
+    await sleep(1200);
+    const afterIcon = (await prefList()).find((w) => w.id === sp("Y"));
+    if (!(await tileMenu(ctx.W, "Y", "Change Icon…"))) return { error: "no Change Icon row (2)" };
+    if (!(await waitFor(() => h.ev(`document.activeElement?.classList.contains("vm-emoji-field")`, ctx.W), 4000))) return { error: "the emoji field has no focus" };
+    await typeAndEnter(ctx.W, "🚀");
+    await sleep(1200);
+    const afterEmoji = (await prefList()).find((w) => w.id === sp("Y"));
+    const tile = await h.ev(`${pillOf("Y")}?.textContent ?? null`, ctx.W);
+    return { done: "ok", count, afterIcon, afterEmoji, tile, icons: await vivIcons() };
+  },
+  expect: (s, b, r) => [r.error ?? null, r.count === 20 ? null : `${r.count} icons, want Vivaldi's 20`,
+    r.afterIcon?.icon === r.icons?.[2] && r.afterIcon?.iconId === 2 && !r.afterIcon?.emoji ? null : `after the icon: ${J({ ...r.afterIcon, icon: r.afterIcon?.icon?.slice(0, 30) })}`,
+    r.afterEmoji?.emoji === "🚀" ? null : `emoji ${J(r.afterEmoji?.emoji)}`, r.tile === "🚀" ? null : `the tile shows ${J(r.tile)}`, unchanged(b, s)],
+});
+def("ED.reorder", {
+  gesture: true, setup: SET_ED,
+  act: async () => {
+    const first = orderOf(await prefList());
+    if (!(await tileMenu(ctx.W, "Y", "Move Left"))) return { error: "no Move Left" };
+    await sleep(1200);
+    const left = orderOf(await prefList());
+    const tiles = await h.ev(`[...document.querySelectorAll("#vm-panel .vm-space-pill:not(.vm-space-plus)")].map((b) => (b.getAttribute("aria-label") || "").split(" ·")[0])`, ctx.W);
+    if (!(await tileMenu(ctx.W, "Y", "Move Right"))) return { error: "no Move Right" };
+    await sleep(1200);
+    const menuZ = await tileMenu(ctx.W, "Z", "Move Left");
+    await sleep(1200);
+    return { done: "ok", first, left, tiles, right: orderOf(await prefList()), menuZ };
+  },
+  expect: (s, b, r) => [r.error ?? null, J(r.first) === J(["X", "Y", "Z"]) ? null : `start ${J(r.first)}`, J(r.left) === J(["Y", "X", "Z"]) ? null : `after Move Left ${J(r.left)}`,
+    J(r.tiles?.slice(1)) === J(["Y", "X", "Z"]) ? null : `tiles ${J(r.tiles)}`, J(r.right) === J(["X", "Z", "Y"]) ? null : `after Move Right and Z's Move Left ${J(r.right)}`,
+    J(r.menuZ) === J(["Rename…", "Change Icon…", "Move Left", "Move Right (disabled)", "Delete Space…"]) ? null : `Z's menu ${J(r.menuZ)}`, unchanged(b, s)],
+});
+// + makes a space at once (named, Vivaldi's default icon), not shown, and opens its rename.
+def("ED.plus", {
+  setup: SET_ED,
+  act: async () => {
+    const before = (await prefList()).map((w) => w.id);
+    if (!(await h.ev(`(() => { const p = document.querySelector("#vm-panel .vm-space-plus"); if (!p) return false; p.click(); return true; })()`, ctx.W))) return { error: "no + tile" };
+    const field = await waitFor(() => h.ev(`document.activeElement?.classList.contains("vm-space-rename") ? document.activeElement.value : null`, ctx.W), 5000);
+    const made = (await prefList()).filter((w) => !before.includes(w.id));
+    if (made[0]) { ctx.spaces.NEW = made[0].id; }
+    await typeAndEnter(ctx.W, "Fresh");
+    await sleep(1500);
+    return { done: "ok", field, made, after: (await prefList()).find((w) => w.id === made[0]?.id), icons: await vivIcons() };
+  },
+  expect: (s, b, r) => [r.error ?? null, r.made?.length === 1 ? null : `${r.made?.length} spaces made`, r.field === "New Space" ? null : `the rename field held ${J(r.field)}`,
+    r.after?.name === "Fresh" ? null : `named ${J(r.after?.name)}`, r.after?.icon === r.icons?.[r.icons.length - 1] ? null : "not Vivaldi's default icon", recIs(s, ctx.W, sp("X")), unchanged(b, s)],
+});
+
+// Closing a space's last tab keeps the window in that space, empty, with the command bar open (Byron's D3). Escape
+// closes the bar and the window stays there; no repair takes it to the default space.
+const closeRowOf = (label) => h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes(${J(label)})); const b = r?.querySelector(".vm-act"); if (!b) return false; b.click(); return true; })()`, ctx.W);
+const emptyFacts = async () => {
+  const s = await h.snap(ctx.H), a = activeOf(s, ctx.W);
+  return { rec: spaceName(recOf(s, ctx.W)), active: a ? { label: labelOf(a), space: spaceName(a.space) } : null, bar: await hasEl(ctx.W, "#vm-cmd"),
+    focused: await h.ev(`document.activeElement === document.querySelector("#vm-cmd input")`, ctx.W) };
+};
+const esCase = (id, { space }) => def(id, {
+  gesture: true,
+  setup: async () => {
+    await mkWin("W", { width: 900 });
+    if (space === "X") { await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "Y1", sp("Y")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); }
+    else { await tab(ctx.W, "X1", sp("X")); const d0 = (await h.snap(ctx.H)).wins.find((w) => w.id === ctx.W).tabs.find((t) => !t.ws); ctx.tabs.D0 = d0.id; await activate(d0.id); }
+    await focus(ctx.W);
+  },
+  ready: () => waitFor(() => h.ev(`!![...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes(${J(space === "X" ? "X1" : "W-d0")}))`, ctx.W), 8000),
+  act: async () => {
+    await h.ev(LOGS, ctx.H);
+    if (!(await closeRowOf(space === "X" ? "X1" : "W-d0"))) return { error: "no close button on the row" };
+    const opened = await barWithin(ctx.W, 4000);
+    await sleep(600);
+    const withBar = await emptyFacts();
+    if (space === "X") await shot(ctx.W, "9c-empty-space-with-bar");
+    await sleep(3000); // a repair would have run by now
+    const later = await emptyFacts();
+    await closeBar(ctx.W); await sleep(2500);
+    const afterEsc = await emptyFacts();
+    return { done: "ok", opened, withBar, later, afterEsc };
+  },
+  expect: (s, b, r) => [r.error ?? null, r.opened ? null : "the command bar did not open",
+    ...["withBar", "later", "afterEsc"].map((k) => (r[k]?.rec === space && r[k]?.active?.space === space ? null : `${k}: W recorded ${r[k]?.rec}, shows ${J(r[k]?.active)}, want the empty ${space}`)),
+    r.withBar?.focused ? null : "the bar's field has no focus", r.later?.bar ? null : "the bar closed by itself", r.afterEsc?.bar ? "Escape did not close the bar" : null,
+    r.afterEsc?.active?.label === "START" ? null : `after Escape W shows ${J(r.afterEsc?.active)}, want its start page`,
+    recIs(s, ctx.W, space === "X" ? sp("X") : 0), space === "X" ? tabIs(s, "Y1", { win: ctx.W, space: sp("Y") }) : tabIs(s, "X1", { win: ctx.W, space: sp("X") })],
+});
+esCase("ES.close-last-tab", { space: "X" });
+esCase("ES.close-last-default-tab", { space: "default" });
 // Move to Space into a space SHOWN in another window (the guard for MTS.parked-other-window): M.shown-elsewhere.
 ALIASES["MTS.shown-other-window"] = ["M.shown-elsewhere"];
 // B2: a tab folder in a named space on 8.3, with the calls the sidebar makes (createFolder, joinFolder, leaveFolder in
