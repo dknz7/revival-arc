@@ -360,8 +360,9 @@
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(me.field, text);
       me.field.dispatchEvent(new Event("input", { bubbles: true }));
       me.field.setSelectionRange?.(text.length, text.length);
-      // The final boundary: a script address is never submitted, however it got here (nativeEntry checks first too).
-      if (submit && !search.runsScript?.(text) && !me.ended) {
+      // The final boundary: an address that could run a script (javascript:, vbscript:, data:) is never submitted, however
+      // it got here (nativeEntry checks first too).
+      if (submit && !neverSubmit(text) && !me.ended) {
         for (const type of ["keydown", "keypress", "keyup"]) {
           me.field.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
         }
@@ -378,10 +379,12 @@
   };
   chrome.tabs.onActivated?.addListener(({ tabId, windowId }) => handedTabChanged(tabId, windowId));
   chrome.tabs.onRemoved?.addListener((tabId) => { if (session && session.tab === tabId) session.end(); });
-  // Replaceable (search.test.cjs records the hand-overs instead of driving a field). The boundary every hand-over passes:
-  // a text that would run a script (javascript:, vbscript:) is shown, never submitted.
+  // Replaceable (search.test.cjs records the hand-overs instead of driving a field). The boundary every hand-over passes,
+  // handOver's too: a text that could run a script (javascript:, vbscript:, data:; search.neverSubmit) is shown, never
+  // submitted, and without that check nothing is submitted at all.
+  const neverSubmit = (text) => (typeof search?.neverSubmit === "function" ? search.neverSubmit(text) : true);
   const nativeEntry = (text, options = {}) => Promise.resolve()
-    .then(() => (window.__vm.nativeEntry || nativeFieldEntry)(text, { ...options, submit: !!options.submit && !search.runsScript?.(text) }))
+    .then(() => (window.__vm.nativeEntry || nativeFieldEntry)(text, { ...options, submit: !!options.submit && !neverSubmit(text) }))
     .catch((error) => { console.warn("[vivarc] Vivaldi's address field:", error); return false; });
 
   const runSearch = async (engine, query) => {
@@ -415,7 +418,7 @@
   };
   const delegate = (engine, query, tabId) => {
     const keyword = engine?.keyword && !/\s/.test(engine.keyword) ? engine.keyword : null;
-    return nativeEntry(keyword ? `${keyword} ${query}` : query, { tabId, submit: !!keyword && !search.runsScript?.(query) });
+    return nativeEntry(keyword ? `${keyword} ${query}` : query, { tabId, submit: !!keyword && !neverSubmit(query) });
   };
 
   // The bar lists every tab of the window, parked ones included. A parked tab activated as it is leaves Vivaldi's record
@@ -904,11 +907,13 @@
   let myWindow = null;
   chrome.windows.getCurrent().then((win) => { myWindow = win.id; }, () => {});
   let activation = { at: -Infinity, tabId: null, tab: null, handled: false };
-  let askedAt = -Infinity;
-  const asked = () => { askedAt = Date.now(); }; // Ctrl+L, Cmd+L, F6, a click on the field, the edit-URL action
+  // The user's request for the field and this window's activations, in the order they happened (07-workspaces.js).
+  const intent = window.__vm.workspaces.focusIntent();
+  const asked = () => intent.asked(Date.now()); // Ctrl+L, Cmd+L, F6, a click on the field, the edit-URL action
   const noteActivation = (tabId, windowId) => { // the newest activation in this window, its tab already on the way
     try {
       if (myWindow == null || windowId !== myWindow) return;
+      intent.activated(); // a request made before this switch is not one for the tab it switched to
       activation = { at: Date.now(), tabId, tab: Promise.resolve(chrome.tabs.get(tabId)).catch(() => null), handled: false };
     } catch (_) {}
   };
@@ -1002,9 +1007,16 @@
   // Any key Vivaldi handles as a shortcut in this window (a custom "focus address field" binding included), and a press in
   // Vivaldi's own menus, is the user asking: a focus that follows it is a command, not a tab's remembered focus coming back
   // (which stays Task 8o's page focus, the controller's ruling).
-  window.__vm.onShortcut((_key, _combo, pressedIn) => {
+  // A tab-switching shortcut (Ctrl+Tab, Ctrl+PgDn, Ctrl+1, Ctrl+W...) is never one: it is what moves the cursor (review
+  // round 3). Vivaldi's keyboard table is read live, its defaults until then (07-workspaces.js addressKeys).
+  let asks = window.__vm.workspaces.addressKeys(null, window.__vm.normalise);
+  const readKeys = () => Promise.resolve(vivaldi.prefs.get("vivaldi.actions")).then((pref) => {
+    asks = window.__vm.workspaces.addressKeys(pref?.value?.[0], window.__vm.normalise);
+  }).catch(() => {});
+  try { readKeys(); vivaldi.prefs.onChanged?.addListener((path) => { if (path === "vivaldi.actions") readKeys(); }); } catch (_) {}
+  window.__vm.onShortcut((key, _combo, pressedIn) => {
     const own = window.vivaldiWindowId;
-    if (typeof pressedIn !== "number" || typeof own !== "number" || pressedIn === own) asked();
+    if ((typeof pressedIn !== "number" || typeof own !== "number" || pressedIn === own) && asks(key)) asked();
   });
   document.addEventListener("pointerdown", (e) => {
     if (!window.__vm.synthetic?.(e) && e.isTrusted && e.target?.closest?.(".vivaldi-menu, .menu, [role=menu], [role=menuitem], button.vivaldi, .context-menu")) asked();
@@ -1048,9 +1060,9 @@
     perf.fieldRoutes++;
     const sinceActivation = Date.now() - activation.at;
     const current = activation;
-    // Asked after the last tab switch: a command (Ctrl+L, a custom binding, a menu). A key that came before the switch is
-    // what switched (Ctrl+Tab...), and the focus that follows is the tab's remembered one coming back: passive.
-    const userAsked = Date.now() - askedAt < ASKED_MS && askedAt >= activation.at;
+    // Asked after the last tab switch, by order not by clock: a command (Ctrl+L, a custom binding, a menu). A request
+    // before the switch was forgotten by it, so the focus that follows the switch is the tab's remembered one: passive.
+    const userAsked = intent.userAsked(Date.now(), ASKED_MS);
     unscroll(field);
     if (bar) { input?.focus(); return; }
     if (launching) return; // the launch code opens the bar on a blank tab or a private window's intro page
@@ -1108,6 +1120,8 @@
     }
   }, true);
   window.__vm.onMark?.((browser) => { if (nativeOpen) browser.classList.add("vm-native-field"); });
-  window.__vm.commandBar = { ownsField: () => ownsField, isOpen: () => !!bar, nativeOpen: () => nativeOpen, handOver: (text, options) => nativeEntry(text, options) };
+  // askedNow and fieldEntry are seams for search.test.cjs: fieldEntry is the field session itself, past nativeEntry's
+  // check, so the test proves its own boundary (it never submits a prohibited scheme either).
+  window.__vm.commandBar = { askedNow: () => intent.userAsked(Date.now(), ASKED_MS), fieldEntry: (text, options) => nativeFieldEntry(text, options), ownsField: () => ownsField, isOpen: () => !!bar, nativeOpen: () => nativeOpen, handOver: (text, options) => nativeEntry(text, options) };
   console.log("[vivarc] command bar started");
 })();

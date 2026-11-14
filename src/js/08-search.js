@@ -105,6 +105,28 @@
     return { type: 'domain', tld: TLD_RE.test(labels[labels.length - 1]) && !/^\d+$/.test(labels[labels.length - 1]) };
   };
   const encodeSpaces = (s) => s.replace(/\s/g, (c) => (c === ' ' ? '%20' : encodeURIComponent(c)));
+  // "host:..." whose host is an address (localhost, an IP or an invalid one, a name with a top-level domain; user@ before it
+  // allowed): address-shaped. A word, or dotted words without a top-level domain (e.g., Ch.3, v1.2), and a colon are words.
+  const hostWithPort = (authority) => {
+    const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
+    if (hostPort.startsWith('[')) return false; // a bracket is IPv6's, read by its own rules ("[12:30 meeting]" is words)
+    const kind = hostKind(hostPort.slice(0, hostPort.indexOf(':')));
+    return !!kind && (kind.type === 'local' || kind.type === 'ip' || kind.type === 'bad' || (kind.type === 'domain' && kind.tld));
+  };
+  // An explicit scheme's authority ([user[:pass]@]host[:port]): the host is not malformed and the port is 0-65535 digits
+  // (or empty). A host Vivarc does not know the shape of (an underscore, say) is left to Vivaldi.
+  const authorityValid = (authority) => {
+    const hostPort = authority.slice(authority.lastIndexOf('@') + 1);
+    if (hostPort.startsWith('[')) {
+      const m = /^(\[[^\]]*\])(?::(\d*))?$/.exec(hostPort);
+      return !!m && hostKind(m[1]).type === 'ip' && !(m[2] && Number(m[2]) > 65535);
+    }
+    const parts = hostPort.split(':');
+    if (parts.length > 2) return false; // a bare IPv6 needs its brackets after a scheme
+    if (parts.length === 2 && !/^\d*$/.test(parts[1])) return false;
+    if (parts.length === 2 && parts[1] && Number(parts[1]) > 65535) return false;
+    return !!parts[0] && hostKind(parts[0])?.type !== 'bad'; // an empty host (http://:80/) is malformed too
+  };
   const NATIVE = { kind: 'native' };
   const resolve = (raw, { editing = null } = {}) => {
     const text = String(raw ?? '').trim();
@@ -121,6 +143,7 @@
         const cut = tail.search(/[/?#]/);
         const authority = cut < 0 ? tail : tail.slice(0, cut);
         if (!authority || /\s/.test(authority)) return NATIVE; // a space in the host: malformed, never a search
+        if (!authorityValid(authority)) return NATIVE; // http://host:99999/x, http://[::1/x, http://999.1.1.1
         return { kind: 'url', url: `${scheme}://${authority.replace(DOTS, '.')}${encodeSpaces(cut < 0 ? '' : tail.slice(cut))}` };
       }
       if (/\s/.test(rest) && !SPACED.has(scheme)) return NATIVE;
@@ -133,8 +156,22 @@
     const cut = text.search(/[/?#]/);
     const authority = cut < 0 ? text : text.slice(0, cut);
     const path = cut < 0 ? '' : text.slice(cut);
+    if (/^\[[0-9a-f.%]*(?::[0-9a-f.%]*){2,}(?:\s|$)/i.test(text)) return NATIVE; // "[::1 x": an IPv6 bracket left open
+    // Text whose first word is an address with a port, or a host and a colon and no port ("192.168.1.1:8080 admin",
+    // "nas.local:abc private plan", "[::1]:80 x"): address-shaped whatever follows the space, shown, never searched.
+    const first = text.split(/\s/)[0];
+    const firstAuthority = first.slice(0, (first.search(/[/?#]/) + 1 || first.length + 1) - 1);
+    if (first !== text && (/^\[[^\]]*\]:/.test(firstAuthority) || (firstAuthority.includes(':') && hostWithPort(firstAuthority)))) return NATIVE;
     if (!authority || /\s/.test(authority)) return { kind: 'search' }; // words ("what is 2/3", "localhost is down")
     const at = (host) => `${host.replace(DOTS, '.')}`;
+    // user@host:port: an address with its credentials when the port is one, else a malformed one (user@nas.local:abc)
+    const userAt = authority.lastIndexOf('@');
+    if (userAt > 0 && authority.slice(userAt + 1).includes(':')) {
+      const m = /^(.+):(\d+)$/.exec(authority.slice(userAt + 1));
+      const kind = m && hostKind(m[1]);
+      if (m && kind && kind.type !== 'bad' && Number(m[2]) <= 65535) return { kind: 'url', url: `http://${at(authority)}${encodeSpaces(path)}` };
+      return NATIVE;
+    }
     // [v6] or [v6]:port
     const bracket = /^(\[[^\]]*\])(?::(\d+))?$/.exec(authority);
     if (bracket || authority.startsWith('[')) {
@@ -144,7 +181,7 @@
     // bare IPv6 (more than one colon)
     if ((authority.match(/:/g) || []).length > 1) {
       if (isIPv6(authority)) return { kind: 'url', url: `http://[${authority}]/${encodeSpaces(path.replace(/^\//, ''))}` };
-      return authority.includes('::') ? NATIVE : { kind: 'search' }; // 12:00:00 is a time
+      return authority.includes('::') || hostWithPort(authority) ? NATIVE : { kind: 'search' }; // 12:00:00 is a time
     }
     const port = /^(.+):(\d+)$/.exec(authority);
     if (port) {
@@ -153,7 +190,9 @@
       if (kind.type === 'bad' || Number(port[2]) > 65535) return NATIVE;
       return { kind: 'url', url: `http://${at(port[1])}:${port[2]}${encodeSpaces(path)}` };
     }
-    if (authority.includes(':')) return { kind: 'search' }; // note:..., a word and a colon
+    // A host (localhost, an IP, a dotted name) then a colon and no port: a malformed address, whatever follows in its path
+    // (nas.local:abc/private plan). A single word and a colon is words (note:abc, re:x).
+    if (authority.includes(':')) return hostWithPort(authority) ? NATIVE : { kind: 'search' };
     const kind = hostKind(authority);
     if (!kind) return { kind: 'search' };
     if (kind.type === 'bad') return NATIVE;
@@ -169,7 +208,14 @@
   // Address-shaped: what must not go to a search engine's suggestions while it is typed (an address, an intranet name with
   // a path, anything Vivaldi's field would treat as one).
   const addressShaped = (text) => { const r = resolve(text); return !!r && (r.kind !== 'search' || (!/\s/.test(String(text).trim()) && /[./:\\[\]@]/.test(String(text)))); };
-  // A text whose submission would run a script in the page: never submitted automatically, whatever path brought it.
-  const runsScript = (text) => SCRIPT_SCHEMES.has(/^\s*([a-z][a-z0-9+.-]*):/i.exec(String(text ?? ''))?.[1].toLowerCase() || '');
-  window.__vm.search = { templates, defaultEngine, expand, request, phrases, suggestions, resolve, addressShaped, runsScript, isIPv6 };
+  // A text whose submission could run a script in the page (javascript:, vbscript:, and data:, whose page can hold one):
+  // never submitted automatically, whatever path brought it (review rounds 2-3). Read as the URL parser reads it: leading
+  // spaces (Unicode ones too: the ideographic space, a no-break space, a BOM) and control characters dropped, tabs and line
+  // breaks removed anywhere (java\tscript: is javascript:), and the line breaks a text field drops on its own.
+  const NEVER_SUBMIT = new Set([...SCRIPT_SCHEMES, 'data']);
+  const neverSubmit = (text) => {
+    const read = String(text ?? '').replace(/[\t\n\r]/g, '').replace(/^[\s\u0000-\u0020]+/, '');
+    return NEVER_SUBMIT.has(/^([a-z][a-z0-9+.-]*):/i.exec(read)?.[1].toLowerCase() || '');
+  };
+  window.__vm.search = { templates, defaultEngine, expand, request, phrases, suggestions, resolve, addressShaped, neverSubmit, isIPv6 };
 })();

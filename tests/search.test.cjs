@@ -14,7 +14,7 @@ function setup({ incognito = false, missing = false, suggestUrl = 'https://chose
     window: { __vm: {} },
     chrome: { windows: { getCurrent: async () => ({ incognito, type: "normal", focused: true, id: 1 }) }, tabs: {
       create: async opts => calls.navigation.push(opts), update: async (id, opts) => calls.navigation.push({ id, ...opts }),
-      query: async () => [], onCreated: { addListener(fn) { calls.onCreated = fn; } }, onActivated: { addListener(fn) { calls.onActivated = fn; } },
+      query: async () => [], onCreated: { addListener(fn) { calls.onCreated = fn; } }, onActivated: { addListener(fn) { calls.onActivated = fn; (calls.activatedAll ||= []).push(fn); } },
     }, bookmarks: { search: async () => [] }, history: { search: async () => [] } },
     vivaldi: { searchEngines: {
       getTemplateUrls: async () => reply,
@@ -75,7 +75,7 @@ async function loadBar(context, settingsOpen = false) {
   context.CustomEvent = class {};
   const events = context.events = {};
   Object.assign(context.window, { addEventListener: (name, fn) => events[name] = fn, dispatchEvent() {} });
-  Object.assign(context.window.__vm, { config: {}, cssLoaded: true, settings: { get: () => true, isOpen: () => settingsOpen }, normalise: x => x, shortcut: x => x, onShortcut() {} });
+  Object.assign(context.window.__vm, { config: {}, cssLoaded: true, settings: { get: () => true, isOpen: () => settingsOpen }, normalise: x => x, shortcut: x => x, onShortcut(fn) { (context.shortcutFns ||= []).push(fn); } });
   vm.runInContext(source('07-workspaces.js'), context);
   vm.runInContext(source('20-command-bar.js'), context);
   await events['vm-open-command-bar']();
@@ -881,4 +881,160 @@ test('the start page mark is cleared when its tab leaves the start page, and a t
   assert.deepEqual(marks, [[6, { vmStart: true }]], 'a page navigated to the start page was asked for');
   changed(7, { url: START }, { id: 7, windowId: 2, vivExtData: '{}', url: START });
   assert.equal(marks.length, 1, "another window's tabs are not this window's business");
+});
+
+// ---- Task 9b fix round 3 (review-9b-codex-r3.md) ----
+// Important 1: the shared hand-over boundary. Whoever calls it (handOver included) and however the scheme is written, an
+// address that could run a script (javascript:, vbscript:, data:) is never submitted.
+const PROHIBITED = ['javascript:alert(1)', 'JAVASCRIPT:alert(1)', '  javascript:alert(1)', 'java\tscript:alert(1)', 'java\nscript:alert(1)',
+  '\u0001javascript:alert(1)', 'vbscript:msgbox(1)', 'VBScript:x', 'data:text/html,<script>alert(1)</script>', 'DATA:text/html,x',
+  ' data:text/html,x', 'da\tta:text/html,<script>alert(1)</script>', '\u3000javascript:alert(1)', '\u00a0javascript:alert(1)',
+  '\ufeffjavascript:alert(1)', '\u2028javascript:alert(1)', '\u3000data:text/html,<script>alert(1)</script>'];
+test('search.neverSubmit reads the scheme as the URL parser does', () => {
+  const { search } = setup();
+  for (const t of PROHIBITED) assert.equal(search.neverSubmit(t), true, JSON.stringify(t));
+  for (const t of ['https://example.test/', 'c javascript:alert(1)', 'about:blank', 'view-source:https://x.test/', 'words data: x'])
+    assert.equal(search.neverSubmit(t), false, JSON.stringify(t));
+});
+test('a direct handOver of every prohibited scheme with submit asked is shown, never submitted', async () => {
+  const { context } = setup();
+  const handed = recordHandOvers(context);
+  await loadBar(context);
+  for (const t of PROHIBITED) await context.window.__vm.commandBar.handOver(t, { tabId: 5, submit: true });
+  await context.window.__vm.commandBar.handOver('https://example.test/', { tabId: 5, submit: true });
+  assert.deepEqual(handed.map((h) => [h.text, h.submit]), [...PROHIBITED.map((t) => [t, false]), ['https://example.test/', true]]);
+});
+// The same at Vivaldi's real field code (nativeFieldEntry, no recording hook): no Enter is ever synthesised for them, and
+// one is for an ordinary address (so the probe can see an Enter at all).
+for (const via of ['handOver', 'fieldEntry']) test(`at the field itself (${via}), no Enter is synthesised for a prohibited scheme`, async () => {
+  const { context } = setup();
+  await loadBar(context);
+  await settle(3);
+  const keys = [];
+  const field = { id: 'urlFieldInput', _v: '', events: {}, addEventListener() {}, removeEventListener() {}, setSelectionRange() {},
+    focus() { context.document.activeElement = field; }, closest: () => null,
+    dispatchEvent(e) { if (/^key/.test(e.type)) keys.push([field._v, e.type, e.key]); return true; } };
+  const browserEl = { classList: { add() {}, remove() {}, contains: () => false }, style: { setProperty() {}, getPropertyValue: () => '' } };
+  context.document.querySelector = (sel) => (/urlFieldInput/.test(sel) ? field : /#browser/.test(sel) ? browserEl : null);
+  context.HTMLInputElement = class { get value() { return this._v; } set value(v) { this._v = v; } };
+  context.Event = class { constructor(type, o) { this.type = type; Object.assign(this, o); } };
+  context.KeyboardEvent = context.Event;
+  context.setTimeout = (fn) => { setImmediate(fn); return 0; };
+  context.setInterval = () => 0; context.clearInterval = () => {}; context.clearTimeout = () => {};
+  Object.assign(context.chrome.tabs, { get: async (id) => ({ id, active: true, windowId: 1 }), query: async () => [{ id: 5, active: true, windowId: 1 }] });
+  for (const t of [...PROHIBITED, 'https://example.test/']) {
+    await context.window.__vm.commandBar[via](t, { tabId: 5, submit: true });
+    await settle(3);
+  }
+  const entered = keys.filter(([, type, key]) => type === 'keydown' && key === 'Enter').map(([v]) => v);
+  assert.deepEqual(entered, ['https://example.test/'], `Enter synthesised for: ${JSON.stringify(entered)}`);
+});
+// Important 2: a malformed authority is address-shaped whatever its path holds: never a search, never sent to suggestions.
+const MALFORMED = ['nas.local:abc/private plan', 'nas.local:abc/private', 'nas.local:abc', 'localhost:abc', '192.168.1.1:x/y z', 'host:99999/x',
+  'host:99999/x y', '[::1', '[::1 x', '[::1/x y', 'nas.local:80:90', 'http://host:99999/x', 'http://[::1/x', 'http://999.1.1.1/',
+  'http://a:b:c/', 'https://nas.local:abc/x', 'ftp://[::1]:99999/', 'http://:80/', 'https://user@:80/x', 'nas.local:abc private plan', 'localhost:abc def',
+  '192.168.1.1:8080 admin', '[::1]:80 x', 'nas.local:abc private', 'user@nas.local:abc', '[fe80::1 notes'];
+test('a malformed authority is native whatever its path holds, and words with a colon stay words', () => {
+  const { search } = setup();
+  for (const t of MALFORMED) {
+    assert.equal(search.resolve(t).kind, 'native', t);
+    assert.equal(search.addressShaped(t), true, `${t}: one classification for suggestions and Enter`);
+  }
+  for (const t of ['note:abc', 're:x', 'note: buy milk', '10:30', '12:00:00', '[1] citation needed', 'localhost is down', 'e.g.:this',
+    'e.g.: this', 'Ch.3:intro', 'fig.2:caption', 'v1.2:changelog', '[12:30 meeting]', '[dead:beef notes', '[a:b x', 'user@host.com', '10:30 meeting'])
+    assert.equal(search.resolve(t).kind, 'search', t);
+  const url = (t) => { const r = search.resolve(t); return r && r.kind === 'url' ? r.url : r && r.kind; };
+  assert.equal(url('http://user:pw@host:8080/x'), 'http://user:pw@host:8080/x');
+  assert.equal(url('http://[::1]:8080/'), 'http://[::1]:8080/');
+  assert.equal(url('http://my_host/'), 'http://my_host/');
+  assert.equal(url('http://host:/x'), 'http://host:/x');
+  assert.equal(url('user@nas.local:8080/x'), 'http://user@nas.local:8080/x');
+});
+for (const typed of ['nas.local:abc/private plan', 'nas.local:abc/private', 'host:99999/x', '[::1 x', 'http://host:99999/x y',
+  'nas.local:abc private plan', 'localhost:abc def', '192.168.1.1:8080 admin', 'user@nas.local:abc']) {
+  test(`"${typed}" is never sent for suggestions while typed, and Enter shows it unsubmitted in Vivaldi's field`, async () => {
+    const { context, calls } = setup();
+    const handed = recordHandOvers(context);
+    const input = await loadBar(context);
+    await settle(5);
+    for (let i = 1; i <= typed.length; i++) { // as it is typed, letter by letter from the first malformed prefix on
+      input.value = typed.slice(0, i);
+      await input.events.input();
+    }
+    await settle();
+    const leaked = calls.fetch.filter((f) => decodeURIComponent(f.url).includes(typed.slice(0, Math.max(typed.indexOf(':') + 2, 4))));
+    assert.deepEqual(leaked, [], `the malformed address was sent for suggestions: ${JSON.stringify(leaked)}`);
+    input.events.keydown({ key: 'Enter', preventDefault() {} });
+    await settle();
+    assert.equal(calls.navigation.length, 0, `the bar loaded something: ${JSON.stringify(calls.navigation)}`);
+    assert.equal(calls.request.length, 0, `it was searched: ${JSON.stringify(calls.request)}`);
+    assert.deepEqual(handed.map((h) => [h.text, h.submit]), [[typed, false]]);
+  });
+}
+// Important 3: the order of a request for the field and a tab switch is a counter, not the clock, and a tab-switching
+// shortcut is never a request for the field.
+test('focusIntent: an activation forgets earlier requests, even in the same millisecond; a later one counts', () => {
+  const { context } = setup();
+  vm.runInContext(source('07-workspaces.js'), context);
+  const intent = context.window.__vm.workspaces.focusIntent();
+  intent.asked(1000); intent.activated();
+  assert.equal(intent.userAsked(1000, 1500), false, 'asked, then the switch, same ms: passive');
+  intent.activated(); intent.asked(1000);
+  assert.equal(intent.userAsked(1000, 1500), true, 'the switch, then asked, same ms: a request');
+  assert.equal(intent.userAsked(2500, 1500), false, 'too long ago');
+  assert.equal(context.window.__vm.workspaces.focusIntent().userAsked(0, 1500), false, 'nothing asked yet');
+});
+test("addressKeys: tab-switching shortcuts never ask for the field; Vivaldi's own focus keys and other shortcuts do", () => {
+  const { context } = setup();
+  vm.runInContext(source('07-workspaces.js'), context);
+  const norm = (k) => k.toLowerCase().split('+').sort().join('+');
+  const asks = context.window.__vm.workspaces.addressKeys(null, norm);
+  for (const k of ['ctrl+tab', 'ctrl+shift+tab', 'ctrl+pagedown', 'ctrl+pageup', 'ctrl+1', 'ctrl+9', 'meta+1', 'ctrl+w', 'ctrl+shift+t', '2'])
+    assert.equal(asks(norm(k)), false, k);
+  for (const k of ['ctrl+l', 'meta+l', 'f8', 'ctrl+shift+b', 'alt+q']) assert.equal(asks(norm(k)), true, k);
+  const table = { COMMAND_TAB_SWITCH_FORWARD_ORDER: { shortcuts: ['alt+j'] }, COMMAND_WORKSPACE_SWITCH_2: { shortcuts: ['alt+2'] },
+    COMMAND_FOCUS_ADDRESSFIELD: { shortcuts: ['alt+k', 'ctrl+tab'] }, COMMAND_NOTE: { shortcuts: ['alt+n'] } };
+  const custom = context.window.__vm.workspaces.addressKeys(table, norm);
+  assert.equal(custom(norm('alt+j')), false, 'a custom tab-switch key');
+  assert.equal(custom(norm('alt+2')), false, 'a space-switch key');
+  assert.equal(custom(norm('alt+k')), true, "a custom key for Vivaldi's focus-the-field command");
+  assert.equal(custom(norm('ctrl+tab')), true, "bound to the field's command, it asks");
+  assert.equal(custom(norm('alt+n')), true);
+});
+test('in the bar: Ctrl+Tab and its activation in the same millisecond are passive; Ctrl+L right after a switch is a request', async () => {
+  const { context, calls } = setup();
+  context.chrome.tabs.get = async (id) => ({ id, active: true, windowId: 1 });
+  await loadBar(context);
+  await settle(3);
+  context.Date = class extends Date { static now() { return 5000; } };
+  const shortcut = (key) => { for (const fn of context.shortcutFns) fn(key, key, 1); };
+  const activate = (tabId) => { for (const fn of calls.activatedAll) fn({ tabId, windowId: 1 }); };
+  const asked = () => context.window.__vm.commandBar.askedNow();
+  shortcut('ctrl+tab'); activate(2);
+  assert.equal(asked(), false, 'Ctrl+Tab, then its switch: the focus that follows is passive');
+  activate(3); shortcut('ctrl+tab');
+  assert.equal(asked(), false, 'Ctrl+Tab heard after its switch: still not a request');
+  activate(4); shortcut('ctrl+l');
+  assert.equal(asked(), true, 'Ctrl+L right after a switch, same millisecond: a request');
+  shortcut('ctrl+l'); activate(5);
+  assert.equal(asked(), false, 'a switch after the request forgets it');
+  activate(6); shortcut('alt+q');
+  assert.equal(asked(), true, 'another shortcut (a custom binding) after the switch is a request');
+});
+
+// The control for the leak tests above: the same letter-by-letter typing of plain words does reach the suggestion service,
+// and Enter searches them (so a zero above is the classification, not a probe that sees nothing).
+test('plain words typed the same way do get suggestions and a search', async () => {
+  const { context, calls } = setup();
+  const handed = recordHandOvers(context);
+  const input = await loadBar(context);
+  await settle(5);
+  const typed = 'plain words here';
+  for (let i = 1; i <= typed.length; i++) { input.value = typed.slice(0, i); await input.events.input(); }
+  await settle();
+  assert.ok(calls.fetch.some((f) => decodeURIComponent(f.url).includes('plain words')), `no suggestions asked: ${JSON.stringify(calls.fetch)}`);
+  input.events.keydown({ key: 'Enter', preventDefault() {} });
+  await settle();
+  assert.deepEqual(calls.request.map((r) => r.query), [typed]);
+  assert.deepEqual(handed, []);
 });

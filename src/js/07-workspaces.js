@@ -595,6 +595,48 @@
     typeof msSinceActivation === "number" && msSinceActivation >= 0 && msSinceActivation <= RETURN_FOCUS_MS &&
     !userAsked && !edited && !popupOpen;
 
+  // Whether the user asked for the address field since this window's last tab activation (review round 3). The order of
+  // the two is a counter, never the clock: two events in the same millisecond keep the order they happened in, and an
+  // activation forgets any request made before it (what came before a switch is what switched, Ctrl+Tab..., and the focus
+  // that follows the switch is the tab's remembered one). A request after the activation still counts (Ctrl+L right after).
+  const focusIntent = () => {
+    let order = 0;
+    let activation = 0;
+    let request = null;
+    return {
+      activated: () => { activation = ++order; request = null; },
+      asked: (now) => { request = { order: ++order, at: now }; },
+      userAsked: (now, withinMs) => !!request && request.order > activation && now - request.at < withinMs,
+    };
+  };
+  // Which shortcuts are a request for the address field: Vivaldi's own "focus the address field" keys and any other
+  // shortcut (a custom binding, a menu's command), except the ones that switch, close or reopen a tab or switch a space:
+  // those are what moves the cursor, never a request for the field (review round 3). From Vivaldi's keyboard table
+  // (vivaldi.actions[0], read live) and its defaults, measured in 8.3's prefs_definitions.json: Ctrl+Tab / Ctrl+Shift+Tab
+  // (COMMAND_TAB_SWITCH_*_SETTING), Ctrl+PgUp / PgDn and 1-4 (..._ORDER / _HISTORY), Ctrl+1...8 (COMMAND_TAB_SWITCH_n),
+  // Ctrl+9 (..._LAST), Ctrl+W / Ctrl+F4 (COMMAND_CLOSE_TAB), Ctrl+Shift+T / Ctrl+Z (..._REOPEN_RECENTLY_CLOSED); F8 and
+  // Ctrl+L focus the field (COMMAND_FOCUS_ADDRESSFIELD). A key bound to the field's command wins.
+  const FOCUS_COMMAND = /^COMMAND_FOCUS_ADDRESSFIELD$/;
+  const SWITCH_COMMAND = /^COMMAND_(TAB_SWITCH_|WORKSPACE_SWITCH_|CLOSE_TAB$|CLOSE_WINDOW$|TAB_REOPEN_RECENTLY_CLOSED$)/;
+  // (A Mac's, from the same file: Cmd+1...9, Cmd+W, Shift+Cmd+T, Cmd+Z, Shift+Cmd+[ / ], Alt+Cmd+Left / Right.)
+  const SWITCH_DEFAULTS = ["ctrl+tab", "ctrl+shift+tab", "ctrl+pageup", "ctrl+pagedown", "1", "2", "3", "4", "numpad1", "numpad2",
+    "numpad3", "numpad4", "ctrl+w", "ctrl+f4", "ctrl+shift+t", "ctrl+z", "shift+meta+[", "shift+meta+]", "alt+meta+left", "alt+meta+right",
+    ...[1, 2, 3, 4, 5, 6, 7, 8, 9].flatMap((n) => [`ctrl+${n}`, `ctrl+numpad${n}`])];
+  const FOCUS_DEFAULTS = ["f8", "ctrl+l"];
+  // -> (key) => whether that normalised shortcut is a request for the field. `table` is vivaldi.actions[0] (or nothing);
+  // `normalise` is 00-core's. Each default's Ctrl is also taken as Cmd (a Mac's).
+  const addressKeys = (table, normalise = (k) => k) => {
+    const both = (k) => [normalise(k), normalise(k.replace(/^ctrl\+/, "meta+"))];
+    const focus = new Set(FOCUS_DEFAULTS.flatMap(both));
+    const switching = new Set(SWITCH_DEFAULTS.flatMap(both));
+    for (const [name, cmd] of Object.entries(table && typeof table === "object" ? table : {})) {
+      const keys = Array.isArray(cmd?.shortcuts) ? cmd.shortcuts.map((k) => normalise(k)) : [];
+      if (FOCUS_COMMAND.test(name)) keys.forEach((k) => focus.add(k));
+      else if (SWITCH_COMMAND.test(name)) keys.forEach((k) => switching.add(k));
+    }
+    return (key) => focus.has(key) || !switching.has(key);
+  };
+
   // Whether the address field shows the tab's own address and nothing typed. Vivaldi writes the address without a lone
   // trailing slash and an internal page as vivaldi:settings (measured on 8.2); anything else counts as typed.
   const showsPage = (value, tab) => {
@@ -675,5 +717,5 @@
     return request;
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, privateIntro, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, privateIntro, startWanted, startTyped, inStartFamily, returnFocus, focusIntent, addressKeys, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();
