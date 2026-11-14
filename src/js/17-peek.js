@@ -14,14 +14,12 @@
 //   only after a promotion this wrap saw, and only if it is that preview's own, not adopted, runtime tab.
 // - Both tabs are kept out of Vivarc's lists while a preview is open, in every window: each window's live preview tab
 //   ids are kept on the background page (LIVE_KEY), and a preview made into a tab leaves that registry at once.
-// - Recently Closed leaves out the entries of preview tabs Peek closed, matched one by one to the closing tab (address
-//   and time, one candidate only: claimClosed). A tab the user closed is never hidden.
+// - Recently Closed leaves out only entries whose closed tab carries Peek's identity in its own data: Peek's runtime tab
+//   (arcPeekRuntime), or a preloaded tab this file marked as a preview (PEEK_MARK, cleared before a promotion). An entry
+//   without that identity is shown: a tab the user closed is never hidden (Task 9a fix round 2).
 (() => {
   const spacesOf = window.__vm.workspaces;
   const LIVE_KEY = "__vivarcPeekLive"; // background page: { [window copy token]: [tab ids] }
-  const CLAIMED_KEY = "__vivarcPeekClosed"; // background page: [sessionId], the newest last
-  const CLAIMED_MAX = 100;
-  const CLAIM_DELAY_MS = 400; // Chromium lists a closed tab in the session service just after onRemoved
   const token = `w${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const shared = () => { try { return chrome.extension?.getBackgroundPage?.() || null; } catch (_) { return null; } };
   const warnedOf = new Set();
@@ -66,45 +64,24 @@
   const api = {
     isPeekTab,
     without: (tabs) => { try { const open = ids(); return (tabs || []).filter((t) => !spacesOf.isPeekTab(t, open)); } catch (_) { return tabs || []; } },
-    withoutClosed: (sessions) => { try { return spacesOf.withoutPeekClosed(sessions, shared()?.[CLAIMED_KEY] || []); } catch (_) { return sessions || []; } },
+    withoutClosed: (sessions) => { try { return spacesOf.withoutPeekClosed(sessions); } catch (_) { return sessions || []; } },
   };
   window.__vm.peek = api;
 
-  // This window's preview tabs while they live (a closed tab's address is gone), so the session entry each one leaves
-  // can be claimed when it closes.
-  const seen = new Map(); // tab id -> address
-  const note = (tab) => { if (instance && tab?.id != null && !promoted.has(tab.id) && own().has(tab.id)) seen.set(tab.id, tab.pendingUrl || tab.url || ""); };
-  // Closes of one address are claimed together (Peek closes both of a preview's tabs at once): claimClosed takes them
-  // only if exactly that many entries match, so a tab of the user's closed in the same moment keeps every entry shown.
-  const pending = new Map(); // address -> { n, at, timer }
-  // Chromium can list a closed tab a moment after onRemoved (later under load): while fewer entries than closed preview
-  // tabs are listed, it looks again, up to 4 times over about 2 s. More entries than that: a user's tab may be among
-  // them, and nothing is claimed.
-  const CLAIM_TRIES = 4, CLAIM_RETRY_MS = 600;
-  const claim = async (url, p, tries = 1) => {
-    if (tries === 1) pending.delete(url);
-    try {
-      const page = shared();
-      if (!page) return;
-      const taken = Array.isArray(page[CLAIMED_KEY]) ? page[CLAIMED_KEY] : [];
-      const closed = { url, at: p.at, n: p.n };
-      const sessions = await chrome.sessions.getRecentlyClosed({ maxResults: 25 });
-      const sids = spacesOf.claimClosed(closed, sessions, taken);
-      if (sids.length) page[CLAIMED_KEY] = [...taken, ...sids].slice(-CLAIMED_MAX);
-      else if (tries < CLAIM_TRIES && spacesOf.claimLater(closed, sessions, taken)) setTimeout(() => claim(url, p, tries + 1), CLAIM_RETRY_MS);
-    } catch (error) { warn("match a closed preview tab", error); }
+  // Peek's preloaded tab carries no mark of its own: this window marks each one of its live previews in the tab's data
+  // (vivExtData merges, so only that key is written), so its Recently Closed entry is known to be Peek's. A promotion
+  // clears the mark first (see attach); a mark that could not be written leaves the entry shown.
+  const marked = new Set();
+  const mark = (tab) => {
+    if (!instance || tab?.id == null || marked.has(tab.id) || promoted.has(tab.id)) return;
+    const data = previews().find((d) => d?.parallelTabId === tab.id);
+    if (!data) return;
+    marked.add(tab.id);
+    chrome.tabs.update(tab.id, { vivExtData: JSON.stringify({ [spacesOf.PEEK_MARK]: true }) }).catch((error) => { marked.delete(tab.id); warn("mark a preview tab", error); });
   };
-  const closed = (id) => {
-    if (!seen.has(id)) return;
-    const url = seen.get(id);
-    seen.delete(id);
-    if (!url) return;
-    const p = pending.get(url) || { n: 0, at: 0, timer: 0 };
-    p.n += 1;
-    p.at = Date.now();
-    clearTimeout(p.timer);
-    p.timer = setTimeout(() => claim(url, p), CLAIM_DELAY_MS);
-    pending.set(url, p);
+  const unmark = async (id) => {
+    marked.delete(id);
+    await chrome.tabs.update(id, { vivExtData: JSON.stringify({ [spacesOf.PEEK_MARK]: null }) });
   };
   const changed = () => { publish(); window.dispatchEvent(new CustomEvent("vm-peek-changed")); };
 
@@ -130,8 +107,12 @@
       peek._moveParallelTabToMainWindow = async function (webviewId) {
         const data = preview(webviewId);
         const id = data?.parallelTabId;
+        if (Number.isInteger(id)) {
+          promoted.add(id);
+          try { await unmark(id); } catch (error) { warn("clear a preview tab's mark", error); } // the user's tab from here on
+          changed();
+        }
         try { if (await bringBack(data)) promotedFor.add(webviewId); } catch (error) { warn("bring the preview's tab into the space on screen", error); }
-        if (Number.isInteger(id)) { promoted.add(id); seen.delete(id); changed(); }
         return moveBack.call(this, webviewId);
       };
     }
@@ -140,23 +121,19 @@
       peek.disposePeek = async function (webviewId, options = {}) {
         const data = preview(webviewId);
         const runtime = Number.isInteger(data?.relatedTabId) ? data.relatedTabId : null;
-        // what is about to close: noted with its address now, for Recently Closed
-        for (const id of [data?.parallelTabId, runtime]) if (Number.isInteger(id)) note(await chrome.tabs.get(id).catch(() => null));
         const result = await dispose.call(this, webviewId, options);
         try {
           if (options?.closeRuntimeTab === false && runtime != null && promotedFor.has(webviewId)) {
             const tab = await chrome.tabs.get(runtime).catch(() => null);
             let ext = {};
             try { ext = JSON.parse(tab?.vivExtData || "{}") || {}; } catch (_) { ext = null; }
-            if (tab && ext?.arcPeekRuntime?.webviewId === webviewId && !ext.arcPeekAdopted) {
-              seen.set(tab.id, tab.pendingUrl || tab.url || "");
-              await chrome.tabs.remove(runtime);
-            }
+            if (tab && ext?.arcPeekRuntime?.webviewId === webviewId && !ext.arcPeekAdopted) await chrome.tabs.remove(runtime);
           }
         } catch (error) { warn("close the preview's leftover tab", error); }
         promotedFor.delete(webviewId);
         const still = spacesOf.peekIds(previews());
         for (const id of [...promoted]) if (!still.has(id)) promoted.delete(id);
+        for (const id of [...marked]) if (!still.has(id)) marked.delete(id);
         changed();
         return result;
       };
@@ -176,9 +153,9 @@
   } catch (error) { warn("watch for Peek", error); }
 
   try {
-    chrome.tabs.onCreated.addListener((tab) => { note(tab); publish(); });
-    chrome.tabs.onUpdated.addListener((_id, _change, tab) => { note(tab); publish(); });
-    chrome.tabs.onRemoved.addListener((id) => { closed(id); publish(); });
+    chrome.tabs.onCreated.addListener((tab) => { mark(tab); publish(); });
+    chrome.tabs.onUpdated.addListener((_id, _change, tab) => { mark(tab); publish(); });
+    chrome.tabs.onRemoved.addListener(() => publish());
   } catch (_) {}
   window.addEventListener("beforeunload", () => { try { delete shared()?.[LIVE_KEY]?.[token]; } catch (_) {} });
 })();

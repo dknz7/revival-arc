@@ -301,7 +301,8 @@
     const spaces = window.__vm.workspaces;
     const record = native?.hasSwitch() ? native.record() : null;
     const here = (await chrome.windows.getCurrent().catch(() => null))?.id;
-    const known = record && spaces ? await native.spaceIds() : null;
+    // a list that is not a valid id list is no list at all: nothing then counts as deleted
+    const known = record && spaces ? spaces.spaceList(await native.spaceIds()) : null;
     const pick = record && spaces ? spaces.tabPick(tab, record.activeIn(tab.windowId), record.all().get(spaces.of(tab)) ?? null,
       { known, here, hereShown: here != null ? record.activeIn(here) : null }) : { kind: "activate" };
     // Focusing a minimised window leaves it in the taskbar: it is brought back to normal.
@@ -310,15 +311,18 @@
       if (await minimised(pick.window)) await chrome.windows.update(pick.window, { state: "normal", focused: true });
       return native.focus(pick.window);
     }
-    if (pick.kind === "adopt") return bringHere(tab, pick.window, pick.space, record);
-    // A named space is checked again as the switch runs (the list may have changed since the bar listed the tab): never
-    // into one that is not listed; such a tab is brought into the space on screen here instead.
-    if (pick.kind === "switch" && pick.space) {
-      const now = await native.spaceIds();
-      if (!now?.includes(pick.space)) {
-        const w = here ?? tab.windowId, on = record.activeIn(w) ?? 0;
-        return bringHere(tab, w, on && now?.includes(on) ? on : 0, record);
+    // A tab is moved only on positive evidence (Task 9a fix round 2): a valid list, read again now, that shows the tab's
+    // CURRENT space is gone. An unreadable list is not evidence of anything: the tab is then only activated where it is.
+    // A named switch target is checked the same way: listed, the switch goes ahead; shown gone, the tab is brought into
+    // the space on screen here; unreadable, it is only activated.
+    if (pick.kind === "adopt" || (pick.kind === "switch" && pick.space)) {
+      const [now, current] = await Promise.all([native.spaceIds().then(spaces.spaceList), chrome.tabs.get(tab.id).catch(() => null)]);
+      if (!now || !current) return chrome.tabs.update(tab.id, { active: true }).catch(() => {});
+      if (spaces.deadSpace(current, now)) {
+        const w = here ?? current.windowId, on = record.activeIn(w) ?? 0;
+        return bringHere(current, w, on && now.includes(on) ? on : 0, record);
       }
+      if (pick.kind === "adopt") return chrome.tabs.update(tab.id, { active: true }); // alive after all: shown as it is
     }
     if (pick.kind === "switch") await native.switchTo(pick.window, pick.space);
     await chrome.tabs.update(tab.id, { active: true });
@@ -356,11 +360,15 @@
       if (tab.windowId !== here) await chrome.tabs.move(tab.id, { windowId: here, index: -1 });
       return chrome.tabs.update(tab.id, { active: true });
     }
-    const known = await native.spaceIds();
+    // Only on a valid list: unreadable, nothing can be told about the tab's space, so it is not moved (the ordinary pick)
+    const known = spaces.spaceList(await native.spaceIds());
+    if (!known) return pickTab(tab);
     const plan = spaces.restorePlan({ tab, here, hereShown: record.activeIn(here), known, record: record.all(),
       tabs: await chrome.tabs.query({ windowType: "normal" }) });
     let space = plan.space;
-    if (space && !(await native.spaceIds())?.includes(space)) space = 0; // gone meanwhile
+    const now = spaces.spaceList(await native.spaceIds());
+    if (!now) return pickTab(tab);
+    if (space && !now.includes(space)) space = 0; // gone meanwhile
     if (tab.windowId !== here || spaces.of(tab) !== space) await bringHere(tab, here, space, record, { activate: false });
     if (space !== (record.activeIn(here) ?? 0)) await native.switchTo(here, space);
     await chrome.tabs.update(tab.id, { active: true });
@@ -476,11 +484,10 @@
     if (mode) {
       out.push({ type: "search", engine: mode, query: text, label: text || "%s", lead: true });
     } else if (!text) {
-      // a tab whose space is not known to exist never comes first (Enter would pick it): listed after the others
-      const known = await window.__vm.native?.spaceIds?.();
-      const listed = await allTabs();
-      const live = (t) => window.__vm.workspaces.liveSpace(t, known);
-      [...listed.filter(live), ...listed.filter((t) => !live(t))].slice(0, 7).forEach((tab) =>
+      // Only tabs whose space is known to exist are offered with nothing typed: the first row is picked by Enter, and a
+      // tab of a deleted (or unverifiable) space must never be that row, even when it is the only one. Typing finds it.
+      const known = window.__vm.workspaces.spaceList(await window.__vm.native?.spaceIds?.());
+      (await allTabs()).filter((t) => window.__vm.workspaces.liveSpace(t, known)).slice(0, 7).forEach((tab) =>
         out.push({ type: "tab", tab, url: tab.url, favicon: tab.favIconUrl, label: window.__vm.workspaces.startTitle(tab) || tab.title || tab.url }));
     } else {
       const needle = text.toLowerCase();
@@ -506,7 +513,7 @@
       } catch (_) {}
       if (id !== seq) return;
       // A tab whose space was deleted never leads (Enter would run it; task 8y): it is still listed, and picking it brings it here.
-      const known = await window.__vm.native?.spaceIds?.();
+      const known = window.__vm.workspaces.spaceList(await window.__vm.native?.spaceIds?.());
       const prefix = matches.find((m) => hostOf(m.url).startsWith(needle) && !(m.type === "tab" && !window.__vm.workspaces.liveSpace(m.tab, known)));
       const lead = leadRows(text);
       if (lead.url) out.push(lead.url);
@@ -553,7 +560,7 @@
     const text = input.value;
     if (mode || !text || /\s/.test(text) || !autoCompleted) return;
     const needle = text.toLowerCase();
-    const known = await window.__vm.native?.spaceIds?.();
+    const known = window.__vm.workspaces.spaceList(await window.__vm.native?.spaceIds?.());
     const hosts = [
       ...(window.__vm.peek?.without ?? ((tabs) => tabs))(await chrome.tabs.query({ currentWindow: true })).filter((t) => window.__vm.workspaces.liveSpace(t, known)).map((t) => hostOf(t.url)),
       ...((await chrome.bookmarks.search(text).catch(() => [])).map((b) => hostOf(b.url))),

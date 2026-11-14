@@ -824,7 +824,7 @@ const on = () => ({ addListener() {} });
 globalThis.chrome = {
   extension: { getBackgroundPage: () => bg },
   windows: { getAll: async () => s.windows, getCurrent: async () => ({ id: input.me }), onRemoved: on("windows.onRemoved") },
-  tabs: { query: async () => s.tabs,
+  tabs: { query: async () => s.tabs, get: async (id) => s.tabs.find((t) => t.id === id),
           update: async (id) => { call(["activate", id]); },
           move: async (ids, p) => { call(["move", ids, p.windowId]); },
           onActivated: on("tabs.onActivated"), onAttached: on("tabs.onAttached"), onDetached: on("tabs.onDetached"), onRemoved: on("tabs.onRemoved") },
@@ -857,20 +857,35 @@ class RepairRuntime(unittest.TestCase):
         self.assertEqual(out["calls"][0], ["move", [30], 1])
         self.assertIn("[vivarc] repair: gather space 5 into window 1 (tabs 30)", out["log"])
 
-    # Task 9a: the heal through the runner. The store's list (record().spaces) and setSpace are stubbed in.
-    # chrome.tabs.get reads the (unchanging) state; store.read answers DELETED (default: no key); AFTER(id) runs after
-    # each setSpace, which is how a test acts between two heal steps.
+    # Task 9a: the heal through the runner (fix round 2: its own guarded move, never setSpace). STORE: Vivaldi's store
+    # list; DELETED: what store.read answers for deletedSpaces (default: no key); the 8.3 move lands the tab in the default
+    # space unless MOVE(id) says otherwise ("stay": it does not land; "throw"); AFTER(id) runs after each move; DURING(step,
+    # n) runs while a heal step's reads are pending (the sandbox hook's place); a vivExtData write is recorded as "write".
     HEAL_STUBS = """
       const r0 = window.__vm.native.record;
       window.__vm.native.record = () => ({ ...r0(), spaces: STORE });
-      chrome.tabs.get = async (id) => s.tabs.find((t) => t.id === id);
+      window.__vm.native.movesByTab = async () => true;
+      window.__vm.native.setSpace = async (id) => { call(["setSpace", id]); };
       window.__vm.store = { read: async () => (typeof DELETED === "function" ? DELETED() : undefined) };
-      window.__vm.native.setSpace = async (id, sp, o) => { call(["setSpace", id, sp, o.windowId]); if (typeof AFTER === "function") AFTER(id); };
+      chrome.tabs.update = async (id, props) => { call(props.vivExtData ? ["write", id] : ["activate", id]); };
+      vivaldi.tabsPrivate = { move: async (a) => {
+        const id = a.tabIds[0], how = typeof MOVE === "function" ? MOVE(id) : null;
+        call(["heal", id, a.workspaceId, a.windowId]);
+        if (how === "throw") throw new Error("refused");
+        if (how !== "stay") s.tabs.find((t) => t.id === id).vivExtData = "{}";
+        if (typeof AFTER === "function") AFTER(id);
+        return { success: true };
+      } };
+      window.__vm.spaceRepair.test = { beforeStep: (step, n) => { if (typeof DURING === "function") DURING(step, n); } };
     """
 
-    def test_the_heal_moves_each_dead_tab_with_setspace_and_logs_it(self):
+    def healed(self, out):
+        return [c[1] for c in out["calls"] if c[0] == "heal"]
+
+    def test_the_heal_moves_each_dead_tab_with_its_own_guarded_move_and_logs_it(self):
         out = runtime(Repairs.ORPHANS, me=1, script="const STORE = () => s.spaces;" + self.HEAL_STUBS)
-        self.assertEqual(out["calls"][:3], [["setSpace", 11, 0, 1], ["setSpace", 12, 0, 1], ["setSpace", 21, 0, 2]])
+        self.assertEqual([c for c in out["calls"] if c[0] == "heal"], [["heal", 11, 0, 1], ["heal", 12, 0, 1], ["heal", 21, 0, 2]])
+        self.assertNotIn("setSpace", [c[0] for c in out["calls"]], "never the general mover with its fallback write")
         self.assertIn("[vivarc] repair: tab 11 from deleted space 9 to its window's default space", out["log"])
         self.assertEqual(runtime(Repairs.ORPHANS, me=2, script="const STORE = () => s.spaces;" + self.HEAL_STUBS)["calls"], [], "not the leader")
 
@@ -890,37 +905,90 @@ class RepairRuntime(unittest.TestCase):
             out = runtime(Repairs.ORPHANS, me=1, script=f"const STORE = () => s.spaces; const DELETED = {deleted};" + self.HEAL_STUBS)
             self.assertEqual(out["calls"], [], deleted)
 
-    # The coordinator's case (Task 9a fix round): a batch of orphans, and between two heal steps the user moves the next
-    # one into a live space, or re-creates its deleted space: that one is NOT moved, and the batch stops there.
+    # The coordinator's cases (fix rounds 1 and 2): a batch of orphans; the user acts on the next one between two steps,
+    # or WHILE that step's own reads are pending (round 2's gap): that tab is NOT moved, and the batch stops there.
     def test_a_tab_moved_into_a_live_space_between_two_heal_steps_is_not_moved(self):
         script = """const STORE = () => s.spaces;
           const AFTER = (id) => { if (id === 11) s.tabs.find((t) => t.id === 12).vivExtData = JSON.stringify({ workspaceId: 5 }); };""" + self.HEAL_STUBS
         out = runtime(Repairs.ORPHANS, me=1, script=script)
-        moved = [c[1] for c in out["calls"] if c[0] == "setSpace"]
-        self.assertNotIn(12, moved, "tab 12 is in live space X now")
-        self.assertEqual(moved[0], 11)
-        self.assertIn(21, moved, "the next pass plans again and heals what is still dead")
+        self.assertNotIn(12, self.healed(out), "tab 12 is in live space X now")
+        self.assertEqual(self.healed(out)[0], 11)
+        self.assertIn(21, self.healed(out), "the next pass plans again and heals what is still dead")
         self.assertTrue(any("tab 12 from deleted space 9" in line and "not done (the tab is in another space now)" in line for line in out["log"]))
 
-    def test_a_space_re_created_between_two_heal_steps_stops_the_heal(self):
+    def test_a_tab_moved_into_a_live_space_while_its_steps_reads_are_pending_is_not_moved(self):
+        # the move happens inside the step's own reads: in the undelete-store read of tab 12's step (the 3rd read: the
+        # confirmation, tab 11's step, tab 12's step), and separately in the hook's place after those reads
+        for how in ["""let reads = 0; const DELETED = () => { if (++reads === 3) s.tabs.find((t) => t.id === 12).vivExtData = JSON.stringify({ workspaceId: 5 }); return undefined; };""",
+                    """const DURING = (step) => { if (step.tab === 12) s.tabs.find((t) => t.id === 12).vivExtData = JSON.stringify({ workspaceId: 5 }); };"""]:
+            out = runtime(Repairs.ORPHANS, me=1, script="const STORE = () => s.spaces;" + how + self.HEAL_STUBS)
+            self.assertNotIn(12, self.healed(out), how)
+            self.assertIn(11, self.healed(out), how)
+
+    def test_a_space_re_created_while_a_step_is_prepared_stops_the_heal(self):
         script = """const STORE = () => s.spaces;
-          const AFTER = (id) => { if (id === 11 && !s.spaces.includes(9)) s.spaces.push(9); };""" + self.HEAL_STUBS
+          const DURING = (step) => { if (step.tab === 12 && !s.spaces.includes(9)) s.spaces.push(9); };""" + self.HEAL_STUBS
         out = runtime(Repairs.ORPHANS, me=1, script=script)
-        moved = [c[1] for c in out["calls"] if c[0] == "setSpace"]
-        self.assertNotIn(12, moved, "space 9 exists again: its tab 12 stays")
+        self.assertNotIn(12, self.healed(out), "space 9 exists again: its tab 12 stays")
         self.assertTrue(any("not done (the workspace list changed)" in line for line in out["log"]))
 
     def test_a_gesture_between_two_heal_steps_stops_the_batch(self):
         script = """const STORE = () => s.spaces;
           const AFTER = (id) => { if (id === 11) bg.__vivarcSpaceGesture = Date.now() + 5000; };""" + self.HEAL_STUBS
         out = runtime(Repairs.ORPHANS, me=1, script=script)
-        self.assertEqual([c[1] for c in out["calls"] if c[0] == "setSpace"], [11])
+        self.assertEqual(self.healed(out), [11])
+
+    def test_a_gesture_during_a_step_stops_it_before_the_move(self):
+        script = """const STORE = () => s.spaces;
+          const DURING = (step) => { if (step.tab === 12) bg.__vivarcSpaceGesture = Date.now() + 5000; };""" + self.HEAL_STUBS
+        self.assertEqual(self.healed(runtime(Repairs.ORPHANS, me=1, script=script)), [11])
+
+    def test_a_heal_move_that_does_not_land_stops_the_batch_and_writes_nothing(self):
+        script = """const STORE = () => s.spaces; const MOVE = (id) => (id === 11 ? "stay" : null);""" + self.HEAL_STUBS
+        out = runtime(Repairs.ORPHANS, me=1, script=script)
+        self.assertNotIn("write", [c[0] for c in out["calls"]], "no fallback vivExtData write")
+        self.assertNotIn("setSpace", [c[0] for c in out["calls"]])
+        self.assertEqual(set(self.healed(out)), {11}, "each pass stops at tab 11; nothing after it is moved")
+        self.assertTrue(any("not done (it did not land)" in line for line in out["log"]))
 
     def test_a_failed_heal_move_stops_the_batch(self):
-        script = """const STORE = () => s.spaces;""" + self.HEAL_STUBS + """
-          window.__vm.native.setSpace = async (id) => { call(["setSpace", id]); if (id === 11) throw new Error("refused"); };"""
+        script = """const STORE = () => s.spaces; const MOVE = (id) => (id === 11 ? "throw" : null);""" + self.HEAL_STUBS
         out = runtime(Repairs.ORPHANS, me=1, script=script)
-        self.assertEqual([c for c in out["calls"] if c[0] == "setSpace"][:2], [["setSpace", 11], ["setSpace", 11]], "the pass stops at the failure and the next one starts again")
+        self.assertEqual(set(self.healed(out)), {11})
+        self.assertTrue(any("not done (the move failed" in line for line in out["log"]))
+
+    def test_a_heal_that_lands_somewhere_else_stops_the_batch(self):
+        script = """const STORE = () => s.spaces;
+          const AFTER = (id) => { if (id === 11) s.tabs.find((t) => t.id === 11).index = 99; };""" + self.HEAL_STUBS
+        out = runtime(Repairs.ORPHANS, me=1, script=script)
+        self.assertTrue(any("not done (the tab changed place)" in line for line in out["log"]))
+
+    def test_without_trustworthy_membership_nothing_is_gathered(self):
+        # a split named space, but the pref can't be read (spaces null) or is malformed: rule 3 waits
+        for spaces in (None, [None], [5, 5]):
+            self.assertEqual(js("workspaces.repairPlan({ ...s, record: new Map(s.record) })", s={**Repairs.D8, "spaces": spaces}), [], spaces)
+
+    def test_a_gather_whose_tabs_changed_is_not_made(self):
+        script = """chrome.tabs.get = async (id) => ({ ...s.tabs.find((t) => t.id === id), vivExtData: "{}" });"""
+        out = runtime(Repairs.D8, me=1, script=script)
+        self.assertEqual([c for c in out["calls"] if c[0] == "move"], [], "tab 30 is not in space 5 any more")
+        self.assertTrue(any("not done (its tabs changed)" in line for line in out["log"]))
+
+    def test_a_failed_ordinary_step_stops_the_plan(self):
+        # TANGLE plans several steps; the first one fails: nothing after it runs in that pass
+        script = """window.__vm.native.switchTo = async (w, sp) => { call(["switch", w, sp]); throw new Error("no"); };"""
+        out = runtime(Repairs.TANGLE, me=1, script=script)
+        self.assertEqual({c[0] for c in out["calls"]}, {"switch"}, "the activate and gathers after the failed switch never run")
+    def test_a_run_that_finds_the_store_not_ready_comes_back_by_itself(self):
+        # the store fills after start-up: no event, no pref change; the run retries (5 s at 40x speed is 125 ms)
+        script = """let ready = Date.now() + 150; const STORE = () => (Date.now() < ready ? [] : s.spaces);""" + self.HEAL_STUBS
+        out = runtime(Repairs.ORPHANS, me=1, script=script)
+        self.assertEqual(self.healed(out)[:3], [11, 12, 21])
+
+    def test_a_record_not_there_yet_is_waited_for(self):
+        script = """let n = 0; const r1 = window.__vm.native.record; window.__vm.native.record = () => (++n < 3 ? null : r1());"""
+        out = runtime(Repairs.D8, me=1, script=script)
+        self.assertEqual(out["calls"][0], ["move", [30], 1], "gathered once the record is there")
 
     def test_a_repair_that_does_not_take_stops_after_three_passes(self):
         out = runtime(Repairs.D1, me=1)

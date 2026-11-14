@@ -3992,6 +3992,28 @@ const healStepCase = (id, act) => def(id, {
 healStepCase("R.heal-step-moved-into-live-space", () => `await vivaldi.tabsPrivate.move({ tabIds: [step.tab], target: step.tab, windowId: step.window, tweaks: ["do-not-reparent"], workspaceId: ${sp("X")}, debug: "sbx" });`);
 healStepCase("R.heal-step-space-re-created", () => `const s = window.__sbx; s.mgr.addWorkspaceWithId(step.from, "Y again", s.ws.getDefaultIcon?.(), ""); await new Promise((r) => setTimeout(r, 300));`);
 
+// Fix round 2: start-up readiness. Orphans are there, and Vivaldi's store "loads" 8 s late (the leader's reads replaced:
+// the store list is empty until then, the pref is the real one). Nothing else happens: no tab event, no pref change, no
+// schedule() from the case. The repairs must come back by themselves and heal once the store is ready; a live tab stays.
+def("R.heal-store-loads-late", {
+  busyThroughAct: true, setup: () => SET_ORPHANS({ twoWindows: false }),
+  act: async () => {
+    await h.ev(LOGS, ctx.H);
+    await h.ev(`(() => { const ready = Date.now() + 8000; window.__vm.spaceRepair.test = { lists: async () => ({
+      pref: ((await vivaldi.prefs.get("vivaldi.workspaces.list"))?.value || []).map((w) => w.id),
+      store: Date.now() < ready ? [] : (window.__vm.native.record()?.spaces?.() ?? null) }) }; return 1; })()`, ctx.H);
+    await unbusy();
+    const t0 = Date.now();
+    const at4 = await waitFor(async () => (Date.now() - t0 > 4000 ? deadIn(await h.snap(ctx.H)).length : null), 6000, 300);
+    const healed = await waitFor(async () => !deadIn(await h.snap(ctx.H)).length, 40000, 500);
+    const ms = Date.now() - t0;
+    await h.ev(`(delete window.__vm.spaceRepair.test, 1)`, ctx.H);
+    return { done: "ok", deadAt4s: at4, healed: !!healed, ms };
+  },
+  expect: (s, b, r) => [r.deadAt4s === 3 ? null : `${3 - (r.deadAt4s ?? 0)} healed before the store was ready`, r.healed ? null : "not healed after the store became ready",
+    noDead(s), tabIs(s, "X1", { win: ctx.W, space: sp("X") }), ...["DY1", "DY2", "DY3"].map((l) => labelIs(s, l, { win: ctx.W, space: 0 }))],
+});
+
 // Byron's ruling is general (fix round, Important 6): ANY tab restored from Recently Closed comes to the window clicked
 // in. A tab of a live space that lives in another window joins the space on screen here; a default-space tab comes to
 // this window's default space (shown). (A deleted space's tab: DEL.restore-from-other-window.)

@@ -202,6 +202,8 @@ test("landing in a space whose only tab is Vivaldi's Bookmarks page leaves the b
 // Clicking the sidebar's URL field fires vm-edit-url: the bar edits the current page (tab 10).
 async function editUrl(tabs = { 10: page(10, 1), 11: page(11, 1) }) {
   const space = await spaces(tabs);
+  // Vivaldi's list holds spaces 1 to 4 (Task 9a: with nothing typed, only tabs of listed spaces are offered); no switch
+  space.context.window.__vm.native = { spaceIds: async () => [1, 2, 3, 4], hasSwitch: () => false, record: () => null };
   space.edit = async () => {
     await space.context.events['vm-edit-url']();
     for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
@@ -316,6 +318,10 @@ async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwit
     space.context.chrome.windows.get = async id => ({ id, state: minimised.includes(id) ? 'minimized' : 'normal' });
     space.context.chrome.windows.update = async (id, opts) => { log.push(['window', id, { ...opts }]); };
   }
+  if (via === 'pickTab-direct') {
+    await space.context.window.__vm.pickTab(tabs[20]);
+    return { ...space, log };
+  }
   if (via === 'restoreTab') {
     space.context.chrome.tabs.move = async (id, opts) => { log.push(['tabs.move', id, { ...opts }]); };
     await space.context.window.__vm.restoreTab(tabs[20]);
@@ -350,7 +356,7 @@ test('a tab picked in another window that is not minimised is only focused', asy
 });
 // Task 9a (8y bug 1): a tab of a deleted space (9) is brought into the space on screen here, never switched to.
 test('a tab picked from the bar whose space was deleted joins the space on screen and is activated, with no switch', async () => {
-  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 9) });
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 9) }, { via: 'pickTab-direct' });
   assert.deepEqual(log, [['setSpace', 20, 1, { windowId: 1 }], ['update', 20, { active: true }]]);
 });
 test('a named space deleted between the listing and the switch is not switched to: the tab joins the space on screen', async () => {
@@ -362,12 +368,31 @@ test('a restored tab of a space living in no other window keeps its space here: 
   const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { via: 'restoreTab' });
   assert.deepEqual(log, [['switch', 1, 2], ['update', 20, { active: true }]]);
 });
+test('a restored tab is not moved while the list cannot be read (only activated)', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 9) }, { via: 'restoreTab', known: null });
+  assert.deepEqual(log, [['update', 20, { active: true }]]);
+});
 test('a restored tab of a deleted space joins the space on screen here, with no switch', async () => {
   const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 9) }, { via: 'restoreTab' });
   assert.deepEqual(log, [['setSpace', 20, 1, { windowId: 1 }], ['update', 20, { active: true }]]);
 });
 test('with the space list unreadable a tab of a named space picked from the bar is only activated', async () => {
-  assert.deepEqual((await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { known: null })).log, [['update', 20, { active: true }]]);
+  assert.deepEqual((await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { known: null, via: 'pickTab-direct' })).log, [['update', 20, { active: true }]]);
+});
+// Task 9a fix round 2: unreadable evidence is not absence. Listed when the bar listed it, then unreadable as the switch
+// runs: nothing is moved, the tab is only activated.
+test('a named switch whose list becomes unreadable as it runs moves nothing', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { known: [1, 2], knownLater: null });
+  assert.deepEqual(log, [['update', 20, { active: true }]]);
+});
+test('a dead tab picked while the list becomes unreadable is only activated', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 9) }, { known: [1, 2], knownLater: null, via: 'pickTab-direct' });
+  assert.deepEqual(log, [['update', 20, { active: true }]]);
+});
+test('with nothing typed, a tab of a deleted space is never offered, even as the only tab', async () => {
+  const { log, inputs } = await pickTab({ 10: page(10, 9), 20: page(20, 9) });
+  assert.deepEqual(log, [], 'Enter on the empty list picks nothing');
+  assert.ok(inputs.length >= 1);
 });
 test("without Vivaldi's record or switch a tab picked from the bar is activated as before", async () => {
   assert.deepEqual((await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { record: false })).log, [['update', 20, { active: true }]]);

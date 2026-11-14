@@ -241,7 +241,8 @@
   const repairPlan = ({ windows, tabs, record, spaces, heal }) => {
     const normal = (windows || []).filter((w) => w.type === "normal").map((w) => w.id).sort((a, b) => a - b);
     const live = new Set(normal);
-    const known = Array.isArray(spaces) ? new Set(spaces) : null;
+    // a list that is not a valid id list counts as unreadable everywhere in the plan (no space can be told deleted)
+    const known = spaceList(spaces) ? new Set(spaces) : null;
     const plan = [];
 
     // 0. A tab whose space no longer exists (Vivaldi 8.3 restores a deleted space's tab with its dead id, task 8y) moves
@@ -301,8 +302,10 @@
 
     // 3. A named space with tabs in more than one window (D8): its strays move to where it lives, the window showing
     //    it, else the one with most of its tabs (livesIn). They keep their space (C1). A deleted space is not gathered:
-    //    its tabs go to their own window's default space (rule 0).
-    const named = [...new Set(all.map(of))].filter((id) => id && !pulled.has(id) && !(known && !known.has(id))).sort((a, b) => a - b);
+    //    its tabs go to their own window's default space (rule 0). Without a valid list nothing is gathered: a space that
+    //    can't be told live from deleted is left where it is (Task 9a fix round 2).
+    const listed = spaceList(spaces) ? known : null;
+    const named = listed ? [...new Set(all.map(of))].filter((id) => id && !pulled.has(id) && listed.has(id)).sort((a, b) => a - b) : [];
     for (const id of named) {
       const own = all.filter((t) => of(t) === id);
       if (new Set(own.map((t) => t.windowId)).size < 2) continue;
@@ -382,34 +385,18 @@
   const peekIds = (previews) => {
     try { return new Set([...(previews || [])].flatMap((d) => [d?.parallelTabId, d?.relatedTabId]).filter((id) => Number.isInteger(id))); } catch (_) { return new Set(); }
   };
-  // Recently Closed without the entries of tabs Peek itself closed (every preview used to leave two there, task 8y).
-  // claimed: the sessionIds 17-peek.js matched, one by one, to a preview tab it saw close (claimClosed). Only those are
-  // left out: a tab the user closed is never hidden, even at the same address.
-  const withoutPeekClosed = (sessions, claimed) => {
-    const mine = new Set((claimed || []).filter((id) => typeof id === "string" && id));
-    return (sessions || []).filter((s) => !s?.tab?.sessionId || !mine.has(s.tab.sessionId));
+  // A Recently Closed entry is Peek's only on authoritative identity, read from the closed tab's own data (Vivaldi keeps
+  // vivExtData in its session entries): Peek's runtime tab (arcPeekRuntime, not adopted), or a preloaded tab Vivarc marked
+  // as a preview (PEEK_MARK, written when it learns the tab is a preview, cleared before Peek makes it a real tab). An
+  // address, a time or a count never decides it; an entry without readable data is the user's (Task 9a fix round 2).
+  const PEEK_MARK = "vivarcPeekPreview";
+  const peekSession = (entry) => {
+    try {
+      const ext = JSON.parse(entry?.tab?.vivExtData || "{}") || {};
+      return (!!ext.arcPeekRuntime && !ext.arcPeekAdopted) || ext[PEEK_MARK] === true;
+    } catch (_) { return false; }
   };
-  // Which Recently Closed entries are the preview tabs that just closed: closed { url, at (ms), n: how many preview tabs
-  // of that address closed together (Peek closes its two at once) }; sessions: newest first; taken: sessionIds already
-  // claimed. The tab entries with that address closed within 3 s and not already claimed are Peek's only when there are
-  // exactly n of them; any other count means a tab of the user's may be among them: [] (every entry stays shown).
-  const PEEK_CLOSED_MS = 3000;
-  const claimClosed = (closed, sessions, taken) => {
-    const n = closed?.n ?? 1;
-    if (!closed?.url || !(n > 0)) return [];
-    const used = new Set(taken || []);
-    const hits = (sessions || []).filter((s) => s?.tab?.sessionId && !used.has(s.tab.sessionId) && s.tab.url === closed.url
-      && Number.isFinite(s.lastModified) && Math.abs(s.lastModified * 1000 - closed.at) <= PEEK_CLOSED_MS);
-    return hits.length === n ? hits.map((s) => s.tab.sessionId) : [];
-  };
-  // Whether a claim that found nothing should look again: fewer matching entries than closed preview tabs (Chromium had
-  // not listed them all yet), never more (a user's tab among them).
-  const claimLater = (closed, sessions, taken) => {
-    const used = new Set(taken || []);
-    const hits = (sessions || []).filter((s) => s?.tab?.sessionId && !used.has(s.tab.sessionId) && s.tab.url === closed?.url
-      && Number.isFinite(s.lastModified) && Math.abs(s.lastModified * 1000 - closed.at) <= PEEK_CLOSED_MS);
-    return hits.length < (closed?.n ?? 1);
-  };
+  const withoutPeekClosed = (sessions) => (sessions || []).filter((s) => !peekSession(s));
   // Where Peek's preloaded tab goes when a preview becomes a tab: beside its source (just after it) when the source is
   // in this window. others: this window's tabs but the preloaded one, sorted by index. -> setSpace's index, or undefined
   // (the end of the window).
@@ -827,5 +814,5 @@
     return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, deletedIds, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, claimClosed, claimLater, PEEK_CLOSED_MS, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, deletedIds, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();
