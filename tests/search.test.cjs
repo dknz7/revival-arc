@@ -296,12 +296,15 @@ test('switching tab in this window closes an edit bar, keeping its page; a switc
 
 // The bar edits tab 10 (window 1, recorded on `shown`) and Enter picks its first row, tab 20. Vivaldi's record and switch
 // are faked; every switch, focus and activation lands in one log, in order.
-async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true, minimised = null } = {}) {
+// known: the spaces Vivaldi's list holds (Task 9a: a tab in a space not listed was deleted); null: the list can't be read.
+async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true, minimised = null, known = [1, 2] } = {}) {
   const space = await editUrl(tabs);
   const log = [];
   space.context.window.__vm.native = {
     record: () => (record ? { activeIn: (w) => (w === 1 ? shown : 0), all: () => new Map(all) } : null),
     hasSwitch: () => hasSwitch,
+    spaceIds: async () => known,
+    setSpace: async (id, s, opts) => { log.push(['setSpace', id, s, { ...opts }]); },
     switchTo: async (w, s) => { log.push(['switch', w, s]); },
     focus: async (w) => { log.push(['focus', w]); },
   };
@@ -338,6 +341,14 @@ test('a tab picked in another window that is minimised brings that window back t
 test('a tab picked in another window that is not minimised is only focused', async () => {
   const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 0, 2) }, { all: [[1, 1]], minimised: [] });
   assert.deepEqual(log, [['update', 20, { active: true }], ['window', 2, { focused: true }]]);
+});
+// Task 9a (8y bug 1): a tab of a deleted space (9) is brought into the space on screen here, never switched to.
+test('a tab picked from the bar whose space was deleted joins the space on screen and is activated, with no switch', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 9) });
+  assert.deepEqual(log, [['setSpace', 20, 1, { windowId: 1 }], ['update', 20, { active: true }]]);
+});
+test('with the space list unreadable a tab of a named space picked from the bar is only activated', async () => {
+  assert.deepEqual((await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { known: null })).log, [['update', 20, { active: true }]]);
 });
 test("without Vivaldi's record or switch a tab picked from the bar is activated as before", async () => {
   assert.deepEqual((await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { record: false })).log, [['update', 20, { active: true }]]);
