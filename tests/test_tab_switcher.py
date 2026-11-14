@@ -265,5 +265,29 @@ class QuickTaps(unittest.TestCase):
         self.assertEqual(core(["Ctrl+S", "Ctrl+S"]), ["ctrl+s"])
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the tab switcher's JavaScript")
+class VivaldisKeyEvents(unittest.TestCase):
+    """Vivaldi's onKeyboardChanged(windowId, down, modifiers, keyCode): measured on 8.3, a quick Ctrl+Tab's Ctrl release
+    reaches the UI only this way while the page has the cursor."""
+
+    def change(self, **e):
+        return js("window.__vm.switcher.keyboardChange(e)", e=e)
+
+    def test_ctrl_down_and_up_in_this_window(self):
+        self.assertEqual(self.change(own=5, windowId=5, down=True, keyCode=17), "ctrl-down")
+        self.assertEqual(self.change(own=5, windowId=5, down=False, keyCode=17), "ctrl-up")
+
+    def test_escape_going_down(self):
+        self.assertEqual(self.change(own=5, windowId=5, down=True, keyCode=27), "escape")
+        self.assertIsNone(self.change(own=5, windowId=5, down=False, keyCode=27))
+
+    def test_another_windows_keys_and_other_keys_are_nothing(self):
+        self.assertIsNone(self.change(own=5, windowId=6, down=False, keyCode=17))
+        self.assertIsNone(self.change(own=5, windowId=5, down=False, keyCode=9))
+
+    def test_without_both_window_ids_it_is_taken_as_this_windows(self):
+        self.assertEqual(self.change(windowId=5, down=False, keyCode=17), "ctrl-up")
+
+
 if __name__ == "__main__":
     unittest.main()

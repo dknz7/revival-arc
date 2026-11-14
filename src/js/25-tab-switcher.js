@@ -51,12 +51,23 @@
     if (key === "Enter") return "commit";
     return "leave";
   };
+  // Vivaldi's own word on a key going down or up, wherever the cursor is (tabsPrivate.onKeyboardChanged(windowId, down,
+  // modifiers, keyCode), what its own tab cycler ends on; measured on 8.3: with the page holding the cursor, a quick
+  // Ctrl+Tab's Ctrl release comes ONLY here, before the row can take the cursor, and never to the UI's own key events).
+  // -> "ctrl-down", "ctrl-up", "escape" for this window, else null.
+  const CTRL = 17, ESCAPE = 27;
+  const keyboardChange = ({ own, windowId, down, keyCode } = {}) => {
+    if (typeof own === "number" && typeof windowId === "number" && windowId !== own) return null;
+    if (keyCode === CTRL) return down ? "ctrl-down" : "ctrl-up";
+    if (keyCode === ESCAPE && down) return "escape";
+    return null;
+  };
   // The fallback card for a tab with no thumbnail: its site and a letter for it.
   const hostOf = (url) => {
     try { return new URL(url).hostname.replace(/^www\./, ""); } catch (_) { return ""; }
   };
   const monogram = (tab) => (hostOf(tab?.url || "") || tab?.title || "?").trim().charAt(0).toUpperCase() || "?";
-  window.__vm.switcher = { order, step, first, of, decision, tableChange, rowKey, hostOf, monogram, SHOWN, NEXT_KEY, PREV_KEY, LATE_MS: 100 };
+  window.__vm.switcher = { order, step, first, of, decision, tableChange, rowKey, keyboardChange, hostOf, monogram, SHOWN, NEXT_KEY, PREV_KEY, LATE_MS: 100 };
   if (!window.__vm.store) return;
 
   const { normalise } = window.__vm;
@@ -292,11 +303,21 @@
   // Ctrl, always: the release ends a row that is up or still being made (opening then switches without showing it).
   let ctrlSeenAt = 0; // the last time this window's UI saw Ctrl held (a keydown with it)
   window.addEventListener("keydown", (e) => { if (e.key === "Control") ctrlDown = true; if (e.ctrlKey) ctrlSeenAt = Date.now(); }, true);
-  window.addEventListener("keyup", (e) => {
-    if (e.key !== "Control") return;
+  const released = (how) => {
     ctrlDown = false;
-    if (bar && items.length) { ended = "Ctrl released"; commit(); }
-  }, true);
+    if (bar && items.length) { ended = how; commit(); }
+  };
+  window.addEventListener("keyup", (e) => { if (e.key === "Control") released("Ctrl released"); }, true);
+  // The same from Vivaldi, which hears the keys the page gets too: a quick press's release (see keyboardChange). A row whose
+  // cards are not made yet switches without showing as soon as they are (open() reads ctrlDown).
+  try {
+    vivaldi.tabsPrivate.onKeyboardChanged.addListener((windowId, down, _modifiers, keyCode) => {
+      const what = keyboardChange({ own: window.vivaldiWindowId, windowId, down, keyCode });
+      if (what === "ctrl-down") { ctrlDown = true; ctrlSeenAt = Date.now(); }
+      else if (what === "ctrl-up") released("Ctrl released");
+      else if (what === "escape" && bar) { ended = "Escape"; cancel(); }
+    });
+  } catch (error) { console.warn("[vivarc] tab switcher: no key events from Vivaldi", error); }
   // A Ctrl released before the row had the cursor never reaches it: the next move of the mouse without Ctrl ends it. Only a
   // real move: the row appearing under a still pointer makes the browser send a mousemove of its own, with no movement.
   const onMouseMove = (e) => { if (!e.ctrlKey && (e.movementX || e.movementY)) { ctrlDown = false; ended = "mouse moved without Ctrl"; commit(); } };
