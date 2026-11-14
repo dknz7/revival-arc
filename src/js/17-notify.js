@@ -135,6 +135,7 @@
     const card = el("div", `vm-note ${cls}`.trim());
     card.setAttribute("role", "group");
     const head = el("div", "vm-note-head");
+    card.append(head);
     if (icon) { const i = el("span", "vm-note-icon"); i.innerHTML = icon; head.append(i); }
     const body = el("div", "vm-note-text");
     if (text instanceof Node) body.append(text); else body.textContent = text || "";
@@ -181,7 +182,12 @@
           try { spec.onClose?.(); } catch (error) { warn("close", error); }
           remove(spec.id);
         });
-        card.addEventListener("keydown", (e) => { if (e.key === "Escape" && spec.close !== false) { e.preventDefault(); e.stopPropagation(); remove(spec.id); } });
+        card.addEventListener("keydown", (e) => {
+          if (e.key !== "Escape" || spec.close === false) return;
+          e.preventDefault(); e.stopPropagation();
+          try { spec.onClose?.(); } catch (error) { warn("close", error); }
+          remove(spec.id);
+        });
       }
       if (spec.ms) note.timer = setTimeout(() => remove(spec.id), spec.ms);
       notes.set(spec.id, note);
@@ -269,10 +275,13 @@
   const renderFly = () => {
     try {
       if (!bar?.fly?.isConnected) return;
-      const tab = bar.tab() ?? activeTab;
+      const page = bar.tab();
+      const tab = page ?? activeTab;
       const items = flyFor([...notes.values()], tab).map((n) => n.el);
+      // The page's own rows (its state and actions) only when the bar edits that page (Ctrl+L, the crumb, the URL bar), not
+      // over a new tab or a private window's introduction page.
       const rows = [];
-      for (const source of rowSources) { try { rows.push(...(source(tab, bar) || [])); } catch (error) { warn("row", error); } }
+      if (page != null) for (const source of rowSources) { try { rows.push(...(source(tab, bar) || [])); } catch (error) { warn("row", error); } }
       const nodes = [...items, ...rows];
       const same = bar.fly.children.length === nodes.length && nodes.every((n, i) => bar.fly.children[i] === n);
       if (!same) bar.fly.replaceChildren(...nodes);
@@ -329,10 +338,12 @@
     }, 30);
   };
   // Drives a field button's popup without showing it (vm-quiet-pop hides field popups): `act(popup)` then Escape.
+  let quiet = 0;
   const quietly = async (button, act) => {
     const browser = document.querySelector("#browser");
     const target = pressOf(button);
     if (!browser || !target) return false;
+    quiet++;
     browser.classList.add("vm-quiet-pop");
     try {
       window.__vm.press(target);
@@ -347,7 +358,7 @@
       if (popup.isConnected) popup.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", keyCode: 27, bubbles: true, cancelable: true }));
       return true;
     } finally {
-      setTimeout(() => browser.classList.remove("vm-quiet-pop"), 120);
+      setTimeout(() => { if (--quiet <= 0) { quiet = 0; browser.classList.remove("vm-quiet-pop"); } }, 120);
     }
   };
 
@@ -376,7 +387,8 @@
     });
     // Connection security (the site-info button's state): a row when the page is not secure.
     const info = document.querySelector(`${FIELD} .SiteInfoButton`);
-    if (info?.matches(".warning, .insecure, .dangerous")) {
+    const insecure = !!info?.matches(".warning, .insecure, .dangerous");
+    if (insecure) {
       out.push(row("security", { icon: ICONS.warn, text: labelOf(info) || "Connection not secure", cls: "vm-fly-indicator",
         actions: [{ label: "Site info", run: () => siteInfo(info) }] }));
     }
@@ -387,7 +399,7 @@
     }
     // The page's own actions (Vivaldi's hidden field buttons, in its words): one row of chips.
     const actions = [];
-    if (info) actions.push({ label: "Site info", run: () => siteInfo(info) });
+    if (info && !insecure) actions.push({ label: "Site info", run: () => siteInfo(info) }); // the insecure row has it already
     for (const b of buttons) {
       if (b.matches(".permission-popup, .SiteInfoButton, .BookmarkButton-Button, .password-icon")) continue;
       const label = labelOf(b);
@@ -423,10 +435,11 @@
   // ---- sources of toasts: zoom, Ctrl+D, a blocked pop-up ----
   const navigatedAt = new Map(); // tab -> last address change (a site's own zoom comes back on navigation: not the user's)
   let activatedAt = 0;
-  const onZoom = ({ tabId, oldZoomFactor, newZoomFactor }) => {
+  const onZoom = async ({ tabId, oldZoomFactor, newZoomFactor }) => {
     try {
       zoomOf.set(tabId, newZoomFactor);
       if (tabId !== activeTab || Math.abs(oldZoomFactor - newZoomFactor) < 0.001) return;
+      if ((await chrome.windows.getCurrent().catch(() => null))?.focused === false) return; // a site's zoom reaches other windows' tabs too
       if (Date.now() - activatedAt < 1000 || Date.now() - (navigatedAt.get(tabId) || 0) < 1500) return;
       if (Math.abs(newZoomFactor - 1) < 0.001) { remove(`zoom-${tabId}`); render(); return; }
       add({ id: `zoom-${tabId}`, tab: tabId, type: "zoom", icon: ICONS.zoom, text: `Zoom ${pct(newZoomFactor)}`, ms: 2500, fresh: true,
@@ -446,21 +459,33 @@
   };
   // A blocked pop-up: Vivaldi adds its icon to the field (hidden). One toast per icon; Allow opens the blocked page(s)
   // through Vivaldi's own popup (its links), unseen.
-  const seenBlockers = new WeakSet();
+  const blockedTabs = new Set(); // tabs whose blocked pop-up was told (until the tab navigates): Vivaldi renders the icon anew per visit
   const watchBlockers = () => {
     try {
       for (const b of fieldButtons()) {
-        if (seenBlockers.has(b) || !isPopupBlocker(b)) continue;
-        seenBlockers.add(b);
+        if (activeTab == null || blockedTabs.has(activeTab) || !isPopupBlocker(b)) continue;
+        blockedTabs.add(activeTab);
         const tab = activeTab;
         add({ id: `popup-${tab}`, tab, type: "popupBlocked", icon: ICONS.popup, text: "Pop-up blocked", ms: 6000, fresh: true,
           actions: [{ label: "Allow", run: () => { allowPopups(b); } }] });
       }
     } catch (error) { warn("pop-up", error); }
   };
-  const allowPopups = (button) => quietly(button, async (popup) => {
-    for (const link of popup.querySelectorAll("a[href]")) link.click();
-  }).catch((error) => warn("allow pop-up", error));
+  // Allow: Vivaldi's own choice for the site (its popup's second radio, "Always Allow", so Vivaldi records it), and the
+  // blocked page(s), listed as links in that popup, open in new tabs beside the page (a script click on Vivaldi's links
+  // opens nothing: measured on 8.3).
+  const allowPopups = (button) => {
+    const tab = activeTab;
+    return quietly(button, async (popup) => {
+      const urls = [...popup.querySelectorAll("a[href]")].map((a) => a.href).filter((u) => /^https?:/i.test(u));
+      const radios = [...popup.querySelectorAll("input[type=radio]")];
+      if (radios.length === 2 && !radios[1].checked) radios[1].click();
+      const opener = tab != null ? await chrome.tabs.get(tab).catch(() => null) : null;
+      for (const [i, url] of urls.entries()) {
+        await chrome.tabs.create({ url, active: i === urls.length - 1, ...(opener ? { windowId: opener.windowId, index: opener.index + 1 + i, openerTabId: opener.id } : {}) });
+      }
+    }).catch((error) => warn("allow pop-up", error));
+  };
 
   // ---- events ----
   const onActivated = ({ tabId, windowId }) => {
@@ -477,7 +502,7 @@
     }).then(([t]) => { if (activeTab == null && t) { activeTab = t.id; chrome.tabs.getZoom?.(t.id).then((z) => zoomOf.set(t.id, z), () => {}); } render(); }, () => {});
     chrome.tabs.onActivated.addListener(onActivated);
     chrome.tabs.onRemoved?.addListener((id) => {
-      zoomOf.delete(id); navigatedAt.delete(id);
+      zoomOf.delete(id); navigatedAt.delete(id); blockedTabs.delete(id);
       for (const n of [...notes.values()]) if (n.tab === id) remove(n.id);
     });
     chrome.tabs.onUpdated?.addListener((id, change) => {
@@ -485,6 +510,7 @@
         navigatedAt.set(id, Date.now());
         // A new page: the old one's blocked pop-up and bookmark toasts are about it no more.
         for (const kind of ["popup", "bookmarked"]) if (notes.get(`${kind}-${id}`)) remove(`${kind}-${id}`);
+        blockedTabs.delete(id);
       }
     });
     chrome.tabs.onZoomChange?.addListener(onZoom);

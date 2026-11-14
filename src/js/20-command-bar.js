@@ -512,6 +512,7 @@
     const same = (r) => r.type === picked.type && r.url === picked.url && r.query === picked.query && r.engine === picked.engine;
     selected = picked ? Math.max(0, rows.findIndex(same)) : 0;
     render();
+    if (picked && selected === 0) fill(); // the picked row is gone: the field shows what was typed again (#129)
     return true; // these rows are for the text in the bar
   };
 
@@ -645,7 +646,7 @@
       if (e.target !== bar || Date.now() - openedAt <= 500) return;
       close(true);
       if (e.button !== 0) return;
-      document.addEventListener("mouseup", (up) => {
+      const through = (up) => {
         try {
           // What is under the pointer gets the click a real one would give it (a row's own button, a chevron), as long as
           // the press and the release were on the same sidebar item.
@@ -655,7 +656,9 @@
             at.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, button: 0, detail: 1, clientX: up.clientX, clientY: up.clientY }));
           }
         } catch (error) { console.warn("[vivarc] click through:", error); }
-      }, { once: true, capture: true });
+      };
+      document.addEventListener("mouseup", through, { once: true, capture: true });
+      setTimeout(() => document.removeEventListener("mouseup", through, true), 1500); // released outside the window: no late click
     });
     if (typeof ResizeObserver === "function") {
       new ResizeObserver(() => { bar?.style.setProperty("--vm-fly-h", fly.hidden ? "0px" : `${Math.ceil(fly.getBoundingClientRect().height) + 8}px`); }).observe(fly);
@@ -678,8 +681,7 @@
     showLeadRows(); // an address filled in for editing: Enter acts on it before the lookups answer
     compute();
     try {
-      const page = editing !== null ? targetTab : null;
-      window.__vm.notify?.barOpened({ fly, close: () => close(true), tab: () => page }); // null: the window's active tab
+      window.__vm.notify?.barOpened({ fly, close: () => close(true), tab: () => (editing !== null ? targetTab : null) }); // null: the window's active tab
     } catch (error) { console.warn("[vivarc] fly-up:", error); }
     window.dispatchEvent(new CustomEvent("vm-command-bar", { detail: { open: true } }));
     // Like Arc, a new tab scrolls the sidebar to the new-tab area; editing the current page leaves it where it is.

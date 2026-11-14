@@ -64,13 +64,18 @@
   border: 0 !important; box-shadow: none !important; overflow: hidden !important; opacity: 1 !important;
   visibility: hidden; pointer-events: none;
 }
-#browser.vm-on #tabs-tabbar-container .UrlBar-AddressField .toolbar > .button-toolbar:has(:is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))) { display: flex !important; }
+/* Every box between the toolbar and the popup (the button, and wrappers such as the bookmark star's .BookmarkButton,
+   measured display: none on 8.3) is laid out; nothing inside the popup is touched. */
+#browser.vm-on #tabs-tabbar-container .UrlBar-AddressField .toolbar :has(:is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))):not(:is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded)) *) { display: flex !important; }
 #browser.vm-on #tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded)) {
   position: fixed !important; top: var(--vm-drop-y, 52px) !important; left: var(--vm-drop-x, 8px) !important;
   right: auto !important; bottom: auto !important; transform: none !important; translate: none !important; margin: 0 !important;
-  max-width: calc(100vw - 16px); max-height: calc(100vh - var(--vm-drop-y, 52px) - 8px); overflow: auto;
   visibility: visible; pointer-events: auto; z-index: 50;
 }
+/* While one shows there, the toasts make way (they would sit on top of it); a site-info popup placed under the Dia Shield
+   does not need them to, and one Vivarc drives unseen (vm-quiet-pop) neither. */
+#browser.vm-on:not(.vm-quiet-pop):has(#tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded, .SiteInfo))) #vm-notify,
+#browser.vm-on:not(.vm-quiet-pop, .vm-shield-open):has(#tabs-tabbar-container .UrlBar-AddressField .SiteInfo.button-popup) #vm-notify { display: none; }
 #browser.vm-on #tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))::before { display: none !important; }
 #browser.vm-on #tabs-tabbar-container:has(.UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))) { backdrop-filter: none !important; z-index: 3 !important; }
 #browser.vm-on.vm-themed #tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded)) { --colorFg: var(--vm-vivaldi-fg); color: var(--vm-vivaldi-fg); }

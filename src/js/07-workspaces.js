@@ -669,7 +669,7 @@
     if (second) {
       const name = second[1].trim();
       request.second = name;
-      request.kind = /^[a-z][a-z0-9+.-]*$/i.test(name) && !name.includes(".") ? "protocol" : "storage";
+      request.kind = /^[a-z][a-z0-9+-]*$/i.test(name) && !/^localhost$/i.test(name) ? "protocol" : "storage";
       request.closeDenies = request.kind === "protocol";
     }
     return request;

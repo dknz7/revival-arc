@@ -214,7 +214,7 @@
     if (inline) head.insertBefore(actions, close);
     card.append(head);
     if (!inline) card.append(actions);
-    if (request.closeDenies) card.append(el("div", "vm-site-note", "Closing this question denies it, as Vivaldi does."));
+    if (request.closeDenies) card.append(el("div", "vm-site-note", "Vivaldi denies this if it closes: closing it, a click elsewhere or another tab."));
     card.addEventListener("pointerup", () => setTimeout(releaseFocus, 0)); // a press that never became a click leaves the cursor on the button too
     card.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dismiss(popup); } });
     return card;
@@ -364,13 +364,23 @@
       window.addEventListener(type, (e) => { if (e.target?.closest?.(STOP)) e.stopImmediatePropagation(); }, true);
     }
     // The command bar opening on a tab with a question left pending (closed, or not brought back yet): it comes back, so the
-    // fly-up shows it with live buttons.
+    // fly-up shows it with live buttons (once per opening, not counted toward the automatic re-opens). One the user had
+    // closed goes back to its pill when the bar closes unanswered: the bar showing it is not the user taking back the close.
+    const closedBeforeBar = new Set();
     window.addEventListener("vm-command-bar", (e) => {
       try {
-        if (!e.detail?.open || cards.size || activeTab == null || !document.querySelector(ICON)) return;
+        if (!e.detail?.open) {
+          for (const tab of closedBeforeBar) {
+            for (const [popup, entry] of cards) if (entry.tab === tab && !acted.has(popup)) { stackMovedAt = 0; dismiss(popup); }
+          }
+          closedBeforeBar.clear();
+          return;
+        }
+        if (cards.size || activeTab == null || !document.querySelector(ICON)) return;
+        if (dismissed.has(activeTab)) closedBeforeBar.add(activeTab);
         dismissed.delete(activeTab);
         syncPill();
-        reopen(activeTab, 0, false, true);
+        reopen(activeTab, 0, true, true);
       } catch (error) { warn("bar", error); }
     });
     // The Shield's popup opens on the click, but Vivaldi closes the question's popup on the press: a press on the Shield

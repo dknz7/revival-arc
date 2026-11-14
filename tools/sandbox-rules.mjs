@@ -848,10 +848,11 @@ def("D.shield-panel", {
     await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.toggled = await SHIELD_STATE(ctx.W);
     await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.open3 = await SHIELD_STATE(ctx.W);
     await pageClick(ctx.W); await sleep(900); r.page = await SHIELD_STATE(ctx.W);
-    // Something else opening in the address field while the popup is up: the mark goes, so it floats as before.
+    // Something else opening in the address field while the popup is up: the mark goes, and that popup drops from the toast
+    // anchor (Task 9b; it floated the field before), the field staying collapsed.
     await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.open4 = await SHIELD_STATE(ctx.W);
     r.other = await h.ev(`(async () => { const f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"); const d = document.createElement("div"); d.className = "addressfield-popup-container vm-8v-test"; d.textContent = "test";
-      f.append(d); await new Promise((r) => setTimeout(r, 400)); const out = { mark: document.querySelector("#browser").classList.contains("vm-shield-open"), fieldH: Math.round(f.getBoundingClientRect().height) }; d.remove(); return out; })()`, ctx.W);
+      f.append(d); await new Promise((r) => setTimeout(r, 400)); const out = { mark: document.querySelector("#browser").classList.contains("vm-shield-open"), fieldH: Math.round(f.getBoundingClientRect().height) }; const q = d.getBoundingClientRect(), b = document.querySelector("#browser"); out.drop = [q.left, q.top].map(Math.round); out.want = ["--vm-drop-x", "--vm-drop-y"].map((n) => Math.round(parseFloat(b.style.getPropertyValue(n)))); d.remove(); return out; })()`, ctx.W);
     await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(600);
     r.end = await SHIELD_STATE(ctx.W);
     return r;
@@ -863,7 +864,7 @@ def("D.shield-panel", {
     ...shieldShutOk(r.esc, "Escape"), r.esc?.active === "WEBVIEW" ? null : `after Escape the cursor is on ${r.esc?.active}`,
     ...shieldOpenOk(r.open2, "second open"), ...shieldShutOk(r.toggled, "a click on the open Shield"),
     ...shieldOpenOk(r.open3, "third open"), ...shieldShutOk(r.page, "a click on the page"),
-    ...shieldOpenOk(r.open4, "fourth open"), r.other && !r.other.mark && r.other.fieldH > 0 ? null : `another popup in the field did not float it: ${J(r.other)}`,
+    ...shieldOpenOk(r.open4, "fourth open"), r.other && !r.other.mark && r.other.fieldH === 0 && J(r.other.drop) === J(r.other.want) ? null : `another popup in the field did not drop from the anchor: ${J(r.other)}`,
     ...shieldShutOk(r.end, "the end")],
 });
 // The rest of the Shield's popup does what it does in Vivaldi: Secure Connection and Cookies open their pages in the popup,
@@ -955,7 +956,7 @@ def("D.shield-hidden-and-keys", {
 // the keyboard sends them (native key codes: Vivaldi's shortcut handling reads them), with the cursor in the page and in
 // the UI. The field must never take the cursor meanwhile (a focusin spy), nor float once the sidebar is back.
 // The device chooser lists this machine's devices: their names are made unreadable before any screenshot.
-const MASK_DEVICES = `(() => { if (!document.getElementById("vm-mask-devices")) { const s = document.createElement("style"); s.id = "vm-mask-devices"; s.textContent = ".device-list-container *, .device-list-container { color: transparent !important; text-shadow: 0 0 9px rgba(150,150,150,0.9) !important; }"; document.head.append(s); } return 1; })()`;
+const MASK_DEVICES = `(() => { if (!document.getElementById("vm-mask-devices")) { const s = document.createElement("style"); s.id = "vm-mask-devices"; s.textContent = ".device-list-container *, .device-list-container { color: transparent !important; text-shadow: none !important; } .device-list-container label { background: rgba(128,128,128,0.35) !important; border-radius: 4px; }"; document.head.append(s); } return 1; })()`;
 const keyCombo = async (c, key, code, vk, mods = 0) => {
   const mod = mods & 2 ? { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 } : mods & 1 ? { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 18 } : null;
   if (mod) await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...mod, modifiers: mods });
@@ -2684,7 +2685,7 @@ for (const layout of ["dia", "arc"]) {
     layout, setup: afSetup,
     act: async () => {
       await afLeaveAfield();
-      await h.ev(`(() => { const d = document.createElement("div"); d.className = "addressfield-popup-container"; d.id = "af-fake-popup"; document.querySelector(".UrlBar-AddressField").append(d); return 1; })()`, ctx.W);
+      await h.ev(`(() => { const d = document.createElement("div"); d.className = "addressfield-popup-container"; d.id = "af-fake-popup"; d.innerHTML = "<section><h1>Something else asks</h1></section>"; document.querySelector(".UrlBar-AddressField").append(d); return 1; })()`, ctx.W);
       await activate(ctx.tabs.AFA); await sleep(600);
       const r = { ...(await afState(ctx.W)), popupThere: await hasEl(ctx.W, "#af-fake-popup"), drop: await srState(ctx.W) };
       await h.ev(`(document.getElementById("af-fake-popup")?.remove(), 1)`, ctx.W);
@@ -3798,19 +3799,25 @@ for (const layout of ["dia", "arc"]) {
     act: async () => {
       const t = await srTab(ctx.W, "P");
       await srVal(t, `(window.open(${J(t.origin + "/opened-" + layout)}), 1)`);
-      const toast = await waitFor(async () => { const x = await NB(ctx.W); return x.host.some((i) => i.text.includes("Pop-up blocked")) ? x : null; }, 4000) || await NB(ctx.W);
+      await waitFor(async () => { const x = await NB(ctx.W); return x.host.some((i) => i.text.includes("Pop-up blocked")) ? x : null; }, 4000);
+      await sleep(400); // past the drop-in animation
+      const toast = await NB(ctx.W);
       await shot(ctx.W, "popup-blocked-toast");
-      const allow = await clickOn(ctx.W, `[...document.querySelectorAll("#vm-notify .vm-note-btn")].find((b) => b.textContent === "Allow")`);
-      const opened = await waitFor(() => h.ev(`chrome.tabs.query({}).then((ts) => ts.some((x) => (x.pendingUrl || x.url || "").includes("/opened-${layout}")))`, ctx.H), 5000);
-      await focus(ctx.W); await activate(t.id); await sleep(600);
+      // The row while the bar is open (the toast is in the fly-up meanwhile), then Allow on the toast once the bar is closed.
       await ctrlL(ctx.W);
       const fly = await NB(ctx.W);
       await escBar(ctx.W);
+      const allow = await clickOn(ctx.W, `[...document.querySelectorAll("#vm-notify .vm-note-btn")].find((b) => b.textContent === "Allow")`);
+      const opened = await waitFor(() => h.ev(`chrome.tabs.query({}).then((ts) => ts.some((x) => (x.pendingUrl || x.url || "").includes("/opened-${layout}")))`, ctx.H), 5000);
+      const always = await srVal(t, "1").then(() => h.ev(`new Promise((r) => chrome.contentSettings.popups.get({ primaryUrl: ${J(t.origin + "/")} }, (d) => r(d?.setting ?? null)))`, ctx.W)).catch((e) => "err " + e.message);
+      await h.ev(`new Promise((r) => chrome.contentSettings.popups.clear({}, () => r(1)))`, ctx.W).catch(() => {});
       await h.ev(`chrome.tabs.query({}).then((ts) => Promise.all(ts.filter((x) => (x.pendingUrl || x.url || "").includes("/opened-")).map((x) => chrome.tabs.remove(x.id)))).then(() => 1)`, ctx.H).catch(() => {});
-      return { toast, allow, opened, fly };
+      return { toast, allow, opened, fly, always };
     },
     expect: (s, b, r) => [r.toast.host.some((i) => i.text.includes("Pop-up blocked") && i.text.includes("Allow")) ? null : `no "Pop-up blocked · Allow" toast: ${J(r.toast.host)}`, nbAt(r.toast, "the pop-up toast"),
       r.allow && r.opened ? null : `Allow did not open the blocked pop-up (${r.allow}, ${r.opened})`,
+      r.always === "allow" ? null : `Allow did not record Vivaldi's Always Allow for the site (popups setting ${J(r.always)})`,
+      r.fly.fly.some((i) => i.cls.includes("vm-note-item") && i.text.includes("Pop-up blocked")) ? null : "the pop-up toast is not in the fly-up while the bar is open",
       r.fly.fly.some((i) => i.cls.includes("vm-fly-indicator") && /pop-?up/i.test(i.text)) ? null : `no blocked pop-up row in the fly-up: ${J(r.fly.fly)}`],
   });
   // A zoom change (Ctrl+=) gets a small toast with Reset; Reset is Vivaldi's own zoom back to 100 %.
@@ -3915,8 +3922,12 @@ for (const layout of ["dia", "arc"]) {
     expect: (s, b, r) => {
       const scale = r.big ? Math.min(r.big.win[0] / 1920, r.big.win[1] / 1080) : 0;
       const want = Math.min(888, Math.max(740, 370 + 370 * scale));
-      return [r.small?.w === 740 && r.small.font === 24 ? null : `in a ${J(r.small?.win)} window the bar is ${r.small?.w}px, font ${r.small?.font} (want 740, 24)`,
-        scale > 1.05 ? null : `setup: the large window is only ${J(r.big?.win)}`, r.big && Math.abs(r.big.w - Math.min(want, r.big.win[0] * 0.92)) <= 3 && r.big.font > 24 ? null : `in a ${J(r.big?.win)} window the bar is ${r.big?.w}px, font ${r.big?.font} (want ~${Math.round(want)})`];
+      // The Dia layout centres the bar on the page column and keeps 16 px clear of its edges (max-width), so a small window's
+      // bar can be narrower than 740 there; the Arc layout's is exactly the base.
+      const small = layout === "arc" ? r.small?.w === 740 : r.small?.w <= 740;
+      return [small && r.small.font === 24 ? null : `in a ${J(r.small?.win)} window the bar is ${r.small?.w}px, font ${r.small?.font} (want ${layout === "arc" ? "" : "at most "}740, 24)`,
+        scale > 1.05 ? null : `setup: the large window is only ${J(r.big?.win)}`,
+        r.big && r.big.w > 740 + 30 && r.big.w <= Math.round(want) + 2 && r.big.font > 24 && r.big.font <= 28.8 ? null : `in a ${J(r.big?.win)} window the bar is ${r.big?.w}px, font ${r.big?.font} (want past 770 up to ~${Math.round(want)}, font over 24)`];
     },
   });
   // Ported from KASOGIT/vivarc#129: the row the arrow keys pick fills the field around what was typed (the rest selected);
