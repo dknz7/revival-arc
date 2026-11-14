@@ -1,4 +1,6 @@
 import json
+from pathlib import Path
+import re
 import shutil
 import subprocess
 import unittest
@@ -1085,12 +1087,29 @@ class NewTabMenu(unittest.TestCase):
         tabs = [self.tab(1, 2), self.tab(2, 1, 20), self.tab(3, 1, 10), self.tab(4, 1, 0), self.tab(5, 2, 10)]
         out = self.groups(tabs, here=2)
         self.assertEqual([(g["heading"], [t["id"] for t in g["tabs"]]) for g in out], [
-            ("This window · Home", [1]), ("This window · Work", [5]),
-            ("Window 1 · Home", [4]), ("Window 1 · Work", [3]), ("Window 1 · Play", [2])])
+            ("This window · Home · 1 tab", [1]), ("This window · Work · 1 tab", [5]),
+            ("Window 1 · Home · 1 tab", [4]), ("Window 1 · Work · 1 tab", [3]), ("Window 1 · Play · 1 tab", [2])])
 
-    def test_one_window_needs_no_window_name(self):
+    def test_one_window_still_names_the_window_and_space(self):
         out = self.groups([self.tab(1, 1, 10), self.tab(2, 1, 0)])
-        self.assertEqual([g["heading"] for g in out], ["Home", "Work"])
+        self.assertEqual([g["heading"] for g in out], ["This window · Home · 1 tab", "This window · Work · 1 tab"])
+
+    def test_only_the_first_group_in_each_window_starts_a_window(self):
+        # Window 2 has no Home tabs; its first populated space still starts the window.
+        tabs = [self.tab(1, 1, 10), self.tab(2, 2, 20), self.tab(3, 1), self.tab(4, 2, 10), self.tab(5, 3, 99)]
+        for here in (1, 2, 99):
+            with self.subTest(here=here):
+                out = self.groups(tabs, here=here)
+                seen = set()
+                for group in out:
+                    self.assertIs(group.get("windowStart"), group["window"] not in seen)
+                    seen.add(group["window"])
+
+    def test_counts_are_per_space_and_use_the_custom_home_name(self):
+        tabs = [self.tab(1, 7), self.tab(2, 7), self.tab(3, 7, 10), self.tab(4, 9)]
+        out = js("workspaces.openTabGroups(tabs, spaces, 7, 'Personal')", tabs=tabs, spaces=self.SPACES)
+        self.assertEqual([g["heading"] for g in out], [
+            "This window · Personal · 2 tabs", "This window · Work · 1 tab", "Window 2 · Personal · 1 tab"])
 
     def test_tabs_in_a_group_follow_the_window_order_and_empty_groups_are_left_out(self):
         tabs = [self.tab(1, 1, 0, index=5), self.tab(2, 1, 0, index=2)]
@@ -1101,7 +1120,7 @@ class NewTabMenu(unittest.TestCase):
 
     def test_a_space_the_list_does_not_know_still_gets_a_heading(self):
         out = self.groups([self.tab(1, 1, 99)])
-        self.assertEqual([g["heading"] for g in out], ["Space"])
+        self.assertEqual([g["heading"] for g in out], ["This window · Space · 1 tab"])
 
     def test_mute_all_says_unmute_only_when_every_tab_is_muted(self):
         def mute(*flags):
@@ -1144,6 +1163,36 @@ class NewTabMenu(unittest.TestCase):
         out = js("workspaces.closedTabs(s, 2)", s=self.sessions())
         self.assertEqual([(t["sessionId"], t["title"]) for t in out], [("a", "A"), ("b", "https://e.test/b")])
         self.assertEqual(len(js("workspaces.closedTabs(s)", s=self.sessions())), 3)  # the one with no session id is skipped
+
+    def test_recently_closed_selects_twenty_tabs_after_filtering_sessions(self):
+        sessions = [{"tab": {"sessionId": str(i), "title": f"Tab {i}"}} for i in range(22)]
+        # 25 sessions total: windows and unrestorable tabs must not consume the tab quota.
+        sessions.insert(0, {"window": {"sessionId": "w1", "tabs": [{"sessionId": "nested"}]}})
+        sessions.insert(5, {"tab": {"title": "no session id"}})
+        sessions.insert(12, {"window": {"sessionId": "w2", "tabs": []}})
+        out = js("workspaces.closedTabs(s)", s=sessions)
+        self.assertEqual([t["sessionId"] for t in out], [str(i) for i in range(20)])
+
+    def test_recently_closed_returns_fewer_than_twenty_without_flattening_windows(self):
+        sessions = [{"window": {"sessionId": "w", "tabs": [{"sessionId": "nested"}]}}]
+        sessions += [{"tab": {"sessionId": str(i)}} for i in range(13)]
+        out = js("workspaces.closedTabs(s)", s=sessions)
+        self.assertEqual([t["sessionId"] for t in out], [str(i) for i in range(13)])
+
+    def test_css_smoke_chevron_rest_opacity_is_not_dimmed_by_the_row(self):
+        """CSS smoke test for common Dia/Arc declarations, not computed browser styles."""
+        css = (Path(JS_DIR).parent / "css" / "vivarc.css").read_text(encoding="utf-8")
+        # The common rule applies to Dia and Arc without requiring hover, focus or an open menu.
+        rule = re.search(r"#browser\.vm-on #vm-panel \.vm-newtab-chev\s*\{([^}]+)\}", css)
+        self.assertIsNotNone(rule, "Missing common chevron rule")
+        opacity = re.search(r"\bopacity:\s*([\d.]+)", rule[1])
+        self.assertIsNotNone(opacity, "Missing chevron rest opacity")
+        self.assertAlmostEqual(float(opacity[1]), 0.75)
+        rows = re.findall(r"#vm-panel \.vm-newtab\s*\{([^}]+)\}", css)
+        self.assertTrue(rows, "Missing New Tab row rule")
+        for row in rows:
+            for opacity in re.findall(r"\bopacity:\s*([\d.]+)", row):
+                self.assertEqual(float(opacity), 1, "The row must not dim the chevron")
 
     def test_recently_closed_windows_say_how_many_tabs_will_come_back_and_name_the_first(self):
         out = js("workspaces.closedWindows(s)", s=self.sessions())

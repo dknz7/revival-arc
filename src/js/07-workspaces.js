@@ -407,9 +407,9 @@
   // The New Tab row's dropdown (Task 8k).
   // "Open Tabs": the tabs grouped by window, then space. This window comes first, the others by id; within a window the
   // default space leads, then the spaces in `list`'s order (a space the list does not know goes last, still shown), and
-  // within a group the tabs in window order. Headings are the space's name alone when there is one window, else
-  // "This window · Work" / "Window 2 · Work" (the number is the window's place among the windows listed, by id).
-  // -> [{ window, space, heading, tabs }]
+  // within a group the tabs in window order. Headings always name the window and space and count the group's tabs:
+  // "This window · Work · 2 tabs" / "Window 2 · Work · 1 tab" (window numbers follow the windows listed, by id).
+  // -> [{ window, space, heading, tabs, windowStart }]
   const openTabGroups = (tabs, list, here, defaultName = "Home") => {
     const all = tabs || [];
     const windows = [...new Set(all.map((t) => t.windowId))].sort((a, b) => a - b);
@@ -422,8 +422,9 @@
       const spaces = [...new Set(mine.map(of))].sort((a, b) => place(a) - place(b) || a - b);
       for (const space of spaces) {
         const name = names.get(space) ?? "Space";
-        const heading = windows.length === 1 ? name : `${window === here ? "This window" : `Window ${windows.indexOf(window) + 1}`} · ${name}`;
-        out.push({ window, space, heading, tabs: mine.filter((t) => of(t) === space).sort((a, b) => a.index - b.index) });
+        const grouped = mine.filter((t) => of(t) === space).sort((a, b) => a.index - b.index);
+        const heading = `${window === here ? "This window" : `Window ${windows.indexOf(window) + 1}`} · ${name} · ${grouped.length} tab${grouped.length === 1 ? "" : "s"}`;
+        out.push({ window, space, heading, tabs: grouped, windowStart: space === spaces[0] });
       }
     }
     return out;
@@ -434,8 +435,9 @@
   const audioState = (tab) => (tab?.mutedInfo?.muted ? "muted" : tab?.audible ? "playing" : null);
   const muteTabLabel = (tab) => (tab?.mutedInfo?.muted ? "Unmute Tab" : "Mute Tab");
   // chrome.sessions.getRecentlyClosed -> the entries the dropdown lists, newest first (the API's order), each with a
-  // sessionId (restorable). A closed tab shows its title, else its address.
-  const closedTabs = (sessions, max = 10) => (sessions || []).filter((s) => s.tab?.sessionId)
+  // sessionId (restorable). A closed tab shows its title, else its address. Take up to 20 tab entries after filtering;
+  // closed windows stay in their own list, never flattened here.
+  const closedTabs = (sessions, max = 20) => (sessions || []).filter((s) => s.tab?.sessionId)
     .map((s) => ({ sessionId: s.tab.sessionId, title: s.tab.title || s.tab.url || "Untitled", url: s.tab.url || "", favIconUrl: s.tab.favIconUrl || "" }))
     .slice(0, max);
   // "2 tabs — First title": the count is what the entry holds, which is what comes back (measured: Vivaldi has rehomed a

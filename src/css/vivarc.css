@@ -294,7 +294,9 @@
 #vm-panel .vm-divider:hover .vm-clear { opacity: 0.7; }
 #vm-panel .vm-clear:hover { opacity: 1; background-color: color-mix(in srgb, var(--colorFg) 14%, transparent); }
 /* "+ New Tab" is centred in its row (the row stays full width, to click and to hover). */
-#vm-panel .vm-newtab { opacity: 0.6; justify-content: center; padding-inline: 0 !important; }
+#vm-panel .vm-newtab { justify-content: center; padding-inline: 0 !important; }
+#vm-panel .vm-newtab > .vm-plus,
+#vm-panel .vm-newtab > .vm-title { opacity: 0.6; }
 #vm-panel .vm-newtab .vm-title { flex: 0 0 auto; }
 #vm-panel .vm-plus { display: flex; justify-content: center; width: 18px; font-size: 18px; line-height: 1; }
 
@@ -321,13 +323,13 @@
   display: flex; align-items: center; justify-content: center;
   width: 26px; height: 26px; padding: 0; border: 0; border-radius: 7px;
   color: inherit; background: transparent; cursor: pointer;
-  opacity: 0; transition: opacity 120ms;
+  opacity: 0.75; transition: opacity 120ms;
 }
 #browser.vm-on #vm-panel .vm-newtab:hover .vm-newtab-chev,
 #browser.vm-on #vm-panel .vm-newtab-chev:focus-visible,
 #browser.vm-on #vm-panel .vm-newtab-chev.open { opacity: 1; }
-#browser.vm-on #vm-panel .vm-newtab-chev:hover,
-#browser.vm-on #vm-panel .vm-newtab-chev.open { background-color: color-mix(in srgb, var(--colorFg) 14%, transparent); }
+#browser.vm-on #vm-panel .vm-newtab-chev:hover { background-color: color-mix(in srgb, var(--colorFg) 14%, transparent); }
+#browser.vm-on #vm-panel .vm-newtab-chev.open { background-color: color-mix(in srgb, var(--colorFg) 22%, transparent); }
 #browser.vm-on #vm-panel .vm-newtab-chev:focus-visible { outline: 2px solid color-mix(in srgb, var(--colorFg) 45%, transparent); outline-offset: -2px; }
 #browser.vm-on .vm-menu-item.rich { display: flex; align-items: center; gap: 8px; }
 #browser.vm-on .vm-menu-item.disabled { opacity: 0.45; cursor: default; }
@@ -339,8 +341,15 @@
 #browser.vm-on .vm-menu-check { flex: none; width: 14px; margin-right: -2px; text-align: center; font-size: 13px; line-height: 1; }
 #browser.vm-on .vm-menu-note { flex: none; margin-left: auto; padding-left: 14px; font-size: 11.5px; opacity: 0.55; white-space: nowrap; }
 #browser.vm-on .vm-menu-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-#browser.vm-on .vm-menu-heading { padding: 8px 12px 3px; font-size: 11.5px; font-weight: 600; opacity: 0.55; white-space: nowrap; }
-#browser.vm-on .vm-menu-heading:first-child { padding-top: 3px; }
+#browser.vm-on .vm-menu-heading {
+  margin-top: 4px; padding: 7px 12px 5px;
+  font-size: 10.5px; font-weight: 600; line-height: 1.4; letter-spacing: 0.04em;
+  color: color-mix(in srgb, var(--colorFg, #fff) 65%, transparent); white-space: normal; overflow-wrap: anywhere; cursor: default;
+}
+#browser.vm-on .vm-menu-heading.vm-window-start {
+  margin-top: 8px; padding-top: 11px; border-top: 2px solid color-mix(in srgb, var(--colorFg, #fff) 18%, transparent);
+}
+#browser.vm-on .vm-menu-heading:first-child { margin-top: 0; padding-top: 3px; border-top: 0; }
 #browser.vm-on .vm-menu-flyout { min-width: 200px; max-width: 320px; max-height: min(60vh, 420px); overflow-y: auto; }
 #browser.vm-on .vm-menu .vm-ico { display: flex; flex: none; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; overflow: hidden; }
 #browser.vm-on .vm-menu .vm-ico img { width: 100%; height: 100%; object-fit: contain; }
