@@ -46,9 +46,10 @@
   const STACK_AT = 4;
   const stackPlan = (count, expanded) => count < STACK_AT ? { mode: "rows", shown: count, hidden: 0 }
     : expanded ? { mode: "open", shown: count, hidden: 0 } : { mode: "stack", shown: 1, hidden: count - 1 };
-  // Buttons go on the right of the message when they fit: at most two, short ("Allow", "Deny", "Reset", "Undo"), and a
-  // message short enough to keep a line or two beside them. Otherwise under the message.
-  const buttonsFit = (labels, message = "") => labels.length <= 2 && labels.join("").length <= 14 && String(message).length <= 70;
+  // Buttons go on the right of the message when they fit: at most two, short ("Allow", "Deny", "Reset", "Undo"), beside a
+  // short message ("Zoom 110%", "Opened in a new window"). Longer text or more buttons: under the message (measured in the
+  // sandbox: a site's question beside two buttons wrapped a word a line in the Arc layout's 307 px toast).
+  const buttonsFit = (labels, message = "") => labels.length <= 2 && labels.join("").length <= 14 && String(message).trim().length <= 40;
 
   // Vivaldi shows some questions with its raw permission name and no site ("window-placement", "local-fonts"; measured on
   // 8.3, task 8x): written as a sentence, the site taken from the tab.

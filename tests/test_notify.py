@@ -101,14 +101,15 @@ class Buttons(unittest.TestCase):
         return js("n.buttonsFit(labels, message)", labels=labels, message=message)
 
     def test_two_short_buttons_go_on_the_right(self):
-        self.assertTrue(self.fit(["Allow", "Deny"], "127.0.0.1 would like to show notifications."))
+        self.assertTrue(self.fit(["Allow", "Deny"], "Pop-up blocked"))
+        self.assertTrue(self.fit(["Undo"], "Opened in a new window"))
         self.assertTrue(self.fit(["Reset"], "Zoom 110%"))
         self.assertTrue(self.fit([]))
 
     def test_three_buttons_or_long_labels_or_a_long_message_go_under_it(self):
         self.assertFalse(self.fit(["Allow", "Deny", "Later"]))
         self.assertFalse(self.fit(["Always allow", "Never allow"]))
-        self.assertFalse(self.fit(["Allow", "Deny"], "x" * 71))
+        self.assertFalse(self.fit(["Allow", "Deny"], "Website http://127.0.0.1:1300 would like to show notifications."))
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the notifications' JavaScript")
