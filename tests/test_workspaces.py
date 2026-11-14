@@ -572,5 +572,40 @@ class SiteRequest(unittest.TestCase):
         self.assertEqual(len(self.read(buttons=many[:4])["options"]), 4)
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed for the JavaScript helpers")
+class UpstreamBookmarks(unittest.TestCase):
+    def test_space_discovery_skips_the_entire_trash_subtree(self):
+        space = lambda id: {"id": id, "title": "Work", "children": [{"title": "Pinned", "children": []}]}
+        tree = [{"children": [
+            {"trash": True, "title": "Papierkorb", "children": [
+                space("deleted"), {"children": [space("deeply-deleted")]},
+            ]},
+            {"title": "Trash", "children": [space("live")]},
+            {**space("named-trash"), "title": "Trash"},
+            {**space("trashed-space"), "trash": True},
+        ]}]
+        self.assertEqual(js("workspaces.findSpaces(tree).map(n => n.id)", tree=tree), ["live", "named-trash"])
+
+    def test_hidden_favorite_cannot_own_a_tab_but_nested_pins_can(self):
+        hidden = {"id": "hidden", "url": "https://hidden.test/"}
+        tile = {"id": "tile", "url": "https://tile.test/"}
+        pin = {"id": "pin", "url": "https://pin.test/"}
+        favs = {"children": [{"children": [hidden]}, tile]}
+        pinned = {"children": [{"children": [pin]}]}
+        self.assertEqual(js("workspaces.favoriteLinks(favs)", favs=favs), [tile])
+        self.assertEqual(js("workspaces.favoriteLinks(null)"), [])
+        visible = js("workspaces.sidebarPins(favs, pinned)", favs=favs, pinned=pinned)
+        all_ids = js("[favs, pinned].flatMap(workspaces.leaves).map(n => n.id)", favs=favs, pinned=pinned)
+        tabs = [{"id": i, "url": node["url"], "index": i} for i, node in enumerate([hidden, tile, pin], 1)]
+        # Cover both URL matching and a tab previously stamped with the hidden favorite.
+        for stamped in (False, True):
+            with self.subTest(stamped=stamped):
+                tabs[0]["vivExtData"] = json.dumps({"vivarcPin": "hidden"} if stamped else {})
+                self.assertEqual(run_js(
+                    "08-pins.js", "[...pins.plan(tabs, visible, allIds).bound].map(([id, tab]) => [id, tab.id])",
+                    tabs=tabs, visible=visible, allIds=all_ids,
+                ), [["tile", 2], ["pin", 3]])
+
+
 if __name__ == "__main__":
     unittest.main()

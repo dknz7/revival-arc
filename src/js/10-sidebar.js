@@ -68,11 +68,7 @@
     return wrap;
   };
 
-  const leaves = (node) =>
-    node.children ? node.children.flatMap(leaves) : [node];
-
-  const hasPinnedChild = (n) => n.children?.some((c) => c.children && c.title === "Pinned");
-  const findSpaces = (nodes) => nodes.flatMap((n) => hasPinnedChild(n) ? [n] : n.children ? findSpaces(n.children) : []);
+  const { leaves, findSpaces } = spacesOf;
 
   // The tab that belongs to a pin or favorite stays bound to it wherever it navigates (see 08-pins.js).
   const boundTab = (node) => state.bound.get(node.id);
@@ -152,8 +148,7 @@
 
   const bindTabs = () => {
     if (!state.space) { state.bound = new Map(); return; }
-    const pins = [...(state.favs ? leaves(state.favs) : []), ...(state.pinned ? leaves(state.pinned) : [])]
-      .map((n) => ({ id: n.id, url: n.url }));
+    const pins = spacesOf.sidebarPins(state.favs, state.pinned);
     const allIds = state.folders.flatMap((f) => leaves(f)).map((n) => n.id);
     const { bound, writes } = pinLinks.plan(state.tabs, pins, allIds);
     state.bound = bound;
@@ -1522,7 +1517,7 @@
     hideSpaceTooltip();
     const scroll = panel.querySelector(".vm-scroll")?.scrollTop ?? 0;
     const body = el("div", "vm-scroll");
-    const favLeaves = state.favs ? state.favs.children.filter((c) => !c.children) : [];
+    const favLeaves = spacesOf.favoriteLinks(state.favs);
     let grid = null;
     if (state.defaultSpace) {
       grid = el("div", "vm-favs");
