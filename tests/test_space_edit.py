@@ -15,13 +15,14 @@ from jsrun import JS_DIR
 
 DAY = 24 * 3600 * 1000
 
-# Loads 07-workspaces.js and 08-space-edit.js with a fake window, then evaluates `expr` (async; `data` entries are variables in it).
+# Loads 07-workspaces.js, 08-space-edit.js and 18-empty-space.js with a fake window (18's runtime start waits on
+# __vm.ready, which never resolves here), then evaluates `expr` (async; `data` entries are variables in it).
 PURE = """
 const fs = require("fs"), vm = require("vm"), path = require("path");
 const input = JSON.parse(process.argv[2]);
 globalThis.window = { __vm: { ready: new Promise(() => {}) } };
-for (const f of ["07-workspaces.js", "08-space-edit.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], f), "utf8"));
-const workspaces = window.__vm.workspaces, edit = window.__vm.spaceEdit;
+for (const f of ["07-workspaces.js", "08-space-edit.js", "18-empty-space.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], f), "utf8"));
+const workspaces = window.__vm.workspaces, edit = window.__vm.spaceEdit, empty = window.__vm.emptySpace;
 Object.assign(globalThis, input.data);
 eval("(async () => {" + input.expr + "})()").then((v) => process.stdout.write(JSON.stringify(v === undefined ? null : v, (k, x) => (x === undefined ? null : x))),
   (e) => { process.stdout.write(JSON.stringify({ threw: String(e && e.message || e) })); });
@@ -189,6 +190,35 @@ class Edit(unittest.TestCase):
 
     def test_the_folder_keeps_its_arc_prefix(self):
         self.assertEqual(run("return [edit.folderTitle('Arc - X', 'Work'), edit.folderTitle('X', 'Work')]"), ["Arc - Work", "Work"])
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class EmptySpace(unittest.TestCase):
+    """18-empty-space.js: the tab on screen closed; does the window stay in its space, empty, with the bar?"""
+
+    def decide(self, closed, now, tabs, known=(X, Y), busy=False):
+        return run("return empty.decide({ closed, now, known, tabs, busy });", closed=closed, now=now, tabs=tabs, known=list(known) if known is not None else None, busy=busy)
+
+    def test_the_last_page_of_a_space_closed_the_space_stays(self):
+        self.assertEqual(self.decide({"space": X, "page": True}, X, [tab(1, 7, 0, active=True)]), {"kind": "create"}, "a new tab, filed by Vivaldi in the recorded space")
+        self.assertEqual(self.decide({"space": X, "page": True}, 0, [tab(1, 7, 0, active=True)]), {"kind": "switch", "space": X}, "the record moved: Vivaldi's switch makes the start page")
+
+    def test_only_a_blank_tab_left_it_is_shown_with_the_bar(self):
+        tabs = [tab(1, 7, 0, active=True), tab(2, 7, X, url="chrome://vivaldi-webui/startpage")]
+        self.assertEqual(self.decide({"space": X, "page": True}, X, tabs), {"kind": "bar", "tab": 2, "switch": False, "space": X})
+        self.assertEqual(self.decide({"space": X, "page": True}, 0, tabs)["switch"], True)
+
+    def test_the_default_space_too(self):
+        self.assertEqual(self.decide({"space": 0, "page": True}, 0, [tab(1, 7, X, active=True)]), {"kind": "create"})
+
+    def test_nothing_when_a_page_is_left_a_blank_tab_closed_a_deleted_space_or_a_gesture(self):
+        page_left = [tab(1, 7, X, active=True), tab(2, 7, X)]
+        self.assertEqual(self.decide({"space": X, "page": True}, X, page_left)["kind"], "none", "repair 2 shows the space's page")
+        self.assertEqual(self.decide({"space": X, "page": False}, X, [])["kind"], "none", "the bar's own blank tab closing (Escape)")
+        self.assertEqual(self.decide({"space": Z, "page": True}, Z, [])["kind"], "none", "a space no longer in the list: rule 1")
+        self.assertEqual(self.decide({"space": X, "page": True}, X, [], known=None)["kind"], "none", "the list unreadable")
+        self.assertEqual(self.decide({"space": X, "page": True}, None, [])["kind"], "none", "the record unreadable")
+        self.assertEqual(self.decide({"space": X, "page": True}, X, [], busy=True)["kind"], "none", "a delete or a move under way")
 
 
 # The parts that talk to Vivaldi, against fakes: chrome.*, vivaldi.prefs, Vivaldi's manager and route manager in the
@@ -377,6 +407,7 @@ class Bundled(unittest.TestCase):
         names = sorted(os.listdir(JS_DIR))
         self.assertLess(names.index("07-workspaces.js"), names.index("08-space-edit.js"))
         self.assertLess(names.index("08-space-edit.js"), names.index("11-space-repair.js"), "the heal asks spaceEdit.held at run time")
+        self.assertLess(names.index("17-peek.js") if "17-peek.js" in names else 0, names.index("18-empty-space.js"))
 
 
 if __name__ == "__main__":

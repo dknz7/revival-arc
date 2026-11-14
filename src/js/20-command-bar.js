@@ -328,6 +328,8 @@
     }
   };
   window.__vm.pickTab = pickTab; // shared with the sidebar's New Tab dropdown (Open Tabs, Recently Closed)
+  // An empty space's blank tab, kept by the bar as a landing in an empty space is (18-empty-space.js: its last tab closed).
+  window.__vm.openEmptySpace = (tabId, windowId) => open(tabId, windowId, true);
 
   const run = (row) => {
     if (!row || (row.type === "search" && !row.query)) return;
