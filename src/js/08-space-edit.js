@@ -228,6 +228,12 @@
     return mine;
   };
   const store = () => window.__vm.store;
+  // A private window shares Vivaldi's space list with the profile, but has its own store and sees only its own tabs: an
+  // undo entry written there would miss the normal windows' tabs and vanish with the window (review 9c, critical 1). So
+  // nothing here edits, deletes, makes or brings back a space from a private window.
+  const PRIVATE = "Edit, delete and bring back spaces from a normal window";
+  const isPrivate = () => { try { return !!chrome.extension?.inIncognitoContext; } catch (_) { return false; } };
+  const normalOnly = () => { if (isPrivate()) { const e = new Error(PRIVATE); e.code = "private"; throw e; } };
   // This browser run (window ids start afresh with each): a mark on the background page, which lives as long as Vivaldi.
   const RUN_KEY = "__vivarcRun";
   const runId = () => { const p = page(); if (!p[RUN_KEY]) p[RUN_KEY] = `${Date.now()}-${Math.random().toString(36).slice(2)}`; return p[RUN_KEY]; };
@@ -256,6 +262,7 @@
   // Before Vivaldi deletes space `id`: its entry is written and READ BACK. -> the entry; throws when it is not in the
   // store (the caller then deletes nothing: the confirmation promised it can be undone).
   const remember = async (id) => {
+    normalOnly();
     const all = await spaceList();
     const space = all?.find((w) => w.id === id);
     if (!space) throw new Error("the space is not in Vivaldi's list");
@@ -291,6 +298,7 @@
   const RESTORING = "__vivarcUndeleting";
   const restoring = () => { const p = page(); if (!(p[RESTORING] instanceof Set)) p[RESTORING] = new Set(); return p[RESTORING]; };
   const undelete = async (entry, here) => {
+    normalOnly();
     const mgr = manager();
     if (!mgr) throw new Error("Vivaldi's workspace manager was not found");
     const id = entry.id;
@@ -331,24 +339,43 @@
       // move a tab into a space that also has tabs in another window ("ambiguous windowId").
       // A tab Vivaldi put on screen there (a restore activates it; after a restart it lands in the last focused window)
       // leaves only once that window's own most recent tab is back on screen (a tab on screen cannot leave, G4).
-      const into = async (tab) => {
-        if (tab.windowId !== target && tab.active) {
+      // Out of the space where it is, in its own window (its default space), with that window's own tab put on screen first
+      // if it was on screen there.
+      const outOfSpace = async (tab) => {
+        if (tab.active) {
           const own = native.record()?.activeIn(tab.windowId) ?? 0;
           const others = (await chrome.tabs.query({ windowId: tab.windowId })).filter((t) => t.id !== tab.id && ws().of(t) !== id);
           const keeper = ws().recentTab(others.filter((t) => ws().of(t) === own), own) ?? ws().recentTab(others.map((t) => ({ ...t, vivExtData: "{}" })), 0);
           if (keeper) await chrome.tabs.update(keeper.id, { active: true });
-          tab = await chrome.tabs.get(tab.id);
         }
-        if (tab.windowId !== target && ws().of(tab) === id) await native.setSpace(tab.id, 0, { windowId: tab.windowId });
+        await native.setSpace(tab.id, 0, { windowId: tab.windowId });
+      };
+      const into = async (tab) => {
+        if (tab.windowId !== target && ws().of(tab) === id) await outOfSpace(await chrome.tabs.get(tab.id));
         const now = await chrome.tabs.get(tab.id);
         if (ws().of(now) !== id || now.windowId !== target) await native.setSpace(tab.id, id, { windowId: target });
       };
+      // Before any tab goes in: every tab of the space already back in ANOTHER window leaves it there first, so the space
+      // never has tabs in two windows when one is moved into it (8.3 refuses that: "ambiguous windowId"; review 9c,
+      // important 2: after a restart a reopened tab of the space can sit in another window than the one asking).
+      for (const t of plan.tabs.filter((x) => x.how === "live")) {
+        const tab = await chrome.tabs.get(t.tab).catch(() => null);
+        if (tab && tab.windowId !== target && ws().of(tab) === id) {
+          await outOfSpace(tab).catch((error) => console.warn("[vivarc] undelete: a tab of the space in another window:", error));
+        }
+      }
+      // the windows a Recently Closed restore makes (Vivaldi restores a folder's tabs into a new window when their own is
+      // gone): only those may be closed afterwards, never a window the user opened meanwhile
+      const restoreMade = new Set();
+      const normalIds = async () => (await chrome.windows.getAll().catch(() => [])).filter((w) => w.type === "normal").map((w) => w.id);
       for (const t of plan.tabs) {
         renew();
         let tab = null;
         if (t.how === "live") tab = await chrome.tabs.get(t.tab).catch(() => null);
         if (t.how === "session") {
+          const before = new Set(await normalIds());
           try { tab = (await chrome.sessions.restore(t.sessionId))?.tab ?? null; } catch (_) { tab = null; }
+          for (const w of await normalIds()) if (!before.has(w)) restoreMade.add(w);
           if (tab) tab = await chrome.tabs.get(tab.id).catch(() => null);
         }
         const fresh = !tab;
@@ -362,6 +389,7 @@
         if (t.tiling?.id && fresh) { if (!splits.has(t.tiling.id)) splits.set(t.tiling.id, crypto.randomUUID?.() || `vm-${Date.now()}-${splits.size}`); patch.tiling = { ...t.tiling, id: splits.get(t.tiling.id) }; }
         if (Object.keys(patch).length) await window.__vm.setExtData(tab, patch).catch(() => {});
         if (t.muted && !tab.mutedInfo?.muted) await chrome.tabs.update(tab.id, { muted: true }).catch(() => {});
+        if (t.pinned && !fresh && !(await chrome.tabs.get(tab.id).catch(() => tab)).pinned) await chrome.tabs.update(tab.id, { pinned: true }).catch(() => {});
         made.push({ id: tab.id, pinned: !!t.pinned, group: t.group || null, title: t.fixedGroupTitle || null });
       }
       renew();
@@ -386,7 +414,7 @@
       }
       // a window the restore made that is left with nothing but blank tabs closes again
       for (const w of await chrome.windows.getAll({ populate: true }).catch(() => [])) {
-        if (w.type === "normal" && !windows.includes(w.id) && (w.tabs || []).every((t) => ws().isBlank(t))) await chrome.windows.remove(w.id).catch(() => {});
+        if (restoreMade.has(w.id) && (w.tabs || []).every((t) => ws().isBlank(t))) await chrome.windows.remove(w.id).catch(() => {});
       }
       // 4. shown, the entry gone
       await native.switchTo(target, id).catch((error) => console.warn("[vivarc] undelete: show the space:", error));
@@ -428,6 +456,7 @@
   const RENAME_MARK = "__vivarcSpaceRename";
   const renaming = (id) => { const m = page()[RENAME_MARK]; return !!m && m.until > Date.now() && (id == null || m.id === id); };
   const rename = async (id, name, folder) => {
+    normalOnly();
     const mgr = manager();
     if (!mgr) throw new Error("Vivaldi's workspace manager was not found");
     const mark = { id, until: Date.now() + 8000 };
@@ -439,7 +468,10 @@
       if (!(await until(async () => (await spaceList())?.find((w) => w.id === id)?.name === name, 3000))) throw new Error("Vivaldi did not take the new name");
     } catch (error) {
       // the folder goes back to its name, so the space and its pins stay together
-      if (renamed) await chrome.bookmarks.update(folder.id, { title: folder.title }).catch(() => {});
+      if (renamed) {
+        await chrome.bookmarks.update(folder.id, { title: folder.title }).catch((undo) =>
+          console.warn(`[vivarc] rename: the Pinned folder keeps the name "${folderTitle(folder.title, name)}"; its pins stay with it, but the space is still "${folder.title}":`, undo));
+      }
       throw error;
     } finally {
       // kept a moment longer: a window's refresh that read the old name before the change may still be running
@@ -447,12 +479,13 @@
       setTimeout(() => { if (page()[RENAME_MARK] === mark) delete page()[RENAME_MARK]; }, 1500);
     }
   };
-  const setOrder = async (ids) => { const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setOrder(ids); };
-  const setIcon = async (id, index) => { const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setIcon(id, index); };
-  const setEmoji = async (id, emoji) => { const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setEmoji(id, emoji || undefined); };
+  const setOrder = async (ids) => { normalOnly(); const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setOrder(ids); };
+  const setIcon = async (id, index) => { normalOnly(); const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setIcon(id, index); };
+  const setEmoji = async (id, emoji) => { normalOnly(); const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setEmoji(id, emoji || undefined); };
   // A new space at once, named and with Vivaldi's default icon, not shown (the empty space would open the command bar
   // over its rename). -> its id.
   const create = async (name) => {
+    normalOnly();
     const mgr = manager();
     if (!mgr) throw new Error("Vivaldi's workspace manager was not found");
     const id = await mgr.addWorkspace(name, defaultIcon(), undefined, null, true);
@@ -461,7 +494,7 @@
   };
 
   window.__vm.spaceEdit = {
-    DELETED_KEY, KEEP_MS, KEEP_MAX, deletedEntry, keepDeleted, held, sameDeleted, matchSessions, orderAfter, restorePlan, inOrder, deletedNote,
+    DELETED_KEY, KEEP_MS, KEEP_MAX, PRIVATE, isPrivate, deletedEntry, keepDeleted, held, sameDeleted, matchSessions, orderAfter, restorePlan, inOrder, deletedNote,
     moved, newSpaceName, renameCheck, folderTitle, findManager, findRoutes, findIcons,
     manager, icons, list, remember, noteClosed, undelete, forget, rename, renaming, setOrder, setIcon, setEmoji, create,
   };

@@ -264,19 +264,28 @@ wreq.m = { 1: function () { return "addWorkspaceWithId(e,t,n,i){"; }, 2: functio
 if (S.noManager) delete wreq.m[1];
 bg.webpackChunkgapp_browser_react = { push: ([a, b, run]) => run(wreq), lastIndexOf: () => -1 };
 const tabs = S.tabs || [];
+const madeWindows = new Set();
 globalThis.chrome = {
-  extension: { getBackgroundPage: () => bg },
-  windows: { getAll: async () => (S.windows || [7]).map((id) => ({ id, type: "normal" })) },
-  bookmarks: { update: async (id, p) => { calls.push(["folder", id, p.title]); } },
+  extension: { getBackgroundPage: () => bg, inIncognitoContext: !!S.incognito },
+  // windows come and go: S.windows at the start; a restore with S.restoreMakesWindow makes one (its tab and a blank tab);
+  // S.userWindowAt: a window the user opens after that many tabs.create calls
+  windows: { getAll: async ({ populate } = {}) => { const ids = [...new Set([...(S.windows || [7]), ...madeWindows])];
+    return ids.map((id) => ({ id, type: "normal", tabs: populate ? tabs.filter((t) => t.windowId === id) : undefined })); },
+    remove: async (id) => { calls.push(["windows.remove", id]); } },
+  bookmarks: { update: async (id, p) => { calls.push(["folder", id, p.title]); if (S.folderFails && calls.filter((c) => c[0] === "folder").length > 1) throw new Error("no"); } },
   sessions: {
     getRecentlyClosed: async () => S.sessions || [],
-    restore: async (sid) => { calls.push(["restore", sid]); const s = (S.sessions || []).find((x) => x.tab?.sessionId === sid); const t = { id: nextTab++, windowId: S.restoreInto ?? 7, index: tabs.length, url: s.tab.url, vivExtData: JSON.stringify({ workspaceId: S.restoredSpace ?? 0 }) }; tabs.push(t); return { tab: t }; },
+    restore: async (sid) => { calls.push(["restore", sid]); const s = (S.sessions || []).find((x) => x.tab?.sessionId === sid);
+      let win = S.restoreInto ?? 7;
+      if (S.restoreMakesWindow) { win = 50; madeWindows.add(50); tabs.push({ id: 49, windowId: 50, index: 0, url: "chrome://vivaldi-webui/startpage", vivExtData: "{}" }); }
+      const t = { id: nextTab++, windowId: win, index: tabs.length, url: s.tab.url, pinned: false, vivExtData: JSON.stringify({ workspaceId: S.restoredSpace ?? 0 }) }; tabs.push(t); return { tab: t }; },
   },
   tabs: {
     query: async ({ windowId } = {}) => tabs.filter((t) => windowId == null || t.windowId === windowId),
     get: async (id) => tabs.find((t) => t.id === id),
-    create: async (p) => { calls.push(["tabs.create", p.url, p.windowId, !!p.pinned]); const t = { id: nextTab++, windowId: p.windowId, index: tabs.length, url: p.url, pinned: !!p.pinned, vivExtData: "{}" }; tabs.push(t); return t; },
-    update: async (id, p) => calls.push(["tabs.update", id, p]),
+    create: async (p) => { calls.push(["tabs.create", p.url, p.windowId, !!p.pinned]);
+      if (S.userWindowAt && calls.filter((c) => c[0] === "tabs.create").length === S.userWindowAt) { madeWindows.add(60); tabs.push({ id: 59, windowId: 60, index: 0, url: "chrome://vivaldi-webui/startpage", vivExtData: "{}" }); } const t = { id: nextTab++, windowId: p.windowId, index: tabs.length, url: p.url, pinned: !!p.pinned, vivExtData: "{}" }; tabs.push(t); return t; },
+    update: async (id, p) => { calls.push(["tabs.update", id, p]); const t = tabs.find((x) => x.id === id); if (t && p.active) { for (const o of tabs) if (o.windowId === t.windowId) o.active = o.id === id; } },
   },
 };
 globalThis.vivaldi = { prefs: { get: async (path) => ({ value: prefs[path] }) },
@@ -292,7 +301,7 @@ globalThis.window = { __vm: {
   setExtData: async (t, patch) => calls.push(["ext", t.id, patch]),
   spaceRepair: { gesture: () => { calls.push(["busy"]); return () => calls.push(["unbusy"]); } },
   native: {
-    record: () => ({ all: () => new Map(S.record || []) }),
+    record: () => ({ all: () => new Map(S.record || []), activeIn: (w) => [...(S.record || [])].find(([, x]) => x === w)?.[0] ?? 0 }),
     setSpace: async (id, space, o) => { calls.push(["setSpace", id, space, o.windowId, o.index ?? null]); const t = tabs.find((x) => x.id === id); if (t) { t.windowId = o.windowId; t.vivExtData = JSON.stringify(space ? { workspaceId: space } : {}); } },
     switchTo: async (w, s) => calls.push(["switch", w, s]),
     focus: async (w) => calls.push(["focus", w]),
@@ -439,6 +448,49 @@ class HealAndExpiry(unittest.TestCase):
 
     def test_an_unreadable_store_heals_nothing(self):
         self.assertEqual(self.heal("window.__vm.store = { read: async () => { throw new Error('no'); } };"), [])
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class FixRound1(unittest.TestCase):
+    """Task 9c fix round 1 (review-9c-agy.md)."""
+    ENTRY = DeleteAndUndelete.ENTRY
+
+    def undelete(self, entry=None, **over):
+        return DeleteAndUndelete.undelete(self, entry, **over)
+
+    def test_a_private_window_edits_deletes_makes_and_brings_back_nothing(self):
+        for expr in ["edit.remember(102)", "edit.undelete(" + json.dumps(self.ENTRY) + ", 8)", "edit.create('N')",
+                     "edit.rename(101, 'W', { id: 'fx', title: 'X' })", "edit.setOrder([103, 101])", "edit.setIcon(101, 2)", "edit.setEmoji(101, 'x')"]:
+            r = runtime("return " + expr + ";", list=LIST, tabs=DeleteAndUndelete.TABS, incognito=True, store={"deletedSpaces": [self.ENTRY]})
+            self.assertEqual(r.get("threw"), "Edit, delete and bring back spaces from a normal window", expr)
+            self.assertEqual([c for c in r["calls"] if c[0] != "warn"], [], f"{expr}: nothing touched")
+            self.assertEqual(len(r["store"]["deletedSpaces"]), 1)
+
+    def test_a_tab_of_the_space_in_another_window_leaves_it_there_before_any_tab_goes_in(self):
+        # after a restart (another run): the asking window 8 is the target, and a reopened tab of the space sits in window 7
+        live = {"id": 77, "windowId": 7, "index": 3, "url": "u2", "active": True, "vivExtData": json.dumps({"workspaceId": Y})}
+        old = {**self.ENTRY, "run": "earlier"}
+        r = self.undelete(entry=old, store={"deletedSpaces": [old]}, restoreInto=8, tabs=[tab(1, 7, 0, 0), tab(9, 8, 0, 0), live])
+        c = [x for x in r["calls"] if x[0] in ("setSpace", "restore", "tabs.create", "tabs.update")]
+        first = c.index(["setSpace", 77, 0, 7, None])
+        self.assertLess(first, c.index(["restore", "s1"]), "out of the space in its own window before anything is restored")
+        self.assertLess(c.index(["tabs.update", 1, {"active": True}]), first, "its window's own tab took the screen first")
+        self.assertIn(["setSpace", 77, Y, 8, None], c, "then into the space in the target window")
+
+    def test_only_a_window_the_restore_made_is_closed(self):
+        r = self.undelete(restoreMakesWindow=True, userWindowAt=1)
+        self.assertIn(["windows.remove", 50], r["calls"], "the restore's own window, left with a blank tab")
+        self.assertNotIn(["windows.remove", 60], r["calls"], "a window the user opened meanwhile stays")
+
+    def test_pinned_is_put_back_on_a_restored_tab(self):
+        pinned = {**self.ENTRY, "tabs": [{**self.ENTRY["tabs"][0], "pinned": True}]}
+        r = self.undelete(entry=pinned, store={"deletedSpaces": [pinned]})
+        self.assertIn(["tabs.update", 500, {"pinned": True}], r["calls"])
+
+    def test_a_failed_folder_rollback_is_said(self):
+        r = runtime("try { await edit.rename(101, 'Work', { id: 'fx', title: 'Arc - X' }); } catch (e) { return e.message; }", list=LIST, nameIgnored=True, folderFails=True)
+        self.assertEqual(r["out"], "Vivaldi did not take the new name")
+        self.assertTrue(any(c[0] == "warn" and "keeps the name" in c[1] for c in r["calls"]), r["calls"])
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")

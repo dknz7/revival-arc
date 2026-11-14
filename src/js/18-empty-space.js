@@ -41,16 +41,23 @@
     try { me = (await chrome.windows.getCurrent()).id; } catch (_) { return; }
     // This window's tab on screen, { id, space, page }, and the one before it for a moment: when the tab on screen closes,
     // Chromium may put another on screen (onActivated) before the close is reported (onRemoved).
+    // What each of this window's tabs is ({ id, space, page }), kept from its own events: a tab activated and closed before
+    // its lookup answers is still known (review 9c, minor 7).
+    const info = new Map();
+    const learn = (tab) => { if (tab?.id != null && tab.windowId === me) info.set(tab.id, { id: tab.id, space: ws().of(tab), page: !ws().isBlank(tab) }); };
     let shown = null, previous = null;
-    const note = (tab) => { if (tab && tab.windowId === me && tab.active && (!shown || shown.id === tab.id)) shown = { id: tab.id, space: ws().of(tab), page: !ws().isBlank(tab) }; };
-    chrome.tabs.query({ active: true, windowId: me }).then(([t]) => note(t), () => {});
+    const known = (id) => info.get(id) ?? null;
+    chrome.tabs.query({ windowId: me }).then((tabs) => { for (const t of tabs) { learn(t); if (t.active && !shown) shown = { id: t.id }; } }, () => {});
+    chrome.tabs.onCreated?.addListener(learn);
+    chrome.tabs.onAttached?.addListener((id, a) => { if (a?.newWindowId === me) chrome.tabs.get(id).then(learn, () => {}); });
+    chrome.tabs.onDetached?.addListener((id, d) => { if (d?.oldWindowId === me) info.delete(id); });
     chrome.tabs.onActivated?.addListener(({ tabId, windowId }) => {
       if (windowId !== me) return;
-      if (shown && shown.id !== tabId && !shown.pending) previous = { ...shown, until: Date.now() + 1000 };
-      shown = { id: tabId, pending: true };
-      chrome.tabs.get(tabId).then((tab) => { if (shown?.id === tabId) { shown = null; note(tab); } }, () => {});
+      if (shown && shown.id !== tabId) previous = { id: shown.id, until: Date.now() + 1000 };
+      shown = { id: tabId };
+      if (!info.has(tabId)) chrome.tabs.get(tabId).then(learn, () => {});
     });
-    chrome.tabs.onUpdated?.addListener((id, change, tab) => { if (tab?.windowId === me && tab.active && shown?.id === id && !shown.pending) note(tab); });
+    chrome.tabs.onUpdated?.addListener((id, change, tab) => learn(tab));
     const snapshot = async () => {
       const native = window.__vm.native;
       const record = native?.hasSwitch?.() ? native.record() : null;
@@ -97,7 +104,9 @@
     };
     chrome.tabs.onRemoved?.addListener((tabId, info) => {
       if (info?.windowId !== me || info.isWindowClosing) return;
-      const closed = shown?.id === tabId && !shown.pending ? shown : previous?.id === tabId && previous.until > Date.now() ? previous : null;
+      const wasShown = shown?.id === tabId || (previous?.id === tabId && previous.until > Date.now());
+      const closed = wasShown ? known(tabId) : null;
+      info.delete(tabId);
       if (shown?.id === tabId) shown = null;
       if (previous?.id === tabId) previous = null;
       if (closed) react(closed).catch(() => {});

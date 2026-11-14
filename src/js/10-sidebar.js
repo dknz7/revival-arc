@@ -1278,7 +1278,12 @@
   const spaceIds = () => (state.workspaces || []).map((w) => w.id);
   // A changed list shows once Vivaldi has written it to the pref: the sidebar then reads it again.
   const afterEdit = () => setTimeout(() => refresh(true), 150);
+  // A private window shares the profile's spaces but not its store or its tabs (08-space-edit.js normalOnly): no edits,
+  // deletes or undeletes from there, only a short note pointing to a normal window (review 9c, critical 1).
+  const privateHere = () => !!editOf()?.isPrivate?.() || !!chrome.extension?.inIncognitoContext;
+  const notHere = () => say(editOf()?.PRIVATE ?? "Edit, delete and bring back spaces from a normal window");
   const spaceMenu = (item, event) => {
+    if (privateHere()) { event.preventDefault(); event.stopPropagation(); notHere(); return; }
     const at = { clientX: event.clientX, clientY: event.clientY, preventDefault() {}, stopPropagation() {} };
     const edit = editOf();
     const ids = spaceIds();
@@ -1376,6 +1381,7 @@
   };
 
   const deleteSpace = async (item) => {
+    if (privateHere()) { notHere(); return; }
     const remove = spacesOf.findRemover(window.webpackChunkgapp_browser_react) ||
       spacesOf.findRemover(chrome.extension.getBackgroundPage?.()?.webpackChunkgapp_browser_react);
     if (!remove) {
@@ -1407,10 +1413,20 @@
           return;
         }
       }
-      await remove(target, item.id);
+      try { await remove(target, item.id); } catch (error) {
+        console.warn("[vivarc] delete space:", error);
+        say("Could not delete the space");
+        // still there: the entry just written would offer to bring back a space that was never deleted
+        const still = (await vivaldi.prefs.get("vivaldi.workspaces.list").catch(() => null))?.value;
+        if (kept && Array.isArray(still) && still.some((w) => w.id === item.id)) await edit.forget(kept).catch((e) => console.warn("[vivarc] delete space: forget the entry:", e));
+        return;
+      }
       // Vivaldi's switch of that window may bring it to the front: the window the delete was asked in keeps the focus
       if (target !== win.id) await chrome.windows.update(win.id, { focused: true }).catch(() => {});
       if (kept) edit.noteClosed(kept).catch((error) => console.warn("[vivarc] delete space: Recently Closed entries:", error));
+    } catch (error) {
+      console.warn("[vivarc] delete space:", error);
+      say("Could not delete the space");
     } finally { end?.(); refresh(false); }
   };
   // The New Tab menu's Recently Deleted Spaces: each row the space's name, icon and tab count; a click brings it back.
@@ -1430,14 +1446,15 @@
     } catch (error) { console.warn("[vivarc] undelete space:", error); say(`Could not bring back \u201c${entry.name}\u201d`); }
     finally { refresh(true); }
   };
-  const deletedSpacesRow = () => (editOf() ? [{ label: "Recently Deleted Spaces", flyout: async () => {
+  const deletedSpacesRow = () => (!editOf() ? [] : privateHere() ? [{ label: "Recently Deleted Spaces", note: "normal window", disabled: true }] : [{ label: "Recently Deleted Spaces", flyout: async () => {
     const now = Date.now();
     return (await editOf().list()).map((e) => ({ label: e.name || "Space", icon: spaceGlyph(e), note: editOf().deletedNote(e, now), action: () => undeleteSpace(e) }));
-  } }] : []);
+  } }]);
 
   // + makes a space at once, named and with Vivaldi's default icon, and opens its rename (upstream #126). Without
   // Vivaldi's manager, its own dialog (or the shortcut's reminder), as before.
   const createSpaceNow = async () => {
+    if (privateHere()) { notHere(); return; }
     const edit = editOf();
     if (!edit?.manager()) return openCreateSpaceDialog();
     try {

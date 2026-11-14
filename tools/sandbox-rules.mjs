@@ -3989,6 +3989,81 @@ def("UD.reopened-then-undelete", {
   expect: async (s) => [...(await undeleted(s, ctx.W))],
 });
 
+// Fix round 1 (review-9c-agy.md, important 2): after a restart a reopened tab of the space sits in one window (W, by
+// Vivaldi's own Reopen Closed Tab), and the space is brought back from another (H, the asking window, since window ids
+// start afresh): those tabs leave the space in W first, so nothing is refused as a split, and all four end up in H.
+def("UD.live-elsewhere-after-restart", {
+  busyThroughAct: true,
+  setup: async () => { await SET_UD(); await rawRestore(2); await sleep(800); await busy(); await sleep(5000); await busy(); },
+  act: async () => {
+    await restartSandbox();
+    const s0 = await h.snap(ctx.H);
+    const w = tabsOf(s0).find((t) => labelOf(t) === "X1")?.win;
+    if (w == null || w === ctx.H) return { error: `X1 came back in ${w}` };
+    ctx.W = w; ctx.roles.W = w;
+    const live = tabsOf(s0).filter((t) => /^DY[0-9]$/.test(labelOf(t)) && t.ws === sp("Y")).map((t) => `${labelOf(t)}@${roleOf(t.win)}`);
+    await focus(ctx.H);
+    if (!(await waitFor(() => hasEl(ctx.H, "#vm-panel .vm-newtab-chev"), 15000))) return { error: "no sidebar in H after the restart" };
+    await h.ev(`(() => { window.__ud = []; for (const k of ["log", "warn"]) { const o = console[k]; console[k] = (...a) => { if (String(a[0]).includes("[vivarc]")) window.__ud.push(a.map((x) => x && x.stack ? x.message : String(x)).join(" ")); return o.apply(console, a); }; } return 1; })()`, ctx.H);
+    const r = await pickFrom(ctx.H, "Recently Deleted Spaces", "Y");
+    if (r !== "ok") return { error: r };
+    await sleep(4000);
+    return { done: "ok", live, logs: await h.ev(`window.__ud`, ctx.H) };
+  },
+  expect: async (s, b, r) => [r.error ?? null, r.live?.length === 2 ? null : `before the undelete, live tabs of Y ${J(r.live)}, want 2 in W`,
+    (r.logs || []).some((l) => /ambiguous|did not go back/.test(l)) ? `refused: ${J(r.logs)}` : null,
+    ...ctx.before.order.map((l) => labelIs(s, l, { win: ctx.H, space: sp("Y") })), recIs(s, ctx.H, sp("Y")), showsSpace(s, ctx.H, sp("Y")),
+    tabsOf(s).some((t) => t.win === ctx.W && t.ws === sp("Y")) ? "a tab of Y is still in W" : null],
+});
+// Fix round 1 (important 3): Vivaldi's delete fails. The menu says so, the space stays, and the undo entry written just
+// before is gone (it would offer to bring back a space that was never deleted); no unhandled rejection.
+def("DEL.remove-fails", {
+  gesture: true,
+  setup: async () => { await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "Y1", sp("Y")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); },
+  act: async () => {
+    await h.ev(`(() => { window.__rej = []; window.addEventListener("unhandledrejection", (e) => window.__rej.push(String(e.reason?.message || e.reason)));
+      window.__realFindRemover = window.__vm.workspaces.findRemover;
+      window.__vm.workspaces.findRemover = () => async () => { throw new Error("sandbox: the delete fails"); }; return 1; })()`, ctx.W);
+    try {
+      const r = await deleteSpace(ctx.W, "Y");
+      await sleep(1500);
+      const toast = await h.ev(`document.querySelector("#vm-copied")?.textContent || null`, ctx.W);
+      return { done: "ok", r, toast, rej: await h.ev(`window.__rej`, ctx.W), held: (await h.ev(DELETED, ctx.H)).map((e) => e.id), spaces: (await prefList()).map((w) => w.id) };
+    } finally { await h.ev(`(window.__vm.workspaces.findRemover = window.__realFindRemover, 1)`, ctx.W); }
+  },
+  expect: (s, b, r) => [/Could not delete the space/.test(r.toast || "") ? null : `toast ${J(r.toast)}`, r.spaces?.includes(sp("Y")) ? null : "Y is gone",
+    r.held?.length ? `deletedSpaces holds ${J(r.held)}` : null, r.rej?.length ? `unhandled rejections ${J(r.rej)}` : null, tabIs(s, "Y1", { win: ctx.W, space: sp("Y") })],
+});
+// Fix round 1 (critical 1): a private window shares the profile's spaces but not its store or tabs: its tile right-click
+// and + only say "from a normal window", and its New Tab menu's Recently Deleted Spaces is disabled.
+def("PRIV.no-space-edits", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 900 }); await tab(ctx.W, "Y1", sp("Y")); await focus(ctx.W); },
+  act: async () => {
+    const pid = await openPrivate();
+    if (pid == null) return { error: "no private window" };
+    try {
+      if (!(await waitTile(pid, "Y"))) return { error: "no Y tile in the private window" };
+      const before = (await prefList()).map((w) => w.id);
+      await h.ev(`(() => { const p = ${pillOf("Y")}; const b = p.getBoundingClientRect(); p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 4, clientY: b.top + 4 })); return 1; })()`, pid);
+      await sleep(600);
+      const menu = await h.ev(`[...document.querySelectorAll(".vm-menu .vm-menu-item")].map((m) => m.textContent)`, pid);
+      const toast1 = await h.ev(`document.querySelector("#vm-copied")?.textContent || null`, pid);
+      await h.ev(`(document.querySelector("#vm-panel .vm-space-plus")?.click(), 1)`, pid);
+      await sleep(1500);
+      const after = (await prefList()).map((w) => w.id);
+      const toast2 = await h.ev(`document.querySelector("#vm-copied")?.textContent || null`, pid);
+      let row = null;
+      if (await openDropdown(pid)) row = (await rowsOf(pid, NT_MENU + " > div")).find((l) => l.startsWith("Recently Deleted Spaces")) ?? "missing";
+      await escapeAll(pid);
+      return { done: "ok", menu, toast1, toast2, made: after.filter((id) => !before.includes(id)).length, row };
+    } finally { await closePrivate(); }
+  },
+  expect: (s, b, r) => [r.error ?? null, r.menu?.length ? `a menu opened: ${J(r.menu)}` : null, /normal window/.test(r.toast1 || "") ? null : `right-click toast ${J(r.toast1)}`,
+    r.made ? `+ made ${r.made} space(s)` : null, /normal window/.test(r.toast2 || "") ? null : `+ toast ${J(r.toast2)}`,
+    r.row === "Recently Deleted Spaces (disabled)" ? null : `the New Tab menu's row ${J(r.row)}`, tabIs(s, "Y1", { win: ctx.W, space: sp("Y") })],
+});
+
 // Edit a space (upstream #126): from the tile's right-click menu.
 const SET_ED = async () => {
   await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "Y1", sp("Y"));
