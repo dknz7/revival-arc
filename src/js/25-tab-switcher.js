@@ -36,12 +36,27 @@
     if (freedThisRun) return { armed: false, reason: "Ctrl+Tab was freed during this run: Vivaldi keeps it until the next start" };
     return { armed: true, reason: "armed" };
   };
+  // A change of Vivaldi's key table seen while this window is open (before / after: the commands holding Ctrl+Tab then and
+  // now). Holders now: Vivaldi has the key (the user put it back), so the switcher lets go at once. Holders before and none
+  // now: the keys were freed during this run (by the leader window, or by hand), and Vivaldi keeps them until the next
+  // start. -> { disarm, freedNow }
+  const tableChange = ({ before = null, after = [] } = {}) => ({ disarm: after.length > 0, freedNow: !!before && before.length > 0 && after.length === 0 });
+  // Which keys the row takes while it is up: the ones that step and end it. Anything else ends the row without switching
+  // and is left to whatever it is for (a key without Ctrl, or Ctrl with another key: Ctrl+C, Ctrl+F).
+  const rowKey = (key, ctrl) => {
+    if (key === "Escape") return "cancel";
+    if (["Control", "Shift", "Alt", "Meta", "AltGraph", "CapsLock"].includes(key)) return "ignore";
+    if (!ctrl) return "leave";
+    if (key === "Tab" || key === "ArrowRight" || key === "ArrowLeft") return "step";
+    if (key === "Enter") return "commit";
+    return "leave";
+  };
   // The fallback card for a tab with no thumbnail: its site and a letter for it.
   const hostOf = (url) => {
     try { return new URL(url).hostname.replace(/^www\./, ""); } catch (_) { return ""; }
   };
   const monogram = (tab) => (hostOf(tab?.url || "") || tab?.title || "?").trim().charAt(0).toUpperCase() || "?";
-  window.__vm.switcher = { order, step, first, of, decision, hostOf, monogram, SHOWN, NEXT_KEY, PREV_KEY };
+  window.__vm.switcher = { order, step, first, of, decision, tableChange, rowKey, hostOf, monogram, SHOWN, NEXT_KEY, PREV_KEY, LATE_MS: 100 };
   if (!window.__vm.store) return;
 
   const { normalise } = window.__vm;
@@ -75,19 +90,26 @@
 
   let armed = false;
   let reason = "starting";
+  let seenFreed = false; // this window saw the keys go free during this run (the table watch below)
+  let lastHolders = null; // the holders at the last read of the table
+  const holdersOf = (actions) => {
+    const table = Array.isArray(actions) ? actions[0] : null;
+    const freeKey = window.__vm.bootstrap?.freeKey;
+    if (!table || !freeKey) return null;
+    return [...new Set([...freeKey(table, NEXT_KEY).freed, ...freeKey(table, PREV_KEY).freed])];
+  };
   // The leader window's profile setup frees the keys; every window waits for its own setup's tab-key step first, so it never
   // reads the table halfway through that (05-bootstrap.js keysReady), at most SETUP_WAIT_MS.
   const decide = async () => {
-    let readable = false, holders = [], freedThisRun = null;
+    let readable = false, holders = [], freedThisRun = false;
     try {
       const ready = window.__vm.bootstrap?.keysReady;
       if (ready) await Promise.race([ready, new Promise((resolve) => setTimeout(resolve, SETUP_WAIT_MS))]);
-      const actions = (await vivaldi.prefs.get("vivaldi.actions"))?.value;
-      const table = Array.isArray(actions) ? actions[0] : null;
-      const freeKey = window.__vm.bootstrap?.freeKey;
-      if (table && freeKey) {
-        holders = [...new Set([...freeKey(table, NEXT_KEY).freed, ...freeKey(table, PREV_KEY).freed])];
-        freedThisRun = (await window.__vm.bootstrap?.freedThisRun?.()) ?? null;
+      const found = holdersOf((await vivaldi.prefs.get("vivaldi.actions"))?.value);
+      if (found) {
+        holders = found;
+        lastHolders = found;
+        freedThisRun = seenFreed || !!(await window.__vm.bootstrap?.freedThisRun?.());
         readable = true;
       }
     } catch (_) { readable = false; }
@@ -95,6 +117,24 @@
     return armed;
   };
   const decided = decide().then(() => { if (!armed) console.log(`[vivarc] tab switcher waits: ${reason}`); });
+  // Vivaldi's key table changing while this window is open (every window, private ones too: vivaldi.prefs is the profile's):
+  // Ctrl+Tab back on a Vivaldi command lets go at once; the keys going free marks this run here, which is how a window
+  // that cannot see the leader's mark (a private window, with a background page of its own) learns it.
+  const onTable = async () => {
+    try {
+      const after = holdersOf((await vivaldi.prefs.get("vivaldi.actions"))?.value);
+      if (!after) return;
+      const change = tableChange({ before: lastHolders, after });
+      lastHolders = after;
+      if (change.freedNow) { seenFreed = true; window.__vm.bootstrap?.markFreedThisRun?.(); }
+      if (change.disarm || change.freedNow) {
+        ({ armed, reason } = decision({ readable: true, holders: after, freedThisRun: true }));
+        if (bar) cancel();
+      } else if (!armed) await decide();
+    } catch (_) {}
+  };
+  const pathOf = (x) => (typeof x === "string" ? x : x?.path);
+  try { vivaldi.prefs.onChanged?.addListener((change) => { if (pathOf(change) === "vivaldi.actions") onTable(); }); } catch (_) {}
 
   const el = (tag, cls, text) => {
     const e = document.createElement(tag);
@@ -225,30 +265,33 @@
 
   // The keys while the row is up: it has the cursor (focused as the press comes in), so Tab, Shift+Tab, the arrows,
   // Escape and Enter come here first. Escape is read before anything else: it never switches, Ctrl held or not.
+  // While the row has no cards yet (the tabs being read) only Escape counts.
   const onKeyDown = (e) => {
-    if (e.key === "Escape") {
+    const what = rowKey(e.key, e.ctrlKey);
+    if (what === "cancel") {
       e.preventDefault();
       e.stopPropagation();
       ended = "Escape";
       cancel();
       return;
     }
-    if (!e.ctrlKey && e.key !== "Control") { ended = `keydown ${e.key} without Ctrl`; commit(); return; }
-    if (e.key === "Tab" || e.key === "ArrowRight" || e.key === "ArrowLeft") {
-      e.preventDefault();
-      e.stopPropagation();
+    if (what === "ignore" || !items.length) return;
+    if (what === "leave") { ended = `${e.ctrlKey ? "Ctrl+" : ""}${e.key}: not the switcher's`; cancel(); return; } // not swallowed, nothing switched
+    e.preventDefault();
+    e.stopPropagation();
+    if (what === "step") {
       keysSeen = true;
       const dir = e.key === "ArrowLeft" || (e.key === "Tab" && e.shiftKey) ? -1 : 1;
       if (e.repeat) repeat(dir);
       else { held = { n: 0, at: Date.now() }; advance(dir); }
-    } else if (e.key === "Enter") {
-      e.preventDefault();
+    } else if (what === "commit") {
       ended = "Enter";
       commit();
     }
   };
   // Ctrl, always: the release ends a row that is up or still being made (opening then switches without showing it).
-  window.addEventListener("keydown", (e) => { if (e.key === "Control") ctrlDown = true; }, true);
+  let ctrlSeenAt = 0; // the last time this window's UI saw Ctrl held (a keydown with it)
+  window.addEventListener("keydown", (e) => { if (e.key === "Control") ctrlDown = true; if (e.ctrlKey) ctrlSeenAt = Date.now(); }, true);
   window.addEventListener("keyup", (e) => {
     if (e.key !== "Control") return;
     ctrlDown = false;
@@ -281,11 +324,15 @@
     if (opening || bar) return;
     opening = true;
     ended = null;
+    const pressedAt = Date.now();
     let tabs = [];
     try {
       await decided;
       // Not armed when this window started (or since): ask again, the setup or a read may have settled meanwhile.
       if (!armed && !(await decide())) return;
+      // An answer that came late (the setup still running, a slow read): the press is not acted on unless Ctrl is seen held
+      // since, so the row never pops up and takes the cursor long after a quick press. The next press is fast.
+      if (Date.now() - pressedAt > window.__vm.switcher.LATE_MS && ctrlSeenAt < pressedAt) { ended = "decided too late"; return; }
       takeKeys();
       const windowId = myWindowId ?? (await chrome.windows.getCurrent()).id;
       const all = await chrome.tabs.query({ windowId });

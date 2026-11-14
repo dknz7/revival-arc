@@ -23,30 +23,36 @@
   };
   // "Vivarc freed the tab switcher's keys during this run of Vivaldi": Vivaldi reads its key table at launch, so until the
   // next start it still has them, and the switcher (25-tab-switcher.js) must leave Ctrl+Tab to it. Run-scoped by where it
-  // lives, so a restart clears it whatever the clock says: the shared background page (it starts and ends with Vivaldi;
-  // one per profile side) and, where Vivaldi has it, chrome.storage.session (in memory, emptied when Vivaldi quits). It is
-  // set BEFORE the key table is written, so no window can read the freed table without seeing it too.
+  // lives, so a restart clears it whatever the clock says: this window's own copy (`mine`), the background page (it
+  // starts and ends with Vivaldi; one per profile side, so a private window has its own, or none) and, where Vivaldi has
+  // it, chrome.storage.session (in memory, emptied when Vivaldi quits). Set BEFORE the key table is written, so no window
+  // of this side can read the freed table without seeing it too. A window of the other side (a private window) learns it
+  // by watching the table change (25-tab-switcher.js).
   const RUN_KEY = "__vivarcTabKeysFreedRun";
+  let mine = false;
+  const bgPage = () => { try { return chrome.extension?.getBackgroundPage?.() || null; } catch (_) { return null; } };
   const markFreedThisRun = async () => {
-    try { const bg = chrome.extension?.getBackgroundPage?.(); if (bg) bg[RUN_KEY] = true; } catch (_) {}
+    mine = true;
+    try { const bg = bgPage(); if (bg) bg[RUN_KEY] = true; } catch (_) {}
     try { await chrome.storage?.session?.set?.({ [RUN_KEY]: true }); } catch (_) {}
   };
-  // -> true / false, or null when neither place could be read (the caller then leaves Ctrl+Tab to Vivaldi).
+  // -> true when any of the three says so, else false (never "unknown": a missing background page or session store
+  // means nothing was marked there, and standing down for good on that would leave Ctrl+Tab dead from the next run on).
   const freedThisRun = async () => {
-    let known = false;
-    try { const bg = chrome.extension?.getBackgroundPage?.(); if (bg) { known = true; if (bg[RUN_KEY] === true) return true; } } catch (_) {}
+    if (mine) return true;
+    try { if (bgPage()?.[RUN_KEY] === true) return true; } catch (_) {}
     try {
       const session = chrome.storage?.session;
-      if (session?.get) { known = true; if ((await session.get(RUN_KEY))?.[RUN_KEY] === true) return true; }
+      if (session?.get && (await session.get(RUN_KEY))?.[RUN_KEY] === true) return true;
     } catch (_) {}
-    return known ? false : null;
+    return false;
   };
   // Resolves once this window's profile setup has done (or skipped) the tab-key step: a switcher deciding before that could
   // read the table between the leader's write and its own check.
   let keysDone = () => {};
   const keysReady = new Promise((resolve) => { keysDone = resolve; });
   // Above every early return: the switcher needs these in every window, private ones included.
-  window.__vm.bootstrap = { freeKey, freedThisRun, keysReady, RUN_KEY };
+  window.__vm.bootstrap = { freeKey, freedThisRun, markFreedThisRun, keysReady, RUN_KEY };
 
   const cfg = window.__vm.config;
   if (!cfg || cfg.autoConfigureProfiles === false) { keysDone(); return; }

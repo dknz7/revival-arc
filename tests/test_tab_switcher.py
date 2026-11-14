@@ -191,5 +191,79 @@ class Decision(unittest.TestCase):
                          ["github.com", "N", "S"])
 
 
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the tab switcher's JavaScript")
+class RowKeys(unittest.TestCase):
+    """While the row is up: what each key does. Nothing that is not the switcher's is swallowed into a switch."""
+
+    def key(self, key, ctrl):
+        return js("window.__vm.switcher.rowKey(key, ctrl)", key=key, ctrl=ctrl)
+
+    def test_escape_cancels_ctrl_held_or_not(self):
+        self.assertEqual([self.key("Escape", True), self.key("Escape", False)], ["cancel", "cancel"])
+
+    def test_tab_and_the_arrows_step_and_enter_switches_with_ctrl(self):
+        self.assertEqual([self.key(k, True) for k in ("Tab", "ArrowLeft", "ArrowRight", "Enter")], ["step", "step", "step", "commit"])
+
+    def test_a_key_without_ctrl_or_another_ctrl_chord_ends_the_row_without_switching(self):
+        self.assertEqual([self.key("a", False), self.key(" ", False), self.key("Enter", False), self.key("c", True), self.key("f", True)],
+                         ["leave", "leave", "leave", "leave", "leave"])
+
+    def test_the_modifiers_alone_change_nothing(self):
+        self.assertEqual([self.key(k, True) for k in ("Control", "Shift", "Alt", "Meta")], ["ignore"] * 4)
+
+    def test_a_late_answer_is_a_tenth_of_a_second(self):
+        self.assertEqual(js("window.__vm.switcher.LATE_MS"), 100)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the tab switcher's JavaScript")
+class TableChanges(unittest.TestCase):
+    def change(self, before, after):
+        return js("window.__vm.switcher.tableChange({ before, after })", before=before, after=after)
+
+    def test_a_key_back_on_a_vivaldi_command_lets_go(self):
+        self.assertEqual(self.change([], ["COMMAND_TAB_SWITCH_FORWARD_SETTING"]), {"disarm": True, "freedNow": False})
+
+    def test_bound_then_free_is_freed_this_run(self):
+        self.assertEqual(self.change(["COMMAND_TAB_SWITCH_FORWARD_SETTING"], []), {"disarm": False, "freedNow": True})
+
+    def test_free_and_free_or_unknown_before_is_nothing(self):
+        self.assertEqual(self.change([], []), {"disarm": False, "freedNow": False})
+        self.assertEqual(self.change(None, []), {"disarm": False, "freedNow": False})
+
+
+# 00-core.js's key hook: a key heard twice within 250 ms counts once, except the switcher's, where two quick taps are meant.
+CORE = r'''
+const fs = require("fs"), vm = require("vm"), path = require("path");
+let hook = null;
+global.console = { log() {}, warn() {} };
+global.indexedDB = { open: () => ({}) };
+global.document = { querySelector: () => null, documentElement: {}, readyState: "complete" };
+global.MutationObserver = class { observe() {} disconnect() {} };
+global.getComputedStyle = () => ({ getPropertyValue: () => "" });
+global.setTimeout = () => 0;
+global.vivaldi = { tabsPrivate: { onKeyboardShortcut: { addListener: (fn) => { hook = fn; } } } };
+global.window = { __vmConfig: { platform: "Windows" } };
+vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], "00-core.js"), "utf8"));
+const heard = [];
+window.__vm.onShortcut((key) => heard.push(key));
+for (const combo of JSON.parse(process.argv[2])) hook(1, combo);
+process.stdout.write(JSON.stringify(heard));
+'''
+
+
+def core(combos):
+    out = subprocess.run(["node", "-e", CORE, JS, json.dumps(combos)], check=True, capture_output=True, text=True)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the core's JavaScript")
+class QuickTaps(unittest.TestCase):
+    def test_a_second_quick_ctrl_tab_is_heard(self):
+        self.assertEqual(core(["Ctrl+Tab", "Ctrl+Tab", "Ctrl+Shift+Tab", "Ctrl+Shift+Tab"]), ["ctrl+tab", "ctrl+tab", "ctrl+shift+tab", "ctrl+shift+tab"])
+
+    def test_other_keys_heard_twice_still_count_once(self):
+        self.assertEqual(core(["Ctrl+S", "Ctrl+S"]), ["ctrl+s"])
+
+
 if __name__ == "__main__":
     unittest.main()
