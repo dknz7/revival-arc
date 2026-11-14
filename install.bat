@@ -40,7 +40,7 @@ set "URL=https://github.com/%REPO%/archive/refs/tags/%TAG%.zip"
 :download
 echo Downloading Vivarc...
 curl.exe -fsSL "%URL%" -o "%WORK%\vivarc.zip" || goto failed
-tar.exe -xf "%WORK%\vivarc.zip" -C "%WORK%\src" --strip-components=1 || goto failed
+"%SystemRoot%\System32\tar.exe" -xf "%WORK%\vivarc.zip" -C "%WORK%\src" --strip-components=1 || goto failed
 if not exist "%WORK%\src\vivarc.py" goto failed
 if not exist "%WORK%\src\windows_support.py" goto failed
 if not exist "%DEST%" mkdir "%DEST%"
