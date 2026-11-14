@@ -308,7 +308,10 @@
     const [current, here, known] = await Promise.all([
       chrome.tabs.get(listed.id).catch(() => null), chrome.windows.getCurrent().then((w) => w?.id, () => undefined),
       withRecord ? native.spaceIds().then(spaces.spaceList, () => null) : Promise.resolve(null)]);
-    const tab = current || listed; // the list may be older than a move
+    // The listed row is never acted on: a tab that can't be read now (closed since the bar listed it) gets no switch, no
+    // focus, nothing (fix round 4).
+    if (!current) return;
+    const tab = current;
     const record = withRecord ? native.record() : null;
     const pick = record ? spaces.tabPick(tab, record.activeIn(tab.windowId), record.all().get(spaces.of(tab)) ?? null,
       { known, here, hereShown: here != null ? record.activeIn(here) : null }) : { kind: "activate" };

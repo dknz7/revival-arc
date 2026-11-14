@@ -300,7 +300,7 @@ test('switching tab in this window closes an edit bar, keeping its page; a switc
 // are faked; every switch, focus and activation lands in one log, in order.
 // known: the spaces Vivaldi's list holds (Task 9a: a tab in a space not listed was deleted); null: the list can't be read.
 // knownLater: what the list says from its second read on (a space deleted between the listing and the switch).
-async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true, minimised = null, known = [1, 2], knownLater, via = 'pickTab', moveTo, raceAt } = {}) {
+async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true, minimised = null, known = [1, 2], knownLater, via = 'pickTab', moveTo, raceAt, closeBefore } = {}) {
   const space = await editUrl(tabs);
   const log = [];
   space.context.window.__vm.native = {
@@ -334,6 +334,7 @@ async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwit
   space.inputs[0].value = '';
   await space.inputs[0].events.input();
   if (moveTo !== undefined) Object.assign(tabs[20], page(20, moveTo)); // the tab changes space after the bar listed it
+  if (closeBefore) delete tabs[20]; // the tab closes after the bar listed it
   await press(space.inputs[0], 'Enter');
   return { ...space, log };
 }
@@ -406,6 +407,11 @@ test('no switch into a space that left the list while the pick was reading', asy
   const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { known: [1, 2], knownLater: [1, 2], raceAt: 2 });
   const changed = log.findIndex((c) => c[0] === 'list-changed');
   assert.ok(!log.some((c, i) => changed >= 0 && i > changed && c[0] === 'switch' && c[2] === 2), `log ${JSON.stringify(log)}`);
+});
+// Fix round 4: a listed tab that closed before Enter runs the pick: nothing happens (no switch into its old space, no focus).
+test('a listed tab that closed before the pick runs switches nothing and focuses nothing', async () => {
+  const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { closeBefore: true, minimised: [] });
+  assert.deepEqual(log, []);
 });
 test('with nothing typed, a tab of a deleted space is never offered, even as the only tab', async () => {
   const { log, inputs } = await pickTab({ 10: page(10, 9), 20: page(20, 9) });
