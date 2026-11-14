@@ -51,6 +51,19 @@
   visibility: hidden;
   pointer-events: none;
 }
+/* The escape hatch (20-command-bar.js, Task 9b fix round 1): Vivaldi's own field shown for one entry the command bar hands
+   it (a javascript: address, a POST search engine, an address Vivaldi will not load from a mod, or "Open in Vivaldi's
+   address field"), where the toasts drop, until it loses the cursor; the toasts make way meanwhile. */
+#browser.vm-on.vm-native-field #tabs-tabbar-container .UrlBar-AddressField {
+  position: fixed !important; top: var(--vm-drop-y, 52px) !important; left: var(--vm-drop-x, 8px) !important; right: auto !important;
+  width: var(--vm-drop-w, 360px) !important; height: auto !important; min-height: 30px !important; overflow: visible;
+  opacity: 1; visibility: visible; pointer-events: auto; z-index: 50; border-radius: 8px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.4);
+}
+#browser.vm-on.vm-native-field #tabs-tabbar-container { backdrop-filter: none !important; z-index: 3 !important; }
+#browser.vm-on.vm-native-field.vm-sidebar-hidden #tabs-tabbar-container {
+  display: flex !important; position: absolute !important; width: 0 !important; min-width: 0 !important; visibility: hidden;
+}
+#browser.vm-on.vm-native-field #vm-notify { display: none; }
 /* The field's popups (Vivaldi's own: a device chooser, the decided-permission panel, blocked pop-ups, translate, the
    bookmark editor, install app, QR code...) drop from where Vivarc's toasts drop (--vm-drop-x/y, 17-notify.js: under the
    Dia breadcrumb, or the sidebar's URL bar in the Arc layout), the field and its row staying collapsed and unseen. In a side

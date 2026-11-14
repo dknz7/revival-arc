@@ -544,20 +544,127 @@ test('what a blank tab is lives in one place (07-workspaces.js); the Dia breadcr
   assert.deepEqual(rules('15-dia.js'), rules('07-workspaces.js'));
 });
 
+// Task 9b fix round 1: the command bar is the only place to type an address, so a search it cannot run itself (a POST
+// engine, or Vivaldi's engines unreadable) goes to Vivaldi's own address field with the same words, submitted there, and
+// never to another engine.
+const recordHandOvers = (context) => { const handed = []; context.window.__vm.nativeEntry = async (text, options) => { handed.push({ text, ...options }); return true; }; return handed; };
+const settle = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise(resolve => setImmediate(resolve)); };
 for (const failure of ['missing default', 'native request error', 'POST search']) {
-  test(`DuckDuckGo fallback when ${failure}`, async () => {
+  test(`a search the bar cannot run itself goes to Vivaldi's own field (${failure}), never to DuckDuckGo`, async () => {
     const { context, calls } = setup({ missing: failure === 'missing default' });
     if (failure === 'native request error') context.vivaldi.searchEngines.getSearchRequest = async () => { throw new Error('unavailable'); };
     if (failure === 'POST search') context.vivaldi.searchEngines.getSearchRequest = async () => ({ url: 'https://chosen.test/', postParams: 'q=test' });
+    const handed = recordHandOvers(context);
     const input = await loadBar(context);
-    await new Promise(resolve => setImmediate(resolve));
+    await settle(1);
     input.value = 'test & caf\u00e9';
     await input.events.input();
     input.events.keydown({ key: 'Enter', preventDefault() {} });
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(calls.navigation[0].url, 'https://duckduckgo.com/?q=test%20%26%20caf%C3%A9');
+    await settle();
+    assert.equal(calls.navigation.some((n) => /duckduckgo/.test(n.url || '')), false, 'no DuckDuckGo');
+    assert.deepEqual(handed.map((h) => [h.text, h.submit]), [['test & caf\u00e9', true]]);
   });
 }
+test("a keyword engine that searches by POST goes to Vivaldi's field with its keyword before the words", async () => {
+  const { context } = setup();
+  context.vivaldi.searchEngines.getSearchRequest = async () => ({ url: 'https://chosen.test/', postParams: 'q=x' });
+  const handed = recordHandOvers(context);
+  const input = await loadBar(context);
+  await settle(5);
+  input.value = 'c';
+  input.events.keydown({ key: 'Tab', preventDefault() {} }); // the engine chip
+  await settle(2);
+  input.value = 'words';
+  await input.events.input();
+  input.events.keydown({ key: 'Enter', preventDefault() {} });
+  await settle();
+  assert.deepEqual(handed.map((h) => h.text), ['c words']);
+});
+
+// What typed text means (08-search.js, search.resolve), as Vivaldi's own field reads it.
+test('the resolver reads local, intranet and IP addresses as addresses', () => {
+  const { search } = setup();
+  const url = (t) => { const r = search.resolve(t); return r && r.kind === 'url' ? r.url : r && r.kind; };
+  assert.equal(url('localhost'), 'http://localhost');
+  assert.equal(url('localhost:3000'), 'http://localhost:3000');
+  assert.equal(url('localhost:3000/api?x=1'), 'http://localhost:3000/api?x=1');
+  assert.equal(url('127.0.0.1'), 'http://127.0.0.1');
+  assert.equal(url('192.168.1.20:8080/admin'), 'http://192.168.1.20:8080/admin');
+  assert.equal(url('::1'), 'http://[::1]/');
+  assert.equal(url('fe80::1'), 'http://[fe80::1]/');
+  assert.equal(url('[::1]:8080'), 'http://[::1]:8080');
+  assert.equal(url('[2001:db8::1]/x'), 'http://[2001:db8::1]/x');
+  assert.equal(url('intranet/wiki'), 'http://intranet/wiki');
+  assert.equal(url('intranet:8080'), 'http://intranet:8080');
+  assert.equal(url('nas.local:5000/'), 'http://nas.local:5000/');
+});
+test('the resolver keeps domains and explicit schemes, and rewrites chrome: and vivaldi: shorthands', () => {
+  const { search } = setup();
+  const url = (t) => { const r = search.resolve(t); return r && r.kind === 'url' ? r.url : r && r.kind; };
+  assert.equal(url('example.com'), 'https://example.com');
+  assert.equal(url('sub.example.co.uk/path?q=1'), 'https://sub.example.co.uk/path?q=1');
+  assert.equal(url('m\u00fcnchen.de'), 'https://m\u00fcnchen.de');
+  assert.equal(url('xn--mnchen-3ya.de'), 'https://xn--mnchen-3ya.de');
+  for (const t of ['http://a.test/', 'file:///C:/Users/', 'about:blank', 'view-source:https://x.test/', 'chrome://version',
+    'vivaldi://settings', 'data:text/html,<b>hi there</b>', 'mailto:a@b.test', 'magnet:?xt=urn:x', 'web+foo:bar', 'myapp://open',
+    'chrome-extension://abc/page.html']) assert.equal(url(t), t, t);
+  assert.equal(url('chrome:version'), 'chrome://version');
+  assert.equal(url('vivaldi:settings'), 'vivaldi://settings');
+});
+test("the resolver leaves javascript: to Vivaldi's own field, and searches for everything else", () => {
+  const { search } = setup();
+  assert.equal(search.resolve('javascript:alert(1)').kind, 'native');
+  assert.equal(search.resolve('JavaScript:void(0)').kind, 'native');
+  for (const t of ['hello world', 'what is 2+2', 'note: buy milk', 're:something', '1234', 'x.y', 'http://a b', 'localhost is down', 'mailto:'])
+    assert.equal(search.resolve(t).kind, 'search', t);
+  assert.equal(search.resolve(''), null);
+  assert.equal(search.resolve('   '), null);
+});
+test('a bare word is a search first, with its intranet address offered too', () => {
+  const { search } = setup();
+  assert.deepEqual({ ...search.resolve('intranet') }, { kind: 'search', alt: 'http://intranet/' });
+  assert.equal(search.resolve('intranet').alt, 'http://intranet/');
+});
+test('the address being edited keeps its own scheme', () => {
+  const { search } = setup();
+  assert.equal(search.resolve('foo:bar baz', { editing: 'foo:bar' }).kind, 'search');
+  assert.deepEqual({ ...search.resolve('foo:baz', { editing: 'foo:bar' }) }, { kind: 'url', url: 'foo:baz' });
+  assert.equal(search.resolve('javascript:x', { editing: 'javascript:y' }).kind, 'native');
+});
+test("typed addresses go where Vivaldi's field would send them, and javascript: leads to Vivaldi's field", async () => {
+  for (const [typed, want] of [['localhost:3000', 'http://localhost:3000'], ['10.0.0.1/x', 'http://10.0.0.1/x'], ['intranet/wiki', 'http://intranet/wiki']]) {
+    const { context, calls } = setup();
+    const input = await loadBar(context);
+    await settle(5);
+    input.value = typed;
+    await input.events.input();
+    input.events.keydown({ key: 'Enter', preventDefault() {} });
+    await settle();
+    assert.equal(calls.navigation.at(-1)?.url, want, typed);
+  }
+  const { context, calls } = setup();
+  const handed = recordHandOvers(context);
+  const input = await loadBar(context);
+  await settle(5);
+  input.value = 'javascript:alert(1)';
+  await input.events.input();
+  input.events.keydown({ key: 'Enter', preventDefault() {} });
+  await settle();
+  assert.equal(calls.navigation.length, 0, 'the bar never loads a javascript: address itself');
+  assert.deepEqual(handed.map((h) => [h.text, h.submit]), [['javascript:alert(1)', false]], "shown in Vivaldi's field, not submitted");
+});
+test("the last row hands what is typed to Vivaldi's own field (the escape hatch)", async () => {
+  const { context } = setup();
+  const handed = recordHandOvers(context);
+  const input = await loadBar(context);
+  await settle(5);
+  input.value = 'kw some words';
+  await input.events.input();
+  input.events.keydown({ key: 'ArrowUp', preventDefault() {} }); // from the first row up: the last row
+  input.events.keydown({ key: 'Enter', preventDefault() {} });
+  await settle();
+  assert.deepEqual(handed.map((h) => [h.text, h.submit]), [['kw some words', false]]);
+});
 
 // Split View from the bar: a page that leaves its old split must lose its `tiling` key. chrome.tabs.update MERGES
 // vivExtData and only a key written as null is dropped (measured on 8.2), so the fake below merges the same way.

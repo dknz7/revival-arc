@@ -62,9 +62,6 @@
   const hostOf = (url) => {
     try { return new URL(url).hostname.replace(/^www\./, ""); } catch (_) { return ""; }
   };
-  const looksLikeUrl = (text) =>
-    /^(https?:\/\/|chrome:\/\/|vivaldi:\/\/)/i.test(text) || (/^[^\s]+\.[a-z]{2,}(\/\S*)?$/i.test(text) && !text.includes(" "));
-  const toUrl = (text) => (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
 
   const toast = (message) => window.dispatchEvent(new CustomEvent("vm-toast", { detail: message }));
   // A new tab tops its space's list, as in Arc (workspaces.topIndex). Ctrl+T's blank tab, which Vivaldi puts next to
@@ -269,6 +266,8 @@
     const keep = keepTarget;
     const was = !!bar;
     try { window.__vm.notify?.barClosed(); } catch (error) { console.warn("[vivarc] fly-up:", error); }
+    flyObserver?.disconnect();
+    flyObserver = null;
     bar?.remove();
     if (was) window.dispatchEvent(new CustomEvent("vm-command-bar", { detail: { open: false } }));
     bar = input = list = chipHolder = targetTab = mode = null;
@@ -279,12 +278,65 @@
     if (removeBlank && blank != null && !keep) chrome.tabs.remove(blank).catch(() => {});
   };
 
+  // Vivaldi refuses some addresses from a mod (a scheme it keeps to its own field): they go through its field instead.
   const go = (url) => {
     const id = targetTab;
     const isNew = editing === null && !keepInPlace.has(id);
     close(false);
-    show(id, isNew, url).catch((error) => console.warn("[vivarc] open:", error));
+    show(id, isNew, url).catch((error) => {
+      console.warn("[vivarc] open:", error);
+      nativeEntry(url, { tabId: id, submit: true });
+    });
   };
+
+  // ---- Vivaldi's own address field, for one entry (Task 9b fix round 1) ----
+  // The command bar is the only place to type an address, so what it cannot do is handed to Vivaldi's own field, shown
+  // for that one entry where Vivarc's toasts drop (vivarc.css, vm-native-field) and hidden again once it loses the cursor:
+  // - "Open in Vivaldi's address field", the last row whenever something is typed: anything (an extension's omnibox
+  //   keyword, Vivaldi's own suggestions), the text carried over, the user finishing it there;
+  // - a javascript: address (the lead row; running it in the page stays Vivaldi's decision, and the user's Enter);
+  // - a search engine that searches by POST (the bar navigates by address only): submitted at once, so Vivaldi runs its
+  //   own engine, never another;
+  // - an address Vivaldi refuses to load from a mod (go, above): submitted at once.
+  // The tab: the bar's own (made active first), or for Ctrl+T's bar, which has none, a new one.
+  let nativeOpen = false;
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const nativeFieldEntry = async (text, { tabId = null, submit = false } = {}) => {
+    const field = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField #urlFieldInput");
+    const browser = document.querySelector("#browser");
+    if (!field || !browser) { toast("Vivaldi's address field is not available in this window"); return false; }
+    let tab = tabId != null ? await chrome.tabs.get(tabId).catch(() => null) : null;
+    if (!tab) tab = await chrome.tabs.create({ active: true });
+    else if (!tab.active) await chrome.tabs.update(tab.id, { active: true });
+    await wait(250); // Vivaldi's field follows the active tab
+    nativeOpen = true;
+    browser.classList.add("vm-native-field");
+    window.__vm.notify?.place?.();
+    const end = () => {
+      if (!nativeOpen) return;
+      nativeOpen = false;
+      document.querySelector("#browser")?.classList.remove("vm-native-field");
+      field.removeEventListener("blur", onBlur);
+    };
+    const onBlur = () => setTimeout(() => { if (document.activeElement !== field) end(); }, 150);
+    field.addEventListener("blur", onBlur);
+    focusOf(field);
+    // React owns the field's value: written through the input's own setter, then told with an input event.
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(field, text);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+    field.setSelectionRange?.(text.length, text.length);
+    if (submit) {
+      for (const type of ["keydown", "keypress", "keyup"]) {
+        field.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+      }
+      setTimeout(end, 600);
+    }
+    return true;
+  };
+  // Replaceable (search.test.cjs records the hand-overs instead of driving a field).
+  const nativeEntry = (text, options) => Promise.resolve()
+    .then(() => (window.__vm.nativeEntry || nativeFieldEntry)(text, options))
+    .catch((error) => { console.warn("[vivarc] Vivaldi's address field:", error); return false; });
 
   const runSearch = async (engine, query) => {
     const id = targetTab;
@@ -293,26 +345,23 @@
     try {
       const chosen = engine === DEFAULT ? await search.defaultEngine() : engine;
       const request = await search.request(chosen, query);
-      if (request.postParams) {
-        throw new Error('This engine uses POST searches, which the command bar cannot navigate yet. Use Vivaldi?s address bar.');
-      }
-      if (!/^https?:\/\//i.test(request.url)) throw new Error('Invalid search URL returned by Vivaldi.');
       // Do not navigate a stale command bar after it was closed or replaced.
       if (input !== currentInput) return;
+      // A POST engine, or anything but a web address: Vivaldi's own field runs the search with the same engine (its
+      // keyword before the words when it is not the default).
+      if (request.postParams || !/^https?:\/\//i.test(request.url || "")) {
+        close(false);
+        nativeEntry(engine === DEFAULT || !chosen.keyword ? query : `${chosen.keyword} ${query}`, { tabId: id, submit: true });
+        return;
+      }
       await show(id, isNew, request.url);
       close(false);
     } catch (error) {
-      console.warn('[vivarc] search failed; trying DuckDuckGo:', error);
+      // Vivaldi's engines could not be read or asked: its own field searches with its own default. Never another engine.
+      console.warn('[vivarc] search through the command bar failed; handing it to Vivaldi\'s address field:', error);
       if (input !== currentInput || !input) return;
-      try {
-        const url = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
-        await show(id, isNew, url);
-        close(false);
-        toast('Search engine unavailable. Using DuckDuckGo.');
-      } catch (fallbackError) {
-        console.warn('[vivarc] DuckDuckGo fallback failed:', fallbackError);
-        toast('Search unavailable. Use the address bar (Ctrl+L / Cmd+L).');
-      }
+      close(false);
+      nativeEntry(engine === DEFAULT || !engine?.keyword ? query : `${engine.keyword} ${query}`, { tabId: id, submit: true });
     }
   };
 
@@ -355,16 +404,20 @@
     } else if (row.type === "engine") {
       input.value = "";
       setMode(row.engine);
+    } else if (row.type === "native") {
+      const id = targetTab;
+      close(false);
+      nativeEntry(row.text, { tabId: id, submit: false });
     } else if (row.type === "pick") {
       close(true);
-      Promise.resolve(row.run()).catch((e) => console.warn("[vivarc] pick:", e));
+      Promise.resolve().then(() => row.run()).catch((e) => console.warn("[vivarc] pick:", e));
     } else if (row.type === "action" && row.action.stay) {
       input.value = "";
       typed = "";
-      Promise.resolve(row.action.run(row.tab)).catch((e) => console.warn("[vivarc] action:", e));
+      Promise.resolve().then(() => row.action.run(row.tab)).catch((e) => console.warn("[vivarc] action:", e));
     } else if (row.type === "action") {
       close(true);
-      Promise.resolve(row.action.run(row.tab)).catch((e) => console.warn("[vivarc] action:", e));
+      Promise.resolve().then(() => row.action.run(row.tab)).catch((e) => console.warn("[vivarc] action:", e));
     } else {
       go(row.url);
     }
@@ -374,7 +427,7 @@
     if (!list) return;
     list.replaceChildren(...rows.map((row, i) => {
       const item = el("div", `vm-cmd-row${i === selected ? " sel" : ""}`);
-      if (row.type === "action" || row.type === "engine" || row.type === "pick") {
+      if (row.type === "action" || row.type === "engine" || row.type === "pick" || row.type === "native") {
         const glyph = el("span", "vm-cmd-ico vm-cmd-glyph");
         glyph.innerHTML = ACTION_SVG;
         item.append(glyph, el("span", "vm-cmd-title", row.label));
@@ -387,7 +440,7 @@
         item.append(iconFor(row.url, row.favicon), el("span", "vm-cmd-title", row.label));
         if (row.sub) item.append(el("span", "vm-cmd-sub", `— ${row.sub}`));
       }
-      const says = { tab: "Switch to Tab", action: "Run Action", engine: "Tab", url: "Go to URL", pick: "Choose" }[row.type] ||
+      const says = { tab: "Switch to Tab", action: "Run Action", engine: "Tab", url: "Go to URL", pick: "Choose", native: "Vivaldi" }[row.type] ||
         (row.lead ? "Search" : null);
       if (says) {
         const hint = el("span", "vm-cmd-hint");
@@ -430,16 +483,22 @@
       .map((action) => ({ type: "action", action, tab, label: action.label }));
   };
 
-  // The rows that lead for typed text, known without any lookup: its engine (a keyword), its address, and its search.
+  // The rows that lead for typed text, known without any lookup: its engine (a keyword), its address, and its search, read
+  // the way Vivaldi's own field reads them (search.resolve, 08-search.js: localhost and ports, IPv4 and IPv6, an intranet
+  // name with a path or port, file:, about:, view-source:, chrome:, vivaldi:, data:, other schemes). A bare word that could
+  // be an intranet name is a search first, its address second, as in Vivaldi. javascript: leads to Vivaldi's own field.
+  // `native` is the escape hatch, the last row whenever something is typed.
   const leadRows = (text) => {
-    // An edited address keeps its own scheme (file:, about:, view-source:...), which looksLikeUrl does not know.
-    const scheme = editing !== null && /^[a-z][a-z0-9+.-]*:/i.exec(editing)?.[0].toLowerCase();
-    const url = scheme && text.toLowerCase().startsWith(scheme) ? text : looksLikeUrl(text) ? toUrl(text) : null;
+    const meant = search.resolve?.(text, { editing }) || null;
     const keyword = !/\s/.test(text) && engines.find((en) => en.keyword.toLowerCase() === text.toLowerCase());
+    const native = text ? { type: "native", text, label: "Open in Vivaldi's address field" } : null;
     return {
       engine: keyword ? { type: "engine", engine: keyword, label: `Search ${keyword.name}` } : null,
-      url: url ? { type: "url", url, label: text } : null,
-      search: { type: "search", engine: DEFAULT, query: text, label: text, lead: true },
+      url: meant?.kind === "url" ? { type: "url", url: meant.url, label: text } : null,
+      alt: meant?.alt ? { type: "url", url: meant.alt, label: meant.alt } : null,
+      search: meant?.kind === "native" ? null : { type: "search", engine: DEFAULT, query: text, label: text, lead: true },
+      nativeLead: meant?.kind === "native" ? native : null,
+      native,
     };
   };
   // Shown as soon as the text changes: tab, bookmark and history lookups can take seconds, and until they answer the
@@ -448,7 +507,7 @@
     if (mode) return;
     const text = input.value.trim();
     const lead = leadRows(text);
-    rows = text ? [lead.engine, lead.url, lead.search].filter(Boolean) : [];
+    rows = text ? [lead.engine, lead.nativeLead, lead.url, lead.search, lead.alt, lead.nativeLead ? null : lead.native].filter(Boolean) : [];
     selected = 0;
     render();
   };
@@ -489,13 +548,14 @@
       if (id !== seq) return;
       const prefix = matches.find((m) => hostOf(m.url).startsWith(needle));
       const lead = leadRows(text);
+      if (lead.nativeLead) out.push(lead.nativeLead);
       if (lead.url) out.push(lead.url);
       if (prefix) out.push(prefix);
-      out.push(lead.search);
+      if (lead.search) out.push(lead.search);
       if (needle.length > 1) out.push(...await matchingActions(needle));
       if (lead.engine) out.unshift(lead.engine);
       out.push(...matches.filter((m) => m !== prefix));
-      if (window.__vm.settings.get("searchSuggestions") && !lead.url && text.length > 1) {
+      if (window.__vm.settings.get("searchSuggestions") && !lead.url && lead.search && text.length > 1) {
         try {
           const engine = await search.defaultEngine();
           const phrases = await search.suggestions(engine, text);
@@ -506,6 +566,12 @@
       }
     }
     if (id !== seq) return false;
+    // Last: a bare word's intranet address (after the actions and pages it may also name), then the escape hatch.
+    if (!mode && text) {
+      const lead = leadRows(text);
+      if (lead.alt && !out.some((r) => r.type === "url" && r.url === lead.alt.url)) out.push(lead.alt);
+      if (!out.some((r) => r.type === "native")) out.push(lead.native);
+    }
     // A row picked with the arrow keys while the lookups ran stays picked.
     const picked = selected > 0 ? rows[selected] : null;
     rows = out.map((r) => (r.type === "suggest" ? { ...r, type: "search" } : r));
@@ -527,7 +593,7 @@
     input.placeholder = engine?.placeholder || (engine ? "Search…" : "Search or Enter URL…");
     input.value = "";
     typed = "";
-    compute();
+    compute().catch((error) => console.warn("[vivarc] command bar rows:", error));
   };
 
   const autocomplete = async () => {
@@ -582,13 +648,31 @@
     if (e.key === "Tab") {
       e.preventDefault();
       const keyword = input.value.trim().toLowerCase();
-      const engine = !mode && keyword && engines.find((en) => en.keyword.toLowerCase() === keyword);
-      if (engine) setMode(engine);
+      const engine = !e.shiftKey && !mode && keyword && engines.find((en) => en.keyword.toLowerCase() === keyword);
+      if (engine) { setMode(engine); return; }
+      // Otherwise Tab goes into the fly-up (its first button; Shift+Tab its last), which holds the page's questions and
+      // actions; inside it Tab moves on and comes back to the input at either end (flyKeys), Escape comes back too.
+      const items = flyButtons();
+      if (items.length) (e.shiftKey ? items[items.length - 1] : items[0]).focus();
       return;
     }
     if (e.key === "Backspace" && mode && !input.value) { e.preventDefault(); setMode(null); return; }
     autoCompleted = e.key.length === 1 && !e.metaKey && !e.ctrlKey;
   };
+
+  const flyButtons = () => [...(bar?.querySelectorAll(".vm-cmd-fly button:not(:disabled)") || [])].filter((b) => b.getClientRects().length);
+  const flyKeys = (e) => {
+    if (e.key === "Escape" && !e.defaultPrevented) { e.preventDefault(); input?.focus(); return; }
+    if (e.key !== "Tab") return;
+    const items = flyButtons();
+    const at = items.indexOf(document.activeElement);
+    if (at < 0) return;
+    e.preventDefault();
+    const next = at + (e.shiftKey ? -1 : 1);
+    if (next < 0 || next >= items.length) input?.focus();
+    else items[next].focus();
+  };
+  let flyObserver = null;
 
   // `text` (with `keep`) edits the target tab's own URL: the bar opens filled in with it, selected.
   const open = async (tabId, tabWindowId, keep = false, text = null) => {
@@ -609,7 +693,7 @@
       targetTab = tabId;
       keepTarget = false;
       editing = null;
-      if (wasEditing) { input.value = ""; compute(); } // the edited address is not the new tab's
+      if (wasEditing) { input.value = ""; compute().catch((error) => console.warn("[vivarc] command bar rows:", error)); } // the edited address is not the new tab's
       return true;
     }
     targetTab = tabId;
@@ -653,19 +737,30 @@
           const at = document.elementFromPoint(up.clientX, up.clientY);
           const target = at?.closest?.(PASS);
           if (target && target === document.elementFromPoint(e.clientX, e.clientY)?.closest?.(PASS)) {
-            at.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, button: 0, detail: 1, clientX: up.clientX, clientY: up.clientY }));
+            at.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window, button: 0, detail: 1, clientX: up.clientX, clientY: up.clientY,
+              ctrlKey: up.ctrlKey, metaKey: up.metaKey, shiftKey: up.shiftKey, altKey: up.altKey }));
           }
         } catch (error) { console.warn("[vivarc] click through:", error); }
       };
       document.addEventListener("mouseup", through, { once: true, capture: true });
       setTimeout(() => document.removeEventListener("mouseup", through, true), 1500); // released outside the window: no late click
     });
+    fly.addEventListener("keydown", flyKeys);
+    flyObserver?.disconnect();
+    flyObserver = null;
     if (typeof ResizeObserver === "function") {
-      new ResizeObserver(() => { bar?.style.setProperty("--vm-fly-h", fly.hidden ? "0px" : `${Math.ceil(fly.getBoundingClientRect().height) + 8}px`); }).observe(fly);
+      flyObserver = new ResizeObserver(() => { bar?.style.setProperty("--vm-fly-h", fly.hidden ? "0px" : `${Math.ceil(fly.getBoundingClientRect().height) + 8}px`); });
+      flyObserver.observe(fly);
     }
     input.addEventListener("keydown", onKey);
     // Only the latest text is completed inline: an older keystroke's lookups would complete the text typed since.
-    input.addEventListener("input", async () => { typed = input.value; showLeadRows(); if (await compute()) autocomplete(); });
+    input.addEventListener("input", async () => {
+      try {
+        typed = input.value;
+        showLeadRows();
+        if (await compute()) await autocomplete();
+      } catch (error) { console.warn("[vivarc] command bar rows:", error); }
+    });
     if (editing !== null) input.value = editing;
     typed = input.value;
     (document.querySelector("#browser") || document.body).append(bar);
@@ -679,9 +774,12 @@
     setTimeout(focus, 60);
     setTimeout(focus, 250);
     showLeadRows(); // an address filled in for editing: Enter acts on it before the lookups answer
-    compute();
+    compute().catch((error) => console.warn("[vivarc] command bar rows:", error));
     try {
-      window.__vm.notify?.barOpened({ fly, close: () => close(true), tab: () => (editing !== null ? targetTab : null) }); // null: the window's active tab
+      // The bar's tab: the page it edits, its own blank tab, or (Ctrl+T's bar, which has no tab) the page behind it. The
+      // page's rows show whenever that is a page: not over a blank tab or a private window's introduction.
+      window.__vm.notify?.barOpened({ fly, close: () => close(true), tab: () => (editing !== null ? targetTab : targetTab ?? null), // null: the active tab
+        rows: () => editing !== null || targetTab == null });
     } catch (error) { console.warn("[vivarc] fly-up:", error); }
     window.dispatchEvent(new CustomEvent("vm-command-bar", { detail: { open: true } }));
     // Like Arc, a new tab scrolls the sidebar to the new-tab area; editing the current page leaves it where it is.
@@ -689,13 +787,15 @@
     return true;
   };
 
-  window.addEventListener("vm-open-command-bar", () => open(null));
+  const opened = (promise) => Promise.resolve(promise).catch((error) => { console.warn("[vivarc] command bar:", error); return false; });
+  window.addEventListener("vm-open-command-bar", () => opened(open(null)));
   // The sidebar's URL field: edit the current page's address in the bar, as Arc's Cmd+L does.
+  // A blank tab or a private window's introduction page opens the bar empty (startsEmpty), on every path.
   window.addEventListener("vm-edit-url", async () => {
     asked(); // the user asked to edit the address: no tab switch just before it may send the cursor to the page
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
-    if (!active) return open(null);
-    open(active.id, active.windowId, true, isBlank(active) ? null : active.pendingUrl || active.url || "");
+    if (!active) return opened(open(null));
+    return opened(open(active.id, active.windowId, true, startsEmpty(active) ? null : active.pendingUrl || active.url || ""));
   });
   // A window starting on a new tab (launch, Ctrl+N): Vivaldi puts the cursor in its hidden address bar, which then
   // floats over the sidebar. Open the bar on that tab instead, as a new tab does. It keeps the tab: often the window's
@@ -719,7 +819,7 @@
     console.warn("[vivarc] launch bar:", error);
     return false;
   }).then((opened) => (opened ? setTimeout(launched, 400) : launched())); // 400ms: past the bar's last focus retry
-  window.__vm.onShortcut((key) => { if (key === window.__vm.normalise(window.__vm.shortcut("meta+t"))) open(null); });
+  window.__vm.onShortcut((key) => { if (key === window.__vm.normalise(window.__vm.shortcut("meta+t"))) opened(open(null)); });
 
   // Landing in an empty space, from the space bar, a shortcut or Vivaldi's own menu, opens the bar on the space's blank
   // tab, as a new tab does; the bar keeps that tab, so Escape stays in the space. A bar still open from the space just
@@ -737,7 +837,7 @@
     if (bar && targetTab !== tabId) close(true);
     if (bar || !isBlank(active)) return;
     const own = (await chrome.tabs.query({ windowId }).catch(() => [])).filter((t) => spaceOf(t) === spaceOf(active));
-    if (own.every(isBlank)) open(tabId, windowId, true);
+    if (own.every(isBlank)) opened(open(tabId, windowId, true));
   };
 
   // The address field must not pop open on a tab switch (the handler is at the end of this file). Its state: Vivaldi
@@ -790,7 +890,7 @@
       const prior = await chrome.tabs.get(previous).catch(() => null);
       if (!prior || workspaceOf(prior) !== workspaceOf(tab)) return;
     } else if (workspaceOf(tab)) return;
-    if (!(await open(tab.id, tab.windowId))) return;
+    if (!(await opened(open(tab.id, tab.windowId)))) return;
     if (previous != null) {
       setTimeout(() => {
         if (bar && targetTab === tab.id) {
@@ -856,41 +956,76 @@
       if (e.id === "browser") break;
     }
   };
+  // Vivaldi focuses its field from many places: Ctrl+L and its other keys, its menu's and its own custom shortcuts' "focus
+  // the address field" commands, a new tab or window (also in a window's first seconds), a tab switch back to a tab left
+  // with the cursor there. The field never takes it (vivarc.css keeps it visibility: hidden, so a plain focus() would do
+  // nothing at all): Vivarc's own focus() of HTMLElement sees every one of those calls on the field and routes it here.
+  // - Vivarc's own synthetic press (a re-opened question's popup), a popup of the field that is up (Vivaldi putting the
+  //   cursor back after it), or the field being used for one entry (the escape hatch, above): Vivaldi's own focus.
+  // - A focus nobody asked for within 150 ms of a tab switch to a page: the page keeps the cursor (Task 8o, Byron: "a tab
+  //   switch must not pop the address field open").
+  // - The bar already open: its input gets the cursor.
+  // - Otherwise the bar: empty on a blank tab or a private window's introduction page (keeping the tab when it is all its
+  //   space has, else Esc closes it like Ctrl+T's), editing the address on a page. While a window starts, its launch code
+  //   (above) decides.
+  const focusOf = (node) => (origFocus ? origFocus.call(node) : node.focus());
+  const popupUp = () => !!document.querySelector("#tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))");
+  const takesField = (node) => !nativeOpen && ownsField && !!window.__vm.cssLoaded && node?.id === "urlFieldInput" &&
+    !!node.closest?.("#tabs-tabbar-container .UrlBar-AddressField") && !!document.querySelector("#browser.vm-on");
   let barAt = 0;
-  document.addEventListener("focusin", async (e) => {
+  const route = async (field) => {
+    const sinceActivation = Date.now() - activation.at;
+    const current = activation;
+    const userAsked = Date.now() - askedAt < ASKED_MS;
+    unscroll(field);
+    if (bar) { input?.focus(); return; }
+    if (launching) return; // the launch code opens the bar on a blank tab or a private window's intro page
+    const give = window.__vm.workspaces?.returnFocus;
+    const tab = !current.handled && sinceActivation <= window.__vm.workspaces.RETURN_FOCUS_MS ? await current.tab : null;
+    if (give && tab && current === activation && tab.active !== false && !startsEmpty(tab) && give({
+      msSinceActivation: sinceActivation,
+      userAsked,
+      edited: nativeOpen, // the field holds an entry being typed (the escape hatch): never taken from it
+      popupOpen: popupUp(),
+    })) {
+      const view = document.getElementById(String(tab.id));
+      if (view?.tagName === "WEBVIEW") { current.handled = true; view.focus(); }
+      return;
+    }
+    if (bar || Date.now() - barAt < 400) { input?.focus(); return; }
+    barAt = Date.now();
+    const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+    if (!active || bar) return;
+    if (!startsEmpty(active)) { window.dispatchEvent(new CustomEvent("vm-edit-url")); return; }
+    const spaceOf = window.__vm.workspaces?.of;
+    const own = spaceOf ? (await chrome.tabs.query({ windowId: active.windowId }).catch(() => [])).filter((t) => spaceOf(t) === spaceOf(active)) : [active];
+    await opened(open(active.id, active.windowId, own.every(startsEmpty)));
+  };
+  const fieldAsked = (field) => {
+    if (window.__vm.synthNow || popupUp()) return false; // Vivaldi's own focus stands
+    route(field).catch((error) => console.warn("[vivarc] address field to the command bar:", error));
+    return true;
+  };
+  const origFocus = typeof HTMLElement === "function" ? HTMLElement.prototype.focus : null;
+  if (origFocus) {
+    HTMLElement.prototype.focus = function focus(...args) {
+      try { if (takesField(this) && fieldAsked(this)) return undefined; } catch (error) { console.warn("[vivarc] address field focus:", error); }
+      return origFocus.apply(this, args);
+    };
+  }
+  // A focus that still reaches the field some other way (the field shown for one entry is excluded): taken back.
+  document.addEventListener("focusin", (e) => {
     try {
       const field = e.target;
-      if (field?.id !== "urlFieldInput" || !field.closest?.(".UrlBar-AddressField")) return;
-      if (!ownsField || !window.__vm.cssLoaded || !document.querySelector("#browser.vm-on")) return;
-      const sinceActivation = Date.now() - activation.at;
-      const current = activation;
-      const userAsked = Date.now() - askedAt < ASKED_MS;
+      if (!takesField(field) || window.__vm.synthetic?.(e) || popupUp()) return;
       field.blur();
-      unscroll(field);
       requestAnimationFrame(() => unscroll(field));
-      if (bar) { input?.focus(); return; }
-      if (launching) return; // the launch code opens the bar on a blank tab or a private window's intro page (above)
-      const give = window.__vm.workspaces?.returnFocus;
-      const tab = !current.handled && sinceActivation <= window.__vm.workspaces.RETURN_FOCUS_MS ? await current.tab : null;
-      if (give && tab && current === activation && tab.active !== false && !startsEmpty(tab) && give({
-        msSinceActivation: sinceActivation,
-        userAsked,
-        edited: false,
-        popupOpen: false,
-      })) {
-        const view = document.getElementById(String(tab.id));
-        if (view?.tagName === "WEBVIEW") { current.handled = true; view.focus(); return; }
-      }
-      if (bar || Date.now() - barAt < 400) { input?.focus(); return; }
-      barAt = Date.now();
-      const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
-      if (!active || bar) return;
-      if (startsEmpty(active)) open(active.id, active.windowId, true);
-      else window.dispatchEvent(new CustomEvent("vm-edit-url"));
+      fieldAsked(field);
     } catch (error) {
       console.warn("[vivarc] address field to the command bar:", error);
     }
   }, true);
-  window.__vm.commandBar = { ownsField: () => ownsField, isOpen: () => !!bar };
+  window.__vm.onMark?.((browser) => { if (nativeOpen) browser.classList.add("vm-native-field"); });
+  window.__vm.commandBar = { ownsField: () => ownsField, isOpen: () => !!bar, nativeOpen: () => nativeOpen };
   console.log("[vivarc] command bar started");
 })();
