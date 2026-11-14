@@ -420,7 +420,32 @@
     // counts as busy at once, so the question does not come back while the button is held (and spend an automatic reopen).
     window.addEventListener("pointerdown", (e) => { if (e.target?.closest?.(".vm-dia-shield")) { shieldHeld = true; busyAt = Date.now(); } }, true);
     for (const type of ["pointerup", "pointercancel"]) window.addEventListener(type, () => { if (shieldHeld) { shieldHeld = false; busyAt = Date.now(); } }, true);
-    new MutationObserver(scan).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
+    // The scan runs for changes in or around Vivaldi's address field only (its popups, their buttons' disabled state, the
+    // field itself coming or going), not for every change in the window (the sidebar, the page column, Vivarc's own UI):
+    // review round 2, a full scan on every mutation of a long session was suspected in the input-ack hang. The records are
+    // filtered cheaply; counters for the sandbox (window.__vm.perf.siteRequests).
+    const FIELD_ANY = ".UrlBar-AddressField, .addressfield-popup-container";
+    const near = (n) => n?.nodeType === 1 && (!!n.closest?.(".UrlBar-AddressField") || n.matches?.(FIELD_ANY) || !!n.querySelector?.(FIELD_ANY));
+    const relevant = (records) => {
+      for (const r of records) {
+        if (r.type === "attributes" ? r.target?.closest?.(".UrlBar-AddressField") : near(r.target)) return true;
+        for (const n of r.addedNodes) if (near(n)) return true;
+        for (const n of r.removedNodes) if (near(n) || (n.nodeType === 1 && (pill === n || n.classList?.contains("vm-site-card")))) return true;
+      }
+      return false;
+    };
+    const perf = { calls: 0, scans: 0, ms: 0, maxMs: 0 };
+    window.__vm.perf = { ...(window.__vm.perf || {}), siteRequests: perf };
+    new MutationObserver((records) => {
+      perf.calls++;
+      if (!relevant(records) && !cards.size && !pill) return;
+      const t0 = performance.now();
+      perf.scans++;
+      scan();
+      const ms = performance.now() - t0;
+      perf.ms += ms;
+      if (ms > perf.maxMs) perf.maxMs = ms;
+    }).observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ["disabled"] });
     // For the sandbox's diagnostics: what this window holds (read only).
     window.__vm.siteRequestsState = () => ({ activeTab, cards: [...cards.values()].map((e) => ({ tab: e.tab, id: e.id, connected: e.card.isConnected })), owed: [...owed], dismissed: [...dismissed] });
     console.log("[vivarc] site requests started");

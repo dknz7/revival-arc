@@ -14,7 +14,9 @@
     text.className = "vm-toast-text";
     text.textContent = message;
     const run = () => { try { Promise.resolve(action.run()).catch((error) => console.warn("[vivarc] toast action:", error)); } catch (error) { console.warn("[vivarc] toast action:", error); } };
-    const note = window.__vm.notify.add({ id: action ? "vm-toast-action" : "vm-toast", tab: "active", type: "message", icon: SHARE_SVG, text, ms, fresh: true, cls: "vm-toast",
+    // One slot per kind (plain, with a button) and per tab: a message on another tab never replaces this tab's (its Undo).
+    const tab = window.__vm.notify.activeTab?.() ?? "none";
+    const note = window.__vm.notify.add({ id: `${action ? "vm-toast-action" : "vm-toast"}:${tab}`, tab: "active", type: "message", icon: SHARE_SVG, text, ms, fresh: true, cls: "vm-toast",
       actions: action ? [{ label: action.label, cls: "vm-toast-action", run }] : [], close: false });
     note?.el?.classList.add("vm-toast");
   };

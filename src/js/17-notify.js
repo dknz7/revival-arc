@@ -563,31 +563,43 @@
       markPop();
     };
     window.__vm.onMark?.((browser) => markPop(browser));
-    // The watch is on the tab bar, where the field, its buttons and its popups live (Vivaldi re-renders it: the interval
-    // moves the watch to a new one), not on every change in the window.
+    // The watch is on Vivaldi's address field itself, where its buttons and popups live (review round 2: not the tab bar,
+    // which holds Vivarc's whole sidebar and its re-renders). Vivaldi replaces the field now and then: a tab switch and a
+    // light interval move the watch to the new one. Counters for the sandbox (window.__vm.perf.notify).
+    const perf = { calls: 0, ms: 0, maxMs: 0, rebinds: 0 };
+    window.__vm.perf = { ...(window.__vm.perf || {}), notify: perf };
     let queued = 0;
     let watched = null;
     const watcher = new MutationObserver(() => {
+      perf.calls++;
       if (queued) return;
-      queued = requestAnimationFrame(() => { queued = 0; watchBlockers(); watchPop(); if (bar) renderFly(); });
+      queued = requestAnimationFrame(() => {
+        queued = 0;
+        const t0 = performance.now();
+        watchBlockers(); watchPop(); if (bar) renderFly();
+        const ms = performance.now() - t0;
+        perf.ms += ms;
+        if (ms > perf.maxMs) perf.maxMs = ms;
+      });
     });
     const rewatch = () => {
-      const tabbar = document.querySelector("#tabs-tabbar-container");
-      if (!tabbar || tabbar === watched) return;
+      const field = document.querySelector(FIELD);
+      if (field === watched) return;
       watcher.disconnect();
-      watched = tabbar;
-      watcher.observe(tabbar, { childList: true, subtree: true });
+      watched = field;
+      if (field) { perf.rebinds++; watcher.observe(field, { childList: true, subtree: true }); }
       watchBlockers(); watchPop();
     };
     rewatch();
+    chrome.tabs.onActivated.addListener(() => setTimeout(rewatch, 80));
     setInterval(() => {
       rewatch();
-      if (notes.size || document.querySelector(`${FIELD} :is(.button-popup, .addressfield-popup-container)`)) place();
+      if (notes.size || fieldPop) place();
     }, 700);
     place();
   };
 
-  window.__vm.notify = { add, remove, has: (id) => notes.has(id), render, place, barOpened, barClosed, closeBar, row, rowSources, plainRequest,
+  window.__vm.notify = { add, remove, has: (id) => notes.has(id), activeTab: () => activeTab, render, place, barOpened, barClosed, closeBar, row, rowSources, plainRequest,
     drop: () => ({ ...drop }), openFieldButton, quietly, build,
     state: () => ({ activeTab, bar: !!bar, notes: [...notes.values()].map((n) => ({ id: n.id, tab: n.tab, type: n.type, connected: n.el.isConnected })) }) }; // diagnostics, read only
   Promise.resolve(window.__vm.ready).then((cssLoaded) => { if (cssLoaded) start(); }).catch((error) => warn("start", error));
