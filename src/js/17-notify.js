@@ -527,10 +527,20 @@
     window.__vm.sidebarHide?.onChange?.(() => setTimeout(place, 0));
     window.__vm.settings?.onChange?.(() => setTimeout(place, 50));
     // The field's buttons change with the page (a blocked pop-up's icon); the anchors move with the layout. A light watch.
+    // vm-field-pop: one of Vivaldi's field popups shows at the drop point (not the Dia Shield's site info, placed under the
+    // Shield), so the toasts make way (vivarc.css).
+    let fieldPop = false;
+    const markPop = (browser = document.querySelector("#browser")) => { if (browser && browser.classList.contains("vm-field-pop") !== fieldPop) browser.classList.toggle("vm-field-pop", fieldPop); };
+    const watchPop = () => {
+      const pop = document.querySelector(`${FIELD} :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))`);
+      fieldPop = !!pop && !(pop.matches(".SiteInfo") && !!document.querySelector("#browser.vm-shield-open"));
+      markPop();
+    };
+    window.__vm.onMark?.((browser) => markPop(browser));
     let queued = 0;
     new MutationObserver(() => {
       if (queued) return;
-      queued = requestAnimationFrame(() => { queued = 0; watchBlockers(); if (bar) renderFly(); });
+      queued = requestAnimationFrame(() => { queued = 0; watchBlockers(); watchPop(); if (bar) renderFly(); });
     }).observe(document.documentElement, { childList: true, subtree: true });
     setInterval(() => { if (notes.size || document.querySelector(`${FIELD} :is(.button-popup, .addressfield-popup-container)`)) place(); }, 700);
     place();

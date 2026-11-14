@@ -72,10 +72,10 @@
   right: auto !important; bottom: auto !important; transform: none !important; translate: none !important; margin: 0 !important;
   visibility: visible; pointer-events: auto; z-index: 50;
 }
-/* While one shows there, the toasts make way (they would sit on top of it); a site-info popup placed under the Dia Shield
-   does not need them to, and one Vivarc drives unseen (vm-quiet-pop) neither. */
-#browser.vm-on:not(.vm-quiet-pop):has(#tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded, .SiteInfo))) #vm-notify,
-#browser.vm-on:not(.vm-quiet-pop, .vm-shield-open):has(#tabs-tabbar-container .UrlBar-AddressField .SiteInfo.button-popup) #vm-notify { display: none; }
+/* While one shows there, the toasts make way (they would sit on top of it): vm-field-pop, set by 17-notify.js (not a
+   :has() on #browser, which every change anywhere in the window would have to re-check); not for the site info placed
+   under the Dia Shield, and not for a popup Vivarc drives unseen (vm-quiet-pop). */
+#browser.vm-on.vm-field-pop:not(.vm-quiet-pop) #vm-notify { display: none; }
 #browser.vm-on #tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))::before { display: none !important; }
 #browser.vm-on #tabs-tabbar-container:has(.UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))) { backdrop-filter: none !important; z-index: 3 !important; }
 #browser.vm-on.vm-themed #tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded)) { --colorFg: var(--vm-vivaldi-fg); color: var(--vm-vivaldi-fg); }
