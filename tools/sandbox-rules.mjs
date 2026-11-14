@@ -3944,7 +3944,10 @@ for (const layout of ["dia", "arc"]) {
       await h.ev(`(window.dispatchEvent(new CustomEvent("vm-open-command-bar")), 1)`, ctx.W);
       if (!(await waitFor(() => h.ev(`document.activeElement === document.querySelector("#vm-cmd input")`, ctx.W), 3000))) return { error: "no bar" };
       const typed = `${origin.replace("http://", "")}/en-fi`;
-      await h.cdp(ctx.W).send("Input.insertText", { text: typed }); await sleep(1500);
+      await h.cdp(ctx.W).send("Input.insertText", { text: typed });
+      // the lookups answer (late in a sweep they are slow): the tab's row is listed
+      await waitFor(() => h.ev(`[...document.querySelectorAll("#vm-cmd .vm-cmd-row")].some((r) => r.textContent.includes("EN-fill-target"))`, ctx.W), 6000, 200);
+      await sleep(300);
       const field = () => h.ev(`(() => { const i = document.querySelector("#vm-cmd input"); return { value: i.value, start: i.selectionStart, end: i.selectionEnd, sel: [...document.querySelectorAll("#vm-cmd .vm-cmd-row")].findIndex((r) => r.classList.contains("sel")),
         rows: [...document.querySelectorAll("#vm-cmd .vm-cmd-row")].map((r) => r.textContent.slice(0, 60)) }; })()`, ctx.W);
       const before = await field();
