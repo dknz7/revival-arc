@@ -79,7 +79,9 @@ globalThis.chrome = {
   tabs: {
     get: async (id) => { const t = tabs.find((x) => x.id === id); if (!t) throw new Error("no tab"); return t; },
     // vivExtData merges; a key written as null leaves (as Vivaldi does)
+    // globalThis.updateFails: how many vivExtData writes are refused (a write that rejects)
     update: async (id, props) => { calls.push(["update", id, props.vivExtData ? JSON.parse(props.vivExtData) : props]); const t = tabs.find((x) => x.id === id);
+      if (props.vivExtData && globalThis.updateFails > 0) { globalThis.updateFails--; throw new Error("refused"); }
       if (t && props.vivExtData) { const d = { ...JSON.parse(t.vivExtData || "{}"), ...JSON.parse(props.vivExtData) }; for (const k of Object.keys(d)) if (d[k] === null) delete d[k]; t.vivExtData = JSON.stringify(d); } },
     query: async ({ windowId }) => tabs.filter((t) => t.windowId === windowId),
     remove: async (id) => { calls.push(["remove", id]); const i = tabs.findIndex((t) => t.id === id); if (i >= 0) tabs.splice(i, 1); listeners.removed.forEach((f) => f(id)); },
@@ -154,6 +156,25 @@ class PeekRuntime(unittest.TestCase):
         data = [c[1] for c in out["calls"] if c[0] == "data"]
         self.assertTrue(data[0].get("vivarcPeekPreview"), "marked while it is a preview")
         self.assertNotIn("vivarcPeekPreview", data[1], "cleared: a promoted tab's later close is listed")
+
+    MARKED_PREVIEW = [t if t["id"] != 10 else tab(10, 1, 0, ext={"vivarcPeekPreview": True}, index=2) for t in TABS]
+
+    def test_a_clear_that_fails_once_is_retried_and_checked(self):
+        out = peek_js("globalThis.updateFails = 1; await peek._moveParallelTabToMainWindow('peek-1'); calls.push(['data', JSON.parse(tabs.find((t) => t.id === 10).vivExtData)]);",
+                      self.MARKED_PREVIEW, self.PREVIEW)
+        self.assertNotIn("vivarcPeekPreview", [c for c in out["calls"] if c[0] == "data"][0][1])
+        self.assertNotIn("__vivarcPeekMarkStuck", out["bg"])
+
+    def test_a_mark_that_cannot_be_cleared_makes_recently_closed_fail_open(self):
+        # every clear refused: the promoted tab keeps the mark, so marks stop hiding anything; Peek's runtime entries still go
+        script = ("globalThis.updateFails = 99; await peek._moveParallelTabToMainWindow('peek-1');"
+                  "const sessions = [{ tab: { sessionId: 'user', vivExtData: JSON.stringify({ vivarcPeekPreview: true }) } },"
+                  "  { tab: { sessionId: 'runtime', vivExtData: JSON.stringify({ arcPeekRuntime: { webviewId: 'p' } }) } }];"
+                  "calls.push(['left', window.__vm.peek.withoutClosed(sessions).map((x) => x.tab.sessionId)]);")
+        out = peek_js(script, self.MARKED_PREVIEW, self.PREVIEW)
+        self.assertEqual(out["bg"].get("__vivarcPeekMarkStuck"), True)
+        self.assertEqual([c for c in out["calls"] if c[0] == "left"][0][1], ["user"], "the promoted tab's entry is never hidden")
+        self.assertIn(["peek-move-back", "peek-1"], out["calls"], "the promotion itself goes ahead (the user gets the tab)")
 
     def test_a_tab_that_is_no_preview_is_never_marked(self):
         out = peek_js("listeners.updated.forEach((f) => f(3, {}, tabs.find((t) => t.id === 3))); await new Promise((r) => setTimeout(r, 20));", self.TABS, self.PREVIEW)

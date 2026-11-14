@@ -181,11 +181,31 @@
     return null;
   };
 
+  // A gather, checked like a heal step (fix round 3): the list is read first; then the window list, every tab and the
+  // gathered tabs are read together, and with no further await: the gesture mark, leadership, the list holding the space,
+  // each gathered tab still in that space AND still in the window it was planned from (sources: tab id -> window, from
+  // the snapshot the plan was made on), the target window still open, and the space still living there now (Vivaldi's
+  // record read at that moment, else most of its tabs: a space the user pulled elsewhere meanwhile is not dragged back).
+  // Then one chrome.tabs.move. -> null (moved) or why not.
+  const gather = async (step, sources) => {
+    const list = spacesOf.spaceList(await readSpaces());
+    const [windows, all, now] = await Promise.all([chrome.windows.getAll(), chrome.tabs.query({ windowType: "normal" }),
+      Promise.all(step.tabs.map((id) => chrome.tabs.get(id).catch(() => null)))]);
+    // ---- no await from here to the move ----
+    if (busyFor()) return "a gesture started";
+    if (ownWindow == null || spacesOf.leaderOf(windows) !== ownWindow) return "this window no longer leads";
+    if (!list?.includes(step.space)) return "the space is not in a valid list";
+    if (!windows.some((w) => w.id === step.window && w.type === "normal")) return "the target window is gone";
+    if (!now.every((t) => t && spacesOf.of(t) === step.space && t.windowId !== step.window && sources?.get(t.id) === t.windowId)) return "its tabs changed";
+    const record = window.__vm.native?.record()?.all() ?? null;
+    if (!record || spacesOf.livesIn(all, record, step.space) !== step.window) return "the space lives somewhere else now";
+    return chrome.tabs.move(step.tabs, { windowId: step.window, index: -1 }).then(() => null);
+  };
+
   // The other steps, each re-checked as it runs: leadership; a switch into a named space only while a valid list holds
-  // it; an activation only of a tab still there; a gather only while the list is valid and holds the space, and only of
-  // tabs still in that space and away from the planned window (all of them, or nothing moves). -> false: the plan stops
-  // here (a step that did not go ahead or failed), and the next pass plans again on what is there then.
-  const carryOut = async (step, evidence, nth) => {
+  // it; an activation only of a tab still there; a gather as above. -> false: the plan stops here (a step that did not go
+  // ahead or failed), and the next pass plans again on what is there then. snap: the snapshot the plan was made on.
+  const carryOut = async (step, evidence, nth, snap) => {
     let line;
     const stop = (why) => { console.warn(`[vivarc] repair: ${line} not done (${why}); planning again`); return false; };
     try {
@@ -205,10 +225,8 @@
           await chrome.tabs.update(step.tab, { active: true });
         } else if (step.kind === "gather") {
           line = `gather space ${step.space} into window ${step.window} (tabs ${step.tabs.join(", ")})`;
-          if (!spacesOf.spaceList(await readSpaces())?.includes(step.space)) return stop("the space is not in a valid list");
-          const now = await Promise.all(step.tabs.map((id) => chrome.tabs.get(id).catch(() => null)));
-          if (!now.every((t) => t && spacesOf.of(t) === step.space && t.windowId !== step.window)) return stop("its tabs changed");
-          await chrome.tabs.move(step.tabs, { windowId: step.window, index: -1 });
+          const why = await gather(step, new Map((snap?.tabs || []).map((t) => [t.id, t.windowId])));
+          if (why) return stop(why);
         }
       }
       console.log(`[vivarc] repair: ${line}`);
@@ -243,7 +261,8 @@
         // in between). The fresh list must still be the approved one, or nothing is healed.
         if (busyFor()) return "wait";
         snap = await snapshot();
-        if (!snap?.record) return "done";
+        if (!snap) return "done"; // no longer the leader
+        if (!snap.record) return "unavailable"; // the leader's record went missing: try again, do not drop the work
       }
       const fresh = spacesOf.spaceList(snap.spaces);
       const heal = evidence && fresh && JSON.stringify(fresh) === JSON.stringify(evidence.list) ? evidence.ids : [];
@@ -255,7 +274,7 @@
       let nth = 0;
       for (const step of plan) {
         if (busyFor()) return "wait";
-        if (!(await carryOut(step, heal.length ? evidence : null, step.kind === "rehome" ? nth++ : null))) break;
+        if (!(await carryOut(step, heal.length ? evidence : null, step.kind === "rehome" ? nth++ : null, snap))) break;
       }
       await sleep(SETTLE_MS);
     }

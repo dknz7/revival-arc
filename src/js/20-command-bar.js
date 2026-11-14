@@ -295,15 +295,22 @@
   // never switched to: it is moved (native.setSpace) into the space on screen in the window it was picked in, then
   // activated there (Byron, 2026-11-14: a restored tab comes to the window you clicked in). If it was on screen in another
   // window, that window's most recent tab of its own space takes the screen first.
+  // Fix round 3: the action is worked out once, at the moment it runs, from what is true then: the tab, the window
+  // asking, and the list are read together, Vivaldi's record is read right after (it answers synchronously), and the
+  // pick is made on those, never on what the bar saw when it listed the tab. A tab is moved only on positive evidence: a
+  // valid list showing its current space is gone (an unreadable list moves nothing and switches to no named space: the
+  // tab is then only activated where it is). A named switch target comes from the tab's current space, which that list
+  // holds.
   const pickTab = async (listed) => {
-    const tab = (await chrome.tabs.get(listed.id).catch(() => null)) || listed; // the list may be older than a move
     const native = window.__vm.native;
     const spaces = window.__vm.workspaces;
-    const record = native?.hasSwitch() ? native.record() : null;
-    const here = (await chrome.windows.getCurrent().catch(() => null))?.id;
-    // a list that is not a valid id list is no list at all: nothing then counts as deleted
-    const known = record && spaces ? spaces.spaceList(await native.spaceIds()) : null;
-    const pick = record && spaces ? spaces.tabPick(tab, record.activeIn(tab.windowId), record.all().get(spaces.of(tab)) ?? null,
+    const withRecord = !!(native?.hasSwitch() && native.record() && spaces);
+    const [current, here, known] = await Promise.all([
+      chrome.tabs.get(listed.id).catch(() => null), chrome.windows.getCurrent().then((w) => w?.id, () => undefined),
+      withRecord ? native.spaceIds().then(spaces.spaceList, () => null) : Promise.resolve(null)]);
+    const tab = current || listed; // the list may be older than a move
+    const record = withRecord ? native.record() : null;
+    const pick = record ? spaces.tabPick(tab, record.activeIn(tab.windowId), record.all().get(spaces.of(tab)) ?? null,
       { known, here, hereShown: here != null ? record.activeIn(here) : null }) : { kind: "activate" };
     // Focusing a minimised window leaves it in the taskbar: it is brought back to normal.
     const minimised = async (id) => { try { return (await chrome.windows.get(id))?.state === "minimized"; } catch (_) { return false; } };
@@ -311,19 +318,11 @@
       if (await minimised(pick.window)) await chrome.windows.update(pick.window, { state: "normal", focused: true });
       return native.focus(pick.window);
     }
-    // A tab is moved only on positive evidence (Task 9a fix round 2): a valid list, read again now, that shows the tab's
-    // CURRENT space is gone. An unreadable list is not evidence of anything: the tab is then only activated where it is.
-    // A named switch target is checked the same way: listed, the switch goes ahead; shown gone, the tab is brought into
-    // the space on screen here; unreadable, it is only activated.
-    if (pick.kind === "adopt" || (pick.kind === "switch" && pick.space)) {
-      const [now, current] = await Promise.all([native.spaceIds().then(spaces.spaceList), chrome.tabs.get(tab.id).catch(() => null)]);
-      if (!now || !current) return chrome.tabs.update(tab.id, { active: true }).catch(() => {});
-      if (spaces.deadSpace(current, now)) {
-        const w = here ?? current.windowId, on = record.activeIn(w) ?? 0;
-        return bringHere(current, w, on && now.includes(on) ? on : 0, record);
-      }
-      if (pick.kind === "adopt") return chrome.tabs.update(tab.id, { active: true }); // alive after all: shown as it is
+    if (pick.kind === "adopt") {
+      if (!current) return chrome.tabs.update(tab.id, { active: true }).catch(() => {}); // gone or unreadable: no move
+      return bringHere(current, pick.window, pick.space, record);
     }
+    // tabPick names a space for a switch only when the list holds it (or it is the default space)
     if (pick.kind === "switch") await native.switchTo(pick.window, pick.space);
     await chrome.tabs.update(tab.id, { active: true });
     // The sidebar's Open Tabs list can pick a tab of another window, which activating does not bring forward.

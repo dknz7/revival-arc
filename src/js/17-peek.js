@@ -20,6 +20,10 @@
 (() => {
   const spacesOf = window.__vm.workspaces;
   const LIVE_KEY = "__vivarcPeekLive"; // background page: { [window copy token]: [tab ids] }
+  // A preview mark that could not be cleared from a tab Peek made the user's: from then on a mark proves nothing, so
+  // Recently Closed hides only Peek's own runtime tabs (fail open). Kept on the background page and in Vivarc's store, so
+  // a restart (which keeps the stuck mark on the tab) keeps it too.
+  const STUCK_KEY = "__vivarcPeekMarkStuck", STUCK_STORE = "peekMarkStuck";
   const token = `w${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const shared = () => { try { return chrome.extension?.getBackgroundPage?.() || null; } catch (_) { return null; } };
   const warnedOf = new Set();
@@ -64,7 +68,7 @@
   const api = {
     isPeekTab,
     without: (tabs) => { try { const open = ids(); return (tabs || []).filter((t) => !spacesOf.isPeekTab(t, open)); } catch (_) { return tabs || []; } },
-    withoutClosed: (sessions) => { try { return spacesOf.withoutPeekClosed(sessions); } catch (_) { return sessions || []; } },
+    withoutClosed: (sessions) => { try { return spacesOf.withoutPeekClosed(sessions, { marks: !shared()?.[STUCK_KEY] }); } catch (_) { return sessions || []; } },
   };
   window.__vm.peek = api;
 
@@ -79,9 +83,23 @@
     marked.add(tab.id);
     chrome.tabs.update(tab.id, { vivExtData: JSON.stringify({ [spacesOf.PEEK_MARK]: true }) }).catch((error) => { marked.delete(tab.id); warn("mark a preview tab", error); });
   };
+  // Cleared and checked: up to 3 tries, each read back. -> true when the tab no longer carries the mark (or is gone).
+  // Otherwise marks stop counting anywhere (STUCK_KEY), so this user's tab is never hidden from Recently Closed.
   const unmark = async (id) => {
     marked.delete(id);
-    await chrome.tabs.update(id, { vivExtData: JSON.stringify({ [spacesOf.PEEK_MARK]: null }) });
+    for (let tries = 0; tries < 3; tries++) {
+      if (tries) await new Promise((resolve) => setTimeout(resolve, 150 * tries));
+      try { await chrome.tabs.update(id, { vivExtData: JSON.stringify({ [spacesOf.PEEK_MARK]: null }) }); } catch (_) {}
+      const tab = await chrome.tabs.get(id).catch(() => null);
+      if (!tab) return true;
+      let ext = null;
+      try { ext = JSON.parse(tab.vivExtData || "{}") || {}; } catch (_) {}
+      if (ext && !(spacesOf.PEEK_MARK in ext)) return true;
+    }
+    try { const page = shared(); if (page) page[STUCK_KEY] = true; } catch (_) {}
+    Promise.resolve(window.__vm.store?.set?.(STUCK_STORE, true)).catch(() => {});
+    warn("clear a preview tab's mark", new Error(`tab ${id} kept it: marks no longer hide Recently Closed entries`));
+    return false;
   };
   const changed = () => { publish(); window.dispatchEvent(new CustomEvent("vm-peek-changed")); };
 
@@ -109,7 +127,7 @@
         const id = data?.parallelTabId;
         if (Number.isInteger(id)) {
           promoted.add(id);
-          try { await unmark(id); } catch (error) { warn("clear a preview tab's mark", error); } // the user's tab from here on
+          await unmark(id).catch((error) => warn("clear a preview tab's mark", error)); // the user's tab from here on
           changed();
         }
         try { if (await bringBack(data)) promotedFor.add(webviewId); } catch (error) { warn("bring the preview's tab into the space on screen", error); }
@@ -158,4 +176,5 @@
     chrome.tabs.onRemoved.addListener(() => publish());
   } catch (_) {}
   window.addEventListener("beforeunload", () => { try { delete shared()?.[LIVE_KEY]?.[token]; } catch (_) {} });
+  Promise.resolve(window.__vm.store?.get?.(STUCK_STORE, false)).then((stuck) => { if (stuck) { const page = shared(); if (page) page[STUCK_KEY] = true; } }, () => {});
 })();

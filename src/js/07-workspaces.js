@@ -390,13 +390,15 @@
   // as a preview (PEEK_MARK, written when it learns the tab is a preview, cleared before Peek makes it a real tab). An
   // address, a time or a count never decides it; an entry without readable data is the user's (Task 9a fix round 2).
   const PEEK_MARK = "vivarcPeekPreview";
-  const peekSession = (entry) => {
+  // marks: false once a mark could not be cleared from a promoted tab (17-peek.js): the mark then proves nothing, and only
+  // Peek's own runtime identity hides an entry (fail open).
+  const peekSession = (entry, { marks = true } = {}) => {
     try {
       const ext = JSON.parse(entry?.tab?.vivExtData || "{}") || {};
-      return (!!ext.arcPeekRuntime && !ext.arcPeekAdopted) || ext[PEEK_MARK] === true;
+      return (!!ext.arcPeekRuntime && !ext.arcPeekAdopted) || (marks && ext[PEEK_MARK] === true);
     } catch (_) { return false; }
   };
-  const withoutPeekClosed = (sessions) => (sessions || []).filter((s) => !peekSession(s));
+  const withoutPeekClosed = (sessions, opts) => (sessions || []).filter((s) => !peekSession(s, opts));
   // Where Peek's preloaded tab goes when a preview becomes a tab: beside its source (just after it) when the source is
   // in this window. others: this window's tabs but the preloaded one, sorted by index. -> setSpace's index, or undefined
   // (the end of the window).

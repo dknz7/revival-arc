@@ -974,6 +974,42 @@ class RepairRuntime(unittest.TestCase):
         self.assertEqual([c for c in out["calls"] if c[0] == "move"], [], "tab 30 is not in space 5 any more")
         self.assertTrue(any("not done (its tabs changed)" in line for line in out["log"]))
 
+    # Fix round 3: a gather is checked after its reads, like a heal step. D8: X shown in 1, its stray 30 in window 2. While
+    # the gather's list read is pending (the 3rd pref read: start-up's, the snapshot's, the gather's), the user pulls X into window 3.
+    PULL_X_TO_3 = """let reads = 0; const g0 = vivaldi.prefs.get; vivaldi.prefs.get = async (...a) => {
+        if (++reads === 3) { s.windows.push({ id: 3, type: "normal" }); rec.set(5, 3); for (const t of s.tabs) if (t.id === 10 || t.id === 30) t.windowId = 3; }
+        return g0(...a); };"""
+
+    def test_a_space_pulled_elsewhere_while_a_gathers_reads_are_pending_is_not_dragged_back(self):
+        out = runtime(json.loads(json.dumps(Repairs.D8)), me=1, script=self.PULL_X_TO_3)
+        self.assertEqual([c for c in out["calls"] if c[0] == "move"], [], "X lives in 3 now: nothing is moved into 1")
+        self.assertTrue(any("gather space 5" in line and "not done" in line for line in out["log"]))
+
+    def test_a_tab_moved_to_another_window_while_a_gathers_reads_are_pending_is_not_gathered(self):
+        # only the stray moves (window 2 -> new window 4): its planned source window is gone from under it
+        script = """let reads = 0; const g0 = vivaldi.prefs.get; vivaldi.prefs.get = async (...a) => {
+            if (++reads === 3) { s.windows.push({ id: 4, type: "normal" }); s.tabs.find((t) => t.id === 30).windowId = 4; } return g0(...a); };"""
+        out = runtime(json.loads(json.dumps(Repairs.D8)), me=1, script=script)
+        self.assertTrue(any("gather space 5" in line and "not done (its tabs changed)" in line for line in out["log"]),
+                        "the gather planned from window 2 is not made; the next pass plans it again from window 4 (X is still shown in 1)")
+
+    def test_a_gesture_while_a_gathers_reads_are_pending_stops_it(self):
+        script = """let reads = 0; const g0 = vivaldi.prefs.get; vivaldi.prefs.get = async (...a) => {
+            if (++reads === 3) bg.__vivarcSpaceGesture = Date.now() + 5000; return g0(...a); };"""
+        out = runtime(Repairs.D8, me=1, script=script)
+        self.assertEqual([c for c in out["calls"] if c[0] == "move"], [])
+
+    def test_a_record_missing_in_the_refreshed_snapshot_is_waited_for_not_dropped(self):
+        # the record is there for the first snapshot, gone for the one after the heal's 1 s check, back later: the run
+        # comes back (unavailable) instead of ending, and heals
+        # exactly the refreshed snapshot's record read fails: it is the next record read after the heal check's
+        # undelete-store read (the 1st one)
+        script = """const STORE = () => s.spaces; let dels = 0, off = 0; const DELETED = () => { if (++dels === 1) off = 1; return undefined; };""" + self.HEAL_STUBS + """
+          const r2 = window.__vm.native.record;
+          window.__vm.native.record = () => { if (off > 0) { off--; return null; } return r2(); };"""
+        out = runtime(Repairs.ORPHANS, me=1, script=script)
+        self.assertEqual(self.healed(out)[:3], [11, 12, 21])
+
     def test_a_failed_ordinary_step_stops_the_plan(self):
         # TANGLE plans several steps; the first one fails: nothing after it runs in that pass
         script = """window.__vm.native.switchTo = async (w, sp) => { call(["switch", w, sp]); throw new Error("no"); };"""
