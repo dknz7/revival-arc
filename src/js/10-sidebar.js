@@ -215,7 +215,7 @@
   // the label), flyout: async () => items, opened to the side on hover or click }. Only the arrays path existed before
   // Task 8k and it builds exactly what it did.
   const objectRow = (spec, inFlyout) => {
-    if (spec.heading) return el("div", "vm-menu-heading", spec.heading);
+    if (spec.heading) return el("div", `vm-menu-heading${spec.windowStart ? " vm-window-start" : ""}`, spec.heading);
     const item = el("div", `vm-menu-item rich${spec.danger ? " danger" : ""}${spec.disabled ? " disabled" : ""}${spec.flyout ? " has-flyout" : ""}${spec.mark ? " marked" : ""}`);
     if (spec.icon) item.append(spec.icon);
     if (typeof spec.check === "boolean") {
@@ -1424,7 +1424,7 @@
     const here = myWindow();
     const tabs = (window.__vm.peek?.without ?? ((tabs) => tabs))(await chrome.tabs.query({ windowType: "normal" })).filter((t) => !isBlank(t));
     const groups = spacesOf.openTabGroups(tabs, state.workspaces, here, state.defaultSpace ? spacesOf.label(state.defaultSpace) : "Home");
-    return groups.flatMap((g) => [{ heading: g.heading },
+    return groups.flatMap((g) => [{ heading: g.heading, windowStart: g.windowStart },
       ...tabRows(g.tabs.map((t) => ({ ...t, mark: t.active && t.windowId === here })), showTab)]);
   };
   const confirmCloseAll = (event) => {
@@ -1472,7 +1472,7 @@
     anchor.querySelector(".vm-newtab-chev")?.classList.add("open");
   };
   const CHEVRON_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>';
-  // The chevron at the right edge of the + New Tab row: appears on hover or focus; its click is its own, the rest of the
+  // The chevron at the right edge of the + New Tab row is always visible; its click is its own, the rest of the
   // row still opens the command bar. A second click closes the menu.
   const newTabChevron = (row) => {
     const chev = el("button", `vm-newtab-chev${menu?.dataset.owner === "newtab" ? " open" : ""}`);
