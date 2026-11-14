@@ -4052,6 +4052,8 @@ for (const layout of ["dia", "arc"]) {
         ["viewsource", `view-source:${origin}/en-vs`, `view-source:${origin}/en-vs`], ["data", "data:text/html,<title>DATA9B</title>hi", "data:text/html,<title>DATA9B</title>hi"],
         ["chrome", "chrome://version", "chrome://version/"]]) {
         await ctrlL(ctx.W);
+        // the bar's input has the cursor (a slow page can make the bar come late), then it is emptied and typed into
+        await waitFor(() => h.ev(`!!document.querySelector("#vm-cmd input") && document.activeElement === document.querySelector("#vm-cmd input")`, ctx.W), 4000);
         await h.ev(`(() => { const i = document.querySelector("#vm-cmd input"); i.value = ""; return 1; })()`, ctx.W);
         await h.cdp(ctx.W).send("Input.insertText", { text: typed }); await sleep(700);
         const lead = await h.ev(`document.querySelector("#vm-cmd .vm-cmd-row.sel")?.textContent ?? null`, ctx.W);
