@@ -763,6 +763,66 @@
     typeof msSinceActivation === "number" && msSinceActivation >= 0 && msSinceActivation <= RETURN_FOCUS_MS &&
     !userAsked && !edited && !popupOpen;
 
+  // Whether the user asked for the address field since this window's last tab activation (review round 3). The order of
+  // the two is a counter, never the clock: two events in the same millisecond keep the order they happened in, and an
+  // activation forgets any request made before it (what came before a switch is what switched, Ctrl+Tab..., and the focus
+  // that follows the switch is the tab's remembered one). A request after the activation still counts (Ctrl+L right after).
+  const focusIntent = () => {
+    let order = 0;
+    let activation = 0;
+    let request = null;
+    return {
+      activated: () => { activation = ++order; request = null; },
+      asked: (now) => { request = { order: ++order, at: now }; },
+      userAsked: (now, withinMs) => !!request && request.order > activation && now - request.at < withinMs,
+    };
+  };
+  // Which shortcuts are a request for the address field: Vivaldi's own "focus the address field" keys and any other
+  // shortcut (a custom binding, a menu's command), except the ones that switch, close or reopen a tab or switch a space:
+  // those are what moves the cursor, never a request for the field (review round 3). From Vivaldi's keyboard table
+  // (vivaldi.actions[0], read live) and, for a command it has no entry for, Vivaldi's defaults (DEFAULT_KEYS).
+  const FOCUS_COMMAND = /^COMMAND_FOCUS_ADDRESSFIELD$/;
+  const SWITCHER_KEYS = ["ctrl+tab", "ctrl+shift+tab"];
+  const SWITCH_COMMAND = /^COMMAND_(TAB_SWITCH_|WORKSPACE_SWITCH_|CLOSE_TAB$|CLOSE_WINDOW$|TAB_REOPEN_RECENTLY_CLOSED$)/;
+  // Each command's defaults, measured in 8.3.4191.30's prefs_definitions.json (actions.default, default_linux and
+  // default_mac, merged per command: a key of another platform's never reaches this one).
+  const DEFAULT_KEYS = {
+    COMMAND_FOCUS_ADDRESSFIELD: ["f8", "ctrl+l", "meta+l"],
+    COMMAND_TAB_SWITCH_FORWARD_SETTING: ["ctrl+tab", "alt+meta+right"],
+    COMMAND_TAB_SWITCH_BACK_SETTING: ["ctrl+shift+tab", "alt+meta+left"],
+    COMMAND_TAB_SWITCH_FORWARD_ORDER: ["ctrl+pagedown", "2", "numpad2", "shift+meta+]"],
+    COMMAND_TAB_SWITCH_BACK_ORDER: ["ctrl+pageup", "1", "numpad1", "shift+meta+["],
+    COMMAND_TAB_SWITCH_FORWARD_HISTORY: ["4", "numpad4"],
+    COMMAND_TAB_SWITCH_BACK_HISTORY: ["3", "numpad3"],
+    ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map((n) => [`COMMAND_TAB_SWITCH_${n}`, [`ctrl+${n}`, `ctrl+numpad${n}`, `meta+${n}`]])),
+    COMMAND_TAB_SWITCH_LAST: ["ctrl+9", "ctrl+numpad9", "meta+9"],
+    COMMAND_CLOSE_TAB: ["ctrl+w", "ctrl+f4", "meta+w"],
+    COMMAND_CLOSE_WINDOW: ["ctrl+shift+w", "shift+meta+w"],
+    COMMAND_TAB_REOPEN_RECENTLY_CLOSED: ["ctrl+shift+t", "ctrl+z", "shift+meta+t", "meta+z"],
+    ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`COMMAND_WORKSPACE_SWITCH_${n}`, [`ctrl+shift+${n}`]])),
+  };
+  // -> (key) => whether that normalised shortcut is a request for the field. `table` is vivaldi.actions[0] (or nothing);
+  // `normalise` is 00-core's. A command's entry in the table replaces its defaults (review round 4: a focus command
+  // rebound to Alt+K leaves F8 free for something else). A key explicitly bound to a switching command never asks, even
+  // when it is another command's default; a key bound to the field's command asks over a switching command's default.
+  const addressKeys = (table, normalise = (k) => k) => {
+    const live = table && typeof table === "object" ? table : {};
+    const focus = new Set();
+    const switching = new Set();
+    const explicitSwitch = new Set();
+    for (const name of new Set([...Object.keys(DEFAULT_KEYS), ...Object.keys(live)])) {
+      const explicit = Array.isArray(live[name]?.shortcuts);
+      const keys = (explicit ? live[name].shortcuts : DEFAULT_KEYS[name] || []).map((k) => normalise(k));
+      if (FOCUS_COMMAND.test(name)) keys.forEach((k) => focus.add(k));
+      else if (SWITCH_COMMAND.test(name)) keys.forEach((k) => { switching.add(k); if (explicit) explicitSwitch.add(k); });
+    }
+    // Ctrl+Tab and Ctrl+Shift+Tab switch tabs whoever holds them: Vivaldi's cycling, or Vivarc's switcher once
+    // 05-bootstrap.js has taken them off Vivaldi's commands (25-tab-switcher.js), which leaves them in no command's entry.
+    // Bound to the field's own command, they still ask.
+    for (const k of SWITCHER_KEYS) switching.add(normalise(k));
+    return (key) => !explicitSwitch.has(key) && (focus.has(key) || !switching.has(key));
+  };
+
   // Whether the address field shows the tab's own address and nothing typed. Vivaldi writes the address without a lone
   // trailing slash and an internal page as vivaldi:settings (measured on 8.2); anything else counts as typed.
   const showsPage = (value, tab) => {
@@ -794,6 +854,11 @@
   };
   // `wanted`: whether the tab is a start page the user asked for (default: its own flag).
   const isBlank = (tab, wanted = startWanted(tab)) => isBlankUrl(tab?.pendingUrl || tab?.url || "") && !wanted;
+  // A private window's first tab, Vivaldi's "Private Window Introduction" page (measured on 8.3: its own extension's
+  // components/private-intro/private-intro.html). It is a page, not a blank tab, but nothing was typed for it: the command
+  // bar opens empty over it, as over a blank tab (Task 9b).
+  const PRIVATE_INTRO = /^chrome-extension:\/\/[a-p]{32}\/components\/private-intro\/private-intro\.html(?:[?#].*)?$/i;
+  const privateIntro = (tab) => PRIVATE_INTRO.test(tab?.pendingUrl || tab?.url || "");
   // What the tab is called where Vivaldi gives it its address for a title (a start page asked for), or null.
   const startTitle = (tab) => (startWanted(tab) && isBlankUrl(tab?.pendingUrl || tab?.url || "") ? "Start Page" : null);
   // Whether text typed as an address means Vivaldi's start page: its addresses (and the new tab page's), not a section.
@@ -820,14 +885,23 @@
     if (!message || !Array.isArray(buttons) || !buttons.length || buttons.length > REQUEST_MAX_OPTIONS) return null;
     if (!buttons.every((b) => b && typeof b.label === "string" && b.label.trim())) return null;
     const quoted = /[“„‟"«]([^“”"»]+)[”“"»]/.exec(message);
-    // A second quoted thing means a question of another kind (the protocol-handler one: "Allow “site” to open all “mailto”
-    // links?", which Vivaldi DENIES when its popup is closed): not read, so it floats and its dismissal stays Vivaldi's own.
-    if (quoted && /[“„‟"«]([^“”"»]+)[”“"»]/.test(message.slice(quoted.index + quoted[0].length))) return null;
     const site = quoted ? quoted[1].trim().replace(/\/+$/, "") : "";
     const prefix = quoted ? message.slice(0, quoted.index).trim() : "";
     const ask = (quoted ? message.slice(quoted.index + quoted[0].length) : message).trim() || message;
-    return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
+    const request = { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
+    // A second quoted thing: Vivaldi's two two-name questions, told apart by what the second name is, whatever the UI
+    // language. A scheme ("mailto", "web+x": no dot, no slash) is the protocol handler's ("Allow “site” to open all “mailto”
+    // links?"), which Vivaldi DENIES when its popup is closed (closeDenies: the card's close says so); a site is storage
+    // access's ("Allow “site” to access cookies and site data on “other”?"), which closing leaves pending like the rest.
+    const second = quoted ? /[“„‟"«]([^“”"»]+)[”“"»]/.exec(message.slice(quoted.index + quoted[0].length)) : null;
+    if (second) {
+      const name = second[1].trim();
+      request.second = name;
+      request.kind = /^[a-z][a-z0-9+-]*$/i.test(name) && !/^localhost$/i.test(name) ? "protocol" : "storage";
+      request.closeDenies = request.kind === "protocol";
+    }
+    return request;
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, deletedIds, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, deletedIds, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins, privateIntro, focusIntent, addressKeys };
 })();

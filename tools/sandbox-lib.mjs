@@ -56,12 +56,63 @@ export class Cdp {
   // stalling for good.
   send(method, params = {}, deadlineMs = 90000) {
     if (this.closed) return Promise.reject(new Error("closed"));
+    const release = this.track(method, params);
     const id = ++this.id;
-    return new Promise((resolve, reject) => {
+    const sent = new Promise((resolve, reject) => {
       const timer = setTimeout(() => { if (this.pending.delete(id)) reject(new Error(`no reply to ${method} in ${Math.round(deadlineMs / 1000)} s`)); }, deadlineMs);
       this.pending.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
       this.ws.send(JSON.stringify({ id, method, params }));
     });
+    // A release counts only once it is acknowledged: until then (and after a failure) the button or key stays held here,
+    // so releaseAll() tries it again and says so (review round 2).
+    if (release) sent.then(() => release.ack(), (error) => release.fail(error));
+    return sent;
+  }
+  // What this connection holds down (Task 9b fix rounds 1-2): a mouse button pressed, a key (or a modifier) down, kept until
+  // its release is acknowledged. Recorded as it is SENT, so a press whose reply never comes (the input-ack hang, task 8v)
+  // still counts as held. -> for a release, { ack, fail } to settle it.
+  track(method, params) {
+    this.held ??= { buttons: new Map(), keys: new Map(), failed: [] };
+    if (method === "Input.dispatchMouseEvent") {
+      const b = params.button || "left";
+      if (params.type === "mousePressed") this.held.buttons.set(b, { x: params.x, y: params.y, releasing: false });
+      else if (params.type === "mouseReleased") {
+        const entry = this.held.buttons.get(b);
+        if (!entry) return null;
+        entry.releasing = true;
+        return { ack: () => { if (this.held.buttons.get(b) === entry) this.held.buttons.delete(b); },
+          fail: (error) => { entry.releasing = false; this.held.failed.push({ button: b, error: String(error?.message || error) }); } };
+      }
+    } else if (method === "Input.dispatchKeyEvent") {
+      const k = `${params.code || params.key}`;
+      if (params.type === "keyDown" || params.type === "rawKeyDown") this.held.keys.set(k, { key: params.key, code: params.code, windowsVirtualKeyCode: params.windowsVirtualKeyCode, nativeVirtualKeyCode: params.nativeVirtualKeyCode, releasing: false });
+      else if (params.type === "keyUp") {
+        const entry = this.held.keys.get(k);
+        if (!entry) return null;
+        entry.releasing = true;
+        return { ack: () => { if (this.held.keys.get(k) === entry) this.held.keys.delete(k); },
+          fail: (error) => { entry.releasing = false; this.held.failed.push({ key: k, error: String(error?.message || error) }); } };
+      }
+    }
+    return null;
+  }
+  heldNow() { return { buttons: [...(this.held?.buttons.keys() || [])], keys: [...(this.held?.keys.keys() || [])] }; }
+  // Lets go of everything still held (a release never sent, or one not acknowledged), each with a bounded deadline and up to
+  // `tries` attempts. -> { held: what was held, failed: releases that failed since the last call, left: what is still held }.
+  async releaseAll(deadlineMs = 5000, tries = 2) {
+    if (!this.held || this.closed) return { held: this.heldNow(), failed: [], left: this.heldNow() };
+    const held = this.heldNow();
+    for (let attempt = 0; attempt < tries && (this.held.buttons.size || this.held.keys.size); attempt++) {
+      for (const [button, at] of [...this.held.buttons]) {
+        await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x ?? 0, y: at.y ?? 0, button, buttons: 0, clickCount: 1 }, deadlineMs).catch(() => {});
+      }
+      for (const [, key] of [...this.held.keys].reverse()) {
+        const { releasing, ...ids } = key;
+        await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...ids, modifiers: 0 }, deadlineMs).catch(() => {});
+      }
+    }
+    const failed = this.held.failed.splice(0);
+    return { held, failed, left: this.heldNow() };
   }
   // The reply's deadline is never shorter than the caller's own timeout (CU.over-the-cap evaluates for up to 120 s): the
   // eval's own timeout is the one that reports.

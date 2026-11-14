@@ -596,20 +596,9 @@
         }, 0);
       } catch (error) { shieldWarn("page focus", error); }
     }, true);
-    // The keys that ask for the address field (as 20-command-bar.js counts them) while the popup is open: the field is
-    // hidden then and cannot take the cursor, so the mark goes first and the field gets it (Vivaldi's own try may have
-    // come first and failed). With this window's sidebar hidden the field has nowhere to show: the popup closes, and the
-    // command bar takes the key instead (12-sidebar-hide.js).
-    const toField = () => {
-      if (document.querySelector("#browser.vm-sidebar-hidden")) { shieldClose(); shieldEnd(false); return; }
-      shieldEnd(false);
-      setTimeout(() => {
-        try {
-          const field = document.querySelector("#tabs-tabbar-container #urlFieldInput");
-          if (field && document.activeElement !== field) { field.focus(); field.select?.(); }
-        } catch (error) { shieldWarn("address field", error); }
-      }, 0);
-    };
+    // The keys that ask for the address field (as 20-command-bar.js counts them) while the popup is open: the command bar
+    // takes them now (12-sidebar-hide.js, Task 9b), so the popup closes and the mark goes; the bar opens over the page.
+    const toField = () => { shieldClose(); shieldEnd(false); };
     const ASK = new Set(["ctrl+l", "l+meta", "f6", "alt+d"].map((k) => window.__vm.normalise?.(k) ?? k));
     // Every window hears every key: only the one it was pressed in acts (00-core.js passes that window's id).
     window.__vm.onShortcut?.((key, _combo, pressedIn) => {

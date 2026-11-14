@@ -86,17 +86,16 @@
     else chrome.windows.getCurrent().then((win) => act(win.focused), warn);
   });
 
-  // The keys that ask for the address field (Ctrl+L, Cmd+L, F6, Alt+D, as 20-command-bar.js counts them). With this
-  // window's sidebar hidden the field is in the hidden tab bar and cannot take the cursor, so the command bar opens to
-  // edit the address instead, as a click on the Dia layout's breadcrumb does (vm-edit-url), and the sidebar stays hidden.
-  // Measured on 8.3 on Windows (not on a Mac, where Cmd+L takes the same path): Vivaldi's shortcut comes as
-  // onKeyboardShortcut in the window it was pressed in, wherever the cursor is. With the cursor in the UI the UI's keydown
-  // comes first, and preventDefault() there stops Vivaldi's own handling
-  // (it would try the hidden field); with the cursor in the page there is no such keydown, and Vivaldi's try on the
-  // hidden field does nothing (no focus, then or once the sidebar is back). Vivaldi's own hide (its pref) is not this:
-  // it then shows an address field in the top row, which Ctrl+L reaches. Nor is a field floating for one of its popups
-  // (vivarc.css): it can take the cursor, so the key is Vivaldi's. The keys are taken while hidden even if the user has
-  // bound them to something else in Vivaldi.
+  // The keys that ask for the address field (Ctrl+L, Cmd+L, F6, Alt+D, as 20-command-bar.js counts them) open the command bar
+  // to edit the address instead, as a click on the Dia layout's breadcrumb does (vm-edit-url): the bar replaces Vivaldi's
+  // field for typing (Task 9b), with the sidebar shown or hidden (Task 8w began it for the hidden sidebar). Only in a window
+  // whose field is the bar's (a normal window, 20-command-bar.js). Measured on 8.3 on Windows (not on a Mac, where Cmd+L
+  // takes the same path): Vivaldi's shortcut comes as onKeyboardShortcut in the window it was pressed in, wherever the cursor
+  // is. With the cursor in the UI the UI's keydown comes first, and preventDefault() there stops Vivaldi's own handling (it
+  // would focus its field); with the cursor in the page there is no such keydown, and Vivaldi's focus of the field is turned
+  // into the bar by 20-command-bar.js's guard (one bar per press). Not while one of Vivaldi's popups shows the field itself
+  // (none does now: vivarc.css drops them without it). The keys are taken even if the user has bound them to something else
+  // in Vivaldi.
   const ASK = new Set(["ctrl+l", "l+meta", "f6", "alt+d"].map((k) => window.__vm.normalise(k)));
   const askKey = (e) => (e.key === "F6" && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) ||
     ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key?.toLowerCase() === "l") || (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.key?.toLowerCase() === "d");
@@ -105,7 +104,7 @@
     const box = field?.getBoundingClientRect();
     return !!box && box.width > 0 && box.height > 0 && getComputedStyle(field).visibility === "visible";
   };
-  const wantsBar = () => classHidden && !!window.__vm.cssLoaded && !!document.querySelector("#browser.vm-on") && !fieldShown();
+  const wantsBar = () => !!window.__vm.commandBar?.ownsField?.() && !!window.__vm.cssLoaded && !!document.querySelector("#browser.vm-on") && !fieldShown();
   let editAt = 0;
   const editInBar = () => {
     if (Date.now() - editAt < 400) return; // one key press, one bar

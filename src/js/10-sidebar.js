@@ -914,6 +914,7 @@
   const spaceItems = () => spacesOf.items(state.workspaces, state.defaultSpace ? spacesOf.label(state.defaultSpace) : "Home");
   // "Move to <Space>": the spaces a tab can go to; none while the space list is unknown.
   const moveTargets = () => (state.workspaces?.length ? spacesOf.moveTargets(spaceItems(), state.active) : []);
+  window.__vm.spaceTargets = moveTargets; // the command bar's Move Tab to Space picker offers the same (20-command-bar.js)
   // Vivaldi's own move (08-space-native.js); this window stays on the space it shows. A tab bound for a space shown in
   // another window goes there with the move; the repair run is asked as well, as a safety net, though a non-leader
   // window's request does nothing (the leader runs repairs).
