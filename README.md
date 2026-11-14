@@ -119,6 +119,7 @@ Ctrl+T opens the command bar, Ctrl+S hides or shows the sidebar in the window yo
 hidden, Ctrl+L edits the address in the command bar), Ctrl+Shift+C copies the URL, Ctrl+Left/Right switches
 spaces, and Ctrl+Alt+N creates a space. Alt+Left/Right stay Back/Forward; Vivaldi's second Back/Forward
 pair, Ctrl+Left/Right, goes to spaces.
+Ctrl+Tab steps through this space's recent tabs (release Ctrl to switch).
 Ctrl+Shift+Left/Right or Ctrl+Shift+1..9 switches profiles. F2 opens Vivaldi's
 Quick Commands. Conflicting Vivaldi shortcuts are replaced; uninstall restores
 the saved preferences.
@@ -209,6 +210,7 @@ python3 ~/.vivarc/app/vivarc.py status      # what is installed
 | Cmd+S                 | Ctrl+S                | Hide this window's sidebar, or show it again. Other windows keep theirs. |
 | Cmd+Shift+C           | Ctrl+Shift+C          | Copy the page URL (with a toast)                                         |
 | Cmd+L                 | Ctrl+L                | Edit the address (in the command bar while the sidebar is hidden)        |
+| Ctrl+Tab              | Ctrl+Tab              | Recent tabs of this space in this window: hold Ctrl, Tab or Shift+Tab to step, release to switch |
 | Cmd+E                 | F2                    | Vivaldi's own Quick Commands                                             |
 | Cmd+Option+Left/Right | Ctrl+Left/Right       | Previous or next space                                                   |
 | Ctrl+Cmd+N            | Ctrl+Alt+N            | Create a space                                                           |

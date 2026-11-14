@@ -779,6 +779,42 @@
 .vm-set-foot { display: flex; align-items: center; justify-content: space-between; padding: 8px 8px 0; }
 .vm-set-note { opacity: 0.5; font-size: 12.5px; }
 
+/* Ctrl+Tab switcher (25-tab-switcher.js; ported from KASOGIT/vivarc#93): this window's recent tabs in the space on screen,
+   a row of cards over the page. It shows only after the keys are held for a moment, so a quick Ctrl+Tab never flashes it. */
+#browser.vm-on #vm-switch {
+  position: fixed; inset: 0; z-index: 100002;
+  display: flex; justify-content: center; align-items: center;
+  outline: 0; opacity: 0; pointer-events: none;
+}
+#browser.vm-on #vm-switch.in { opacity: 1; pointer-events: auto; transition: opacity 90ms; }
+#browser.vm-on #vm-switch .vm-sw-panel {
+  max-width: 92vw; padding: 8px; border-radius: 18px;
+  color: var(--vm-text); background: var(--vm-surface);
+  border: 1px solid color-mix(in srgb, var(--vm-text) 10%, transparent);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6);
+}
+#browser.vm-on #vm-switch .vm-sw-strip { display: flex; gap: 4px; }
+#browser.vm-on #vm-switch .vm-sw-card { flex: none; width: 168px; padding: 8px; border-radius: 12px; cursor: pointer; }
+#browser.vm-on #vm-switch .vm-sw-card.sel { background: var(--vm-sel); }
+#browser.vm-on #vm-switch .vm-sw-thumb {
+  display: flex; align-items: center; justify-content: center; height: 112px; overflow: hidden; border-radius: 8px;
+  background: color-mix(in srgb, var(--vm-text) 7%, transparent);
+}
+#browser.vm-on #vm-switch .vm-sw-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+#browser.vm-on #vm-switch .vm-sw-big { display: flex; width: 36px; height: 36px; }
+#browser.vm-on #vm-switch .vm-sw-ico { display: flex; flex: none; width: 16px; height: 16px; }
+#browser.vm-on #vm-switch :is(.vm-sw-big, .vm-sw-ico) img { width: 100%; height: 100%; object-fit: contain; }
+#browser.vm-on #vm-switch .vm-sw-label { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 13px; font-weight: 600; }
+#browser.vm-on #vm-switch .vm-sw-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#browser.vm-on.vm-glass #vm-switch .vm-sw-panel {
+  background: var(--vm-glass-sheen), var(--vm-glass-fill); backdrop-filter: var(--vm-glass-blur);
+  border-color: transparent; box-shadow: var(--vm-glass-rim), 0 18px 50px rgba(0, 0, 0, 0.35);
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  #browser.vm-on.vm-glass #vm-switch .vm-sw-panel { background: var(--vm-surface); backdrop-filter: none; }
+}
+@media (prefers-reduced-motion: reduce) { #browser.vm-on #vm-switch.in { transition: none; } }
+
 /* Liquid glass (setting "glass"), after Apple's Human Interface Guidelines, Materials: glass is for the layer of controls
    and navigation (sidebar, menus, command bar, dialogs), never for the content layer, and never stacked on itself, so the
    rows and tiles inside a glass surface keep plain fills. This is the regular variant: blurred and saturated backdrop,
