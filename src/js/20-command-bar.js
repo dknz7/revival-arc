@@ -63,6 +63,9 @@
   const looksLikeUrl = (text) =>
     /^(https?:\/\/|chrome:\/\/|vivaldi:\/\/)/i.test(text) || (/^[^\s]+\.[a-z]{2,}(\/\S*)?$/i.test(text) && !text.includes(" "));
   const toUrl = (text) => (/^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`);
+  const suggestionRow = (p) => /^https?:\/\//i.test(p)
+    ? { type: "url", url: toUrl(p), label: p, sub: "Open" }
+    : { type: "suggest", engine: DEFAULT, query: p, label: p };
 
   const toast = (message) => window.dispatchEvent(new CustomEvent("vm-toast", { detail: message }));
   // A new tab tops its space's list, as in Arc (workspaces.topIndex). Ctrl+T's blank tab, which Vivaldi puts next to
@@ -462,7 +465,7 @@
           const phrases = await search.suggestions(engine, text);
           if (id !== seq) return;
           phrases.filter((p) => p && p.toLowerCase() !== needle).slice(0, 4)
-            .forEach((p) => out.push({ type: "suggest", engine: DEFAULT, query: p, label: p }));
+            .forEach((p) => out.push(suggestionRow(p)));
         } catch (_) {}
       }
     }

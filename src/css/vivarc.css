@@ -683,6 +683,7 @@
   align-items: center !important;
   justify-content: space-between !important;
 }
+#browser.vm-on .toolbar-tabbar-after:has(> .vm-spaces) > .tabbar-nested-buttons { width: auto !important; flex: none; }
 #browser.vm-on .toolbar-tabbar-after:has(> .vm-spaces) > .toolbar-spacer-flexible {
   flex: 1 1 0 !important;
   width: auto !important;

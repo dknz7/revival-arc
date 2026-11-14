@@ -96,6 +96,33 @@ test('Ctrl+T search and suggestion selection both navigate with the default engi
   assert.equal(calls.navigation[0].url, 'https://chosen.test/?q=test%20result');
 });
 
+test('HTTP URL suggestions navigate directly instead of searching', async () => {
+  for (const url of ['https://www.diy.com/', 'HTTP://example.test/path?q=one']) {
+    const { context, calls } = setup();
+    context.fetch = async () => ({ ok: true, json: async () => ['diy', [url]] });
+    const input = await loadBar(context);
+    await new Promise(resolve => setImmediate(resolve));
+    input.value = 'diy';
+    await input.events.input();
+    await press(input, 'ArrowDown');
+    await press(input, 'Enter');
+    assert.equal(calls.navigation[0].url, url);
+    assert.equal(calls.request.length, 0);
+  }
+});
+
+test('domain-like suggestions remain search phrases', async () => {
+  const { context, calls } = setup();
+  context.fetch = async () => ({ ok: true, json: async () => ['diy', ['example.com']] });
+  const input = await loadBar(context);
+  await new Promise(resolve => setImmediate(resolve));
+  input.value = 'diy';
+  await input.events.input();
+  await press(input, 'ArrowDown');
+  await press(input, 'Enter');
+  assert.equal(calls.request[0].query, 'example.com');
+});
+
 test('command bar stays closed while the Vivarc settings overlay is open', async () => {
   const { context, calls } = setup();
   assert.equal(await loadBar(context, true), undefined);

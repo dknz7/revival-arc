@@ -4,6 +4,17 @@
 (() => {
   const ARC_PREFIX = "Arc - ";
 
+  const leaves = (node) => node.children ? node.children.flatMap(leaves) : [node];
+  const hasPinnedChild = (n) => n.children?.some((c) => c.children && c.title === "Pinned");
+  // Skip the entire Trash subtree, including space folders nested inside deleted folders.
+  // The trash flag is the trusted identity; a user folder named "Trash" is a real space.
+  const findSpaces = (nodes) => nodes.flatMap((n) => n.trash === true ? [] : hasPinnedChild(n) ? [n] : n.children ? findSpaces(n.children) : []);
+  const favoriteLinks = (favs) => favs ? favs.children.filter((c) => !c.children) : [];
+  // Favorites draws only top-level links; Pinned draws links at every depth. Hidden links cannot own tabs.
+  const sidebarPins = (favs, pinned) => [
+    ...favoriteLinks(favs), ...(pinned ? leaves(pinned) : []),
+  ].map((n) => ({ id: n.id, url: n.url }));
+
   // Vivaldi keeps the workspace id in the tab's vivExtData JSON; no key means the default space (id 0).
   const of = (tab) => {
     try { return Number(JSON.parse(tab?.vivExtData || "{}").workspaceId) || 0; } catch (_) { return 0; }
@@ -661,5 +672,5 @@
     return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { leaves, findSpaces, favoriteLinks, sidebarPins, siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();
