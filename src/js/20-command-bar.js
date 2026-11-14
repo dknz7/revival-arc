@@ -291,23 +291,38 @@
   // on the space shown (G1), and repair 2 would snap the window back: its space is shown first (workspaces.tabPick).
   // Without the record or the switch, the tab is activated as it always was. The bar's own blank tab is closed after,
   // so it never hands the screen to some other tab in between.
+  // A tab whose space was deleted (a Recently Closed restore brings it back with the dead id on Vivaldi 8.3, task 8y) is
+  // never switched to: it is moved (native.setSpace) into the space on screen in the window it was picked in, then
+  // activated there (Byron, 2026-11-14: a restored tab comes to the window you clicked in). If it was on screen in another
+  // window, that window's most recent tab of its own space takes the screen first.
   const pickTab = async (listed) => {
     const tab = (await chrome.tabs.get(listed.id).catch(() => null)) || listed; // the list may be older than a move
     const native = window.__vm.native;
     const spaces = window.__vm.workspaces;
     const record = native?.hasSwitch() ? native.record() : null;
-    const pick = record && spaces ? spaces.tabPick(tab, record.activeIn(tab.windowId), record.all().get(spaces.of(tab)) ?? null)
-      : { kind: "activate" };
+    const here = (await chrome.windows.getCurrent().catch(() => null))?.id;
+    const known = record && spaces ? await native.spaceIds() : null;
+    const pick = record && spaces ? spaces.tabPick(tab, record.activeIn(tab.windowId), record.all().get(spaces.of(tab)) ?? null,
+      { known, here, hereShown: here != null ? record.activeIn(here) : null }) : { kind: "activate" };
     // Focusing a minimised window leaves it in the taskbar: it is brought back to normal.
     const minimised = async (id) => { try { return (await chrome.windows.get(id))?.state === "minimized"; } catch (_) { return false; } };
     if (pick.kind === "focus") {
       if (await minimised(pick.window)) await chrome.windows.update(pick.window, { state: "normal", focused: true });
       return native.focus(pick.window);
     }
+    if (pick.kind === "adopt") {
+      if (tab.active && pick.window !== tab.windowId) {
+        const own = record.activeIn(tab.windowId) ?? 0;
+        const keeper = spaces.recentTab((await chrome.tabs.query({ windowId: tab.windowId })).filter((t) => t.id !== tab.id), own);
+        if (keeper) await chrome.tabs.update(keeper.id, { active: true });
+      }
+      await native.setSpace(tab.id, pick.space, { windowId: pick.window });
+      await chrome.tabs.update(tab.id, { active: true });
+      return;
+    }
     if (pick.kind === "switch") await native.switchTo(pick.window, pick.space);
     await chrome.tabs.update(tab.id, { active: true });
     // The sidebar's Open Tabs list can pick a tab of another window, which activating does not bring forward.
-    const here = (await chrome.windows.getCurrent().catch(() => null))?.id;
     if (here != null && tab.windowId != null && here !== tab.windowId) {
       await chrome.windows.update(tab.windowId, (await minimised(tab.windowId)) ? { state: "normal", focused: true } : { focused: true });
     }
@@ -448,7 +463,9 @@
           .forEach((h) => add({ type: "history", url: h.url, favicon: null, label: h.title || h.url, sub: hostOf(h.url) }));
       } catch (_) {}
       if (id !== seq) return;
-      const prefix = matches.find((m) => hostOf(m.url).startsWith(needle));
+      // A tab whose space was deleted never leads (Enter would run it; task 8y): it is still listed, and picking it brings it here.
+      const known = await window.__vm.native?.spaceIds?.();
+      const prefix = matches.find((m) => hostOf(m.url).startsWith(needle) && !(m.type === "tab" && window.__vm.workspaces.deadSpace(m.tab, known)));
       const lead = leadRows(text);
       if (lead.url) out.push(lead.url);
       if (prefix) out.push(prefix);
@@ -494,8 +511,9 @@
     const text = input.value;
     if (mode || !text || /\s/.test(text) || !autoCompleted) return;
     const needle = text.toLowerCase();
+    const known = await window.__vm.native?.spaceIds?.();
     const hosts = [
-      ...(await chrome.tabs.query({ currentWindow: true })).map((t) => hostOf(t.url)),
+      ...(await chrome.tabs.query({ currentWindow: true })).filter((t) => !window.__vm.workspaces.deadSpace(t, known)).map((t) => hostOf(t.url)),
       ...((await chrome.bookmarks.search(text).catch(() => [])).map((b) => hostOf(b.url))),
     ];
     const host = hosts.find((h) => h && h.startsWith(needle) && h.length > needle.length);

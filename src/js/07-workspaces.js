@@ -107,9 +107,17 @@
   // record: activate as before), { kind: "switch", window, space } (parked in its window: Vivaldi's switch shows the
   // space, A3, then the tab is activated) or { kind: "focus", window } (its space is shown in another window, so the tab
   // is a split space's stray: go there as a tile click does, and repair 3 gathers it).
-  const tabPick = (tab, shown, shownIn) => {
+  // A tab whose space no longer exists (Vivaldi 8.3 restores a closed tab of a deleted space with its dead id, task 8y)
+  // is never switched to: Vivaldi's switch takes any id and the window would show a space no tile can reach. It is
+  // brought into the space on screen in the window the user picked it in (`here`, showing `hereShown`; Byron,
+  // 2026-11-14), { kind: "adopt", window, space }, and activated there. known: the ids of the spaces that exist, or null
+  // when the list can't be read: then no named space can be told live from dead, so such a tab is only activated.
+  const deadSpace = (tab, known) => { const space = of(tab); return !!space && Array.isArray(known) && !known.includes(space); };
+  const tabPick = (tab, shown, shownIn, { known, here, hereShown } = {}) => {
     const space = of(tab);
+    if (deadSpace(tab, known)) return { kind: "adopt", window: here ?? tab.windowId, space: (here ?? tab.windowId) === tab.windowId ? (shown ?? 0) : (hereShown ?? 0) };
     if (shown == null || space === shown) return { kind: "activate" };
+    if (space && known === null) return { kind: "activate" };
     if (space && shownIn != null && shownIn !== tab.windowId) return { kind: "focus", window: shownIn };
     return { kind: "switch", window: tab.windowId, space };
   };
@@ -661,5 +669,5 @@
     return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();

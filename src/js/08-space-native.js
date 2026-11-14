@@ -179,8 +179,18 @@
     }
   };
 
+  // The ids of the spaces that exist (the pref vivaldi.workspaces.list), or null when it can't be read. A tab whose
+  // space is not among them belongs to a deleted space (workspaces.deadSpace).
+  const spaceIds = async () => {
+    try {
+      const list = (await vivaldi.prefs.get("vivaldi.workspaces.list"))?.value;
+      return Array.isArray(list) ? list.map((w) => w.id) : null;
+    } catch (_) { return null; }
+  };
+
   window.__vm.native = {
     record,
+    spaceIds,
     moveToSpace,
     setSpace,
     movesByTab,

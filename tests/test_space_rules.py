@@ -238,6 +238,41 @@ class BarPick(unittest.TestCase):
     def test_without_the_record_the_tab_is_activated_as_before(self):
         self.assertEqual(self.pick(in_window(1, 6, 10), shown=None), {"kind": "activate"})
 
+    # Task 9a (8y bug 1): a tab of a deleted space (9 is in no list) is never switched to.
+    def known_pick(self, tab, known, here=1, here_shown=5, shown=5, shown_in=None):
+        return js("workspaces.tabPick(tab, shown, shownIn, { known, here, hereShown })", tab=tab, shown=shown, shownIn=shown_in,
+                  known=known, here=here, hereShown=here_shown)
+
+    def test_a_dead_tab_picked_in_its_own_window_joins_the_space_on_screen_there(self):
+        self.assertEqual(self.known_pick(in_window(1, 9, 10), [5, 6]), {"kind": "adopt", "window": 1, "space": 5})
+
+    def test_a_dead_tab_picked_from_another_window_comes_to_that_window_and_its_shown_space(self):
+        # Byron, 2026-11-14: a restored tab comes to the window you clicked in (Vivaldi restores it in its old window, 1)
+        self.assertEqual(self.known_pick(in_window(1, 9, 10), [5, 6], here=2, here_shown=6), {"kind": "adopt", "window": 2, "space": 6})
+        self.assertEqual(self.known_pick(in_window(1, 9, 10), [5, 6], here=2, here_shown=0), {"kind": "adopt", "window": 2, "space": 0})
+
+    def test_a_dead_tab_on_screen_joins_the_recorded_space(self):
+        # the record was left on default by Vivaldi's delete; the tab joins default and stays where it is
+        self.assertEqual(self.known_pick(in_window(1, 9, 10), [5, 6], shown=0, here_shown=0), {"kind": "adopt", "window": 1, "space": 0})
+
+    def test_a_dead_tab_is_adopted_even_when_no_space_is_left(self):
+        self.assertEqual(self.known_pick(in_window(1, 9, 10), [], shown=0, here_shown=0), {"kind": "adopt", "window": 1, "space": 0})
+
+    def test_a_live_parked_tab_still_switches_its_window_when_the_list_is_known(self):
+        self.assertEqual(self.known_pick(in_window(1, 6, 10), [5, 6]), {"kind": "switch", "window": 1, "space": 6})
+        self.assertEqual(self.known_pick(in_window(1, 6, 10), [5, 6], shown_in=2), {"kind": "focus", "window": 2})
+
+    def test_with_the_list_unreadable_a_named_space_is_never_switched_to(self):
+        # it could be a deleted one: only activated (the old behaviour without the record)
+        self.assertEqual(self.known_pick(in_window(1, 9, 10), None), {"kind": "activate"})
+        self.assertEqual(self.known_pick(in_window(1, 6, 10), None), {"kind": "activate"})
+        # the default space always exists
+        self.assertEqual(self.known_pick(in_window(1, 0, 10), None), {"kind": "switch", "window": 1, "space": 0})
+
+    def test_dead_space_tells_a_deleted_space_from_a_live_one(self):
+        self.assertEqual(js("[workspaces.deadSpace(a, [5]), workspaces.deadSpace(b, [5]), workspaces.deadSpace(c, [5]), workspaces.deadSpace(a, null)]",
+                            a=in_window(1, 9, 1), b=in_window(1, 5, 2), c=in_window(1, 0, 3)), [True, False, False, False])
+
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class LivesIn(unittest.TestCase):
