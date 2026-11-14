@@ -1284,9 +1284,24 @@
       window.dispatchEvent(new CustomEvent("vm-toast", { detail: "Could not delete the space. Use Vivaldi's Workspaces button." }));
       return;
     }
-    const win = await chrome.windows.getCurrent();
-    await remove(win.id, item.id);
-    refresh(false);
+    // Vivaldi's remover switches only the window it is given off the space; a window showing it elsewhere stayed recorded
+    // on the deleted id (about 0.5 s, until repair 1), and a tab made there meanwhile was filed under it (task 8y). So
+    // that window is the one given: Vivaldi switches it to its default space before it closes the space's tabs. Not a
+    // window holding nothing but this space: it closes with them, as the confirmation says (a switch would keep it open
+    // on a new start page). Under the repair busy mark, so no repair acts on the half-done state.
+    const end = window.__vm.spaceRepair?.gesture() ?? null;
+    try {
+      const win = await chrome.windows.getCurrent();
+      const shownIn = window.__vm.native?.record()?.all().get(item.id);
+      let target = win.id;
+      if (shownIn != null && shownIn !== win.id) {
+        const there = await chrome.tabs.query({ windowId: shownIn }).catch(() => []);
+        if (there.some((t) => spacesOf.of(t) !== item.id)) target = shownIn;
+      }
+      await remove(target, item.id);
+      // Vivaldi's switch of that window may bring it to the front: the window the delete was asked in keeps the focus
+      if (target !== win.id) await chrome.windows.update(win.id, { focused: true }).catch(() => {});
+    } finally { end?.(); refresh(false); }
   };
 
   const openCreateSpaceDialog = async () => {

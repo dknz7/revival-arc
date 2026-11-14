@@ -114,7 +114,7 @@ Vivarc checks after the events that can break an invariant (tab activated, tab m
 4. **A window close leaves rehomed tabs parked** (D2): no change. They stay where Vivaldi put them, now in one window by repair 3, and a click on the space goes there.
 
 ### Deleting a space
-The confirmation says how many tabs will close and in how many windows. After the delete, any window still recorded on it is switched to default (F2). If a window holds nothing but that space, the confirmation says the window will close too (F3).
+The confirmation says how many tabs will close and in how many windows. After the delete, any window still recorded on it is switched to default (F2). If a window holds nothing but that space, the confirmation says the window will close too (F3). A space shown in **another** window is switched off there first (Task 9a): Vivaldi's delete switches only the window it is given, so that window is the one given, and Vivaldi switches it to its default space before it closes the space's tabs. Before, that window stayed recorded on the deleted id for about 0.5 s (task 8y), and a tab made there meanwhile was filed under it. A window holding nothing but that space is not switched (it closes with the tabs). The window the delete was asked in keeps the focus.
 
 ## Part 3: decisions (Byron, 2026-11-06)
 1. **A plain click on a space parked in another window: go there.** That window switches to the space and comes to the front. (Not chosen: Vivaldi's native "pull it here".)
