@@ -144,7 +144,7 @@
   const passes = async () => {
     for (let pass = 1; ; pass++) {
       if (busyFor()) return "wait";
-      const snap = await snapshot();
+      let snap = await snapshot();
       if (!snap) return "done";
       if (!snap.record || !window.__vm.native.hasSwitch()) {
         warnOnce("record", "[vivarc] repairs are off: Vivaldi's workspace record or switch could not be found");
@@ -152,8 +152,13 @@
       }
       const heal = await confirmHeal(snap);
       if (busyFor()) return "wait";
-      // planned on the tabs as they are after the heal's wait
-      const plan = spacesOf.repairPlan(heal.length ? { ...snap, tabs: await chrome.tabs.query({ windowType: "normal" }), heal } : snap);
+      // The heal waited about 1 s: the whole plan is made on a fresh snapshot (a record from before the wait, beside the
+      // tabs after it, could snap back a switch made in between).
+      if (heal.length) {
+        snap = await snapshot();
+        if (!snap?.record) return "done";
+      }
+      const plan = spacesOf.repairPlan(heal.length ? { ...snap, heal } : snap);
       if (!plan.length) return "done";
       if (pass > MAX_PASSES) return "stuck";
       for (const step of plan) await carryOut(step);
