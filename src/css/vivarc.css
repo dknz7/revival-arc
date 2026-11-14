@@ -815,6 +815,15 @@
 }
 @media (prefers-reduced-motion: reduce) { #browser.vm-on #vm-switch.in { transition: none; } }
 
+/* Picked tab rows (09-select.js; ported from KASOGIT/vivarc#147): Ctrl/Cmd+click and Shift+click. An outlined, lightly
+   filled row, so a picked row reads apart from the one on screen (which keeps its own fill under the outline). */
+#browser.vm-on #vm-panel .vm-tab.vm-selected {
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 70%, transparent);
+  background-color: color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 14%, transparent);
+}
+#browser.vm-on #vm-panel .vm-tab.vm-selected.active { background-color: color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 24%, transparent); }
+#browser.vm-on.vm-glass #vm-panel .vm-tab.vm-selected { box-shadow: var(--vm-lozenge-rim), inset 0 0 0 1.5px color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 75%, transparent); }
+
 /* Liquid glass (setting "glass"), after Apple's Human Interface Guidelines, Materials: glass is for the layer of controls
    and navigation (sidebar, menus, command bar, dialogs), never for the content layer, and never stacked on itself, so the
    rows and tiles inside a glass surface keep plain fills. This is the regular variant: blurred and saturated backdrop,

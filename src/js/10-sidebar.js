@@ -968,16 +968,102 @@
     ];
   };
 
+  // ---- picking several tabs (ported from KASOGIT/vivarc#147, 515ca05; the logic is 09-select.js) ----
+  // Ctrl+click (Cmd+click on a Mac) picks a tab row, Shift+click a range; a right-click on a picked row then offers Stack N
+  // Tabs (a tab folder), Remove from Folder, Move N Tabs to <Space>, Close N Tabs and Clear Selection. Escape or a plain
+  // click lets go. Only rows listed in the space on screen can be picked (a re-render drops the rest), so nothing here
+  // reaches another space or window. Shift+click on a page's link is Peek's, in the page, not here.
+  const selecting = window.__vm.select;
+  let picked = [];
+  let pickAnchor = null;
+  const listedRows = () => [...(panel?.querySelectorAll(".vm-tab[data-tab-id]") ?? [])].filter((r) => !r.closest("[inert]"));
+  const listedIds = () => listedRows().map((r) => Number(r.dataset.tabId));
+  const paintPicked = () => {
+    for (const r of panel?.querySelectorAll(".vm-tab[data-tab-id]") ?? []) r.classList.toggle("vm-selected", picked.includes(Number(r.dataset.tabId)));
+  };
+  const clearPicked = () => { if (!picked.length && pickAnchor == null) return; picked = []; pickAnchor = null; paintPicked(); };
+  const pickRow = (e, tab) => {
+    const order = listedIds();
+    const active = state.tabs.find((t) => t.active)?.id ?? null;
+    ({ selected: picked, anchor: pickAnchor } = selecting.pick({ selected: picked, anchor: pickAnchor, active, order }, tab.id, { extend: !!e.shiftKey }));
+    paintPicked();
+  };
+  const pickedTabs = () => state.tabs.filter((t) => picked.includes(t.id)).sort((a, b) => a.index - b.index);
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") clearPicked(); });
+  window.__vm?.onShortcut((key) => { if (key === "esc") clearPicked(); });
+  // A plain click anywhere in the sidebar lets go, except on a folder's head, which only opens or shuts the folder (so a
+  // shut folder can be opened to pick more).
+  document.addEventListener("click", (e) => {
+    if (!panel?.contains(e.target) || selecting.picking(e, window.__vm.windows)) return;
+    if (e.target.closest?.(".vm-folder-head")) return;
+    clearPicked();
+  });
+  // Vivaldi's own stack of the picked tabs (as a drag onto a tab makes one), named as it is made, then read back: every
+  // tab in the one new folder and still in the space on screen, or the menu says so.
+  const stackPicked = async (tabs) => {
+    if (tabs.length < 2) return;
+    const tweaks = (await isModern()) ? ["do-not-reparent", "create-new-group"] : ["do-not-reparent", "create-new-group", "target-is-tab"];
+    const top = tabs[tabs.length - 1]; // the folder goes where the top picked row was
+    const result = await stackMove({ tabIds: [top.id, ...tabs.filter((t) => t.id !== top.id).map((t) => t.id)], target: top.id, tweaks });
+    if (!result?.group) throw new Error("Vivaldi did not make the stack");
+    const now = await Promise.all(tabs.map((t) => chrome.tabs.get(t.id).catch(() => null)));
+    if (now.some((t) => !t || stacksOf.stackOf(t) !== result.group || spacesOf.of(t) !== state.active)) throw new Error("the stack did not take every tab, in this space");
+    state.renameId = `stack:${result.group}`;
+  };
+  const leavePicked = async (tabs) => {
+    for (const group of selecting.byFolder(tabs, stacksOf.stackOf, shownStacks)) {
+      const folder = state.tabs.filter((t) => stacksOf.stackOf(t) === group.id);
+      await leaveFolder(group.tabs, Math.max(...folder.map((t) => t.index)));
+    }
+  };
+  const movePicked = async (tabs, target) => {
+    try {
+      await window.__vm.native.moveToSpace(tabs.map((t) => t.id), target.id);
+      window.__vm.spaceRepair?.schedule();
+    } catch (error) {
+      console.warn("[vivarc] move tabs to space:", error);
+      window.dispatchEvent(new CustomEvent("vm-toast", { detail: error?.code === "parked-elsewhere"
+        ? "That space is in another window. Show it there first, then move the tabs."
+        : "Could not move every tab. Use Vivaldi's Move to Workspace command." }));
+    } finally { refresh(false); }
+  };
+  // As Close All Tabs in a folder: closing every tab of the space would leave it empty, so a new tab stays.
+  const closePicked = async (tabs) => {
+    if (tabs.length === state.tabs.length) await chrome.tabs.create({});
+    await chrome.tabs.remove(tabs.map((t) => t.id));
+  };
+  const pickedMenu = () => {
+    const tabs = pickedTabs();
+    const label = selecting.labels(tabs.length);
+    const done = (run, failed) => folderAction(async () => { clearPicked(); await run(); }, failed);
+    const inFolders = selecting.byFolder(tabs, stacksOf.stackOf, shownStacks).length > 0;
+    return [
+      [label.stack, done(() => stackPicked(tabs), "Could not stack the tabs")],
+      ...(inFolders ? [["Remove from Folder", done(() => leavePicked(tabs), "Could not take the tabs out of their folder")]] : []),
+      [],
+      ...moveTargets().map((target) => [label.move(target.name), () => { clearPicked(); movePicked(tabs, target); }]),
+      ...(moveTargets().length ? [[]] : []),
+      ["Clear Selection", clearPicked],
+      [label.close, done(() => closePicked(tabs), "Could not close the tabs")],
+    ];
+  };
+
   const tabRow = (tab, depth = 0) => {
     const row = el("div", "vm-row vm-tab");
+    row.dataset.tabId = String(tab.id);
     row.style.paddingLeft = `${8 + depth * 20}px`;
     if (tab.active) row.classList.add("active");
+    if (picked.includes(tab.id)) row.classList.add("vm-selected");
     if (tab.discarded) row.classList.add("discarded");
     row.title = tab.url;
     row.append(tabIcon(tab, tab.url, tab.favIconUrl), ...playingIcon(tab), el("span", "vm-title", spacesOf.startTitle(tab) || tab.title || tab.url));
     if (window.__vm.tilingOf(tab)) row.append(el("span", "vm-split-mark", "◫"));
     row.append(actionButton("×", "Close tab", () => chrome.tabs.remove(tab.id)));
-    row.addEventListener("click", () => chrome.tabs.update(tab.id, { active: true }));
+    row.addEventListener("click", (e) => {
+      if (selecting.picking(e, window.__vm.windows)) { pickRow(e, tab); return; }
+      clearPicked();
+      chrome.tabs.update(tab.id, { active: true });
+    });
     row.addEventListener("auxclick", (e) => { if (e.button === 1) chrome.tabs.remove(tab.id); });
     wireDrag(row, { type: "tab", tab, url: tab.url });
     // The middle of the row makes a folder with this tab (or joins its folder); its edges move the tab beside it.
@@ -1000,6 +1086,7 @@
       e.preventDefault();
       e.stopPropagation();
       const at = { clientX: e.clientX, clientY: e.clientY, preventDefault() {}, stopPropagation() {} };
+      if (picked.length > 1 && picked.includes(tab.id)) { showMenu(at, pickedMenu()); return; }
       const [others, inWindow] = await Promise.all([otherWindows(), chrome.tabs.query({ windowId: tab.windowId }).then((t) => t.length, () => 0)]);
       showMenu(at, [
         ...(depth ? [["Remove from Folder", removeFromFolder], []] : []),
@@ -1598,6 +1685,9 @@
       onAcross: (_zone, info) => dropAcross(info, async () => (await chrome.tabs.query({ windowId: myWindow() })).length),
     });
     body.append(fresh);
+    const listedNow = listed.flatMap((e) => (e.type === "stack" ? e.tabs : [e.tab])).map((t) => t.id);
+    picked = selecting.prune(picked, listedNow);
+    if (pickAnchor != null && !listedNow.includes(pickAnchor)) pickAnchor = null;
     listed.forEach((e) => body.append(e.type === "stack" ? stackNode(e) : tabRow(e.tab)));
 
     const bar = spaceBar();
