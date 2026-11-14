@@ -581,7 +581,7 @@
       const zone = zoneOf(e), payload = drag;
       drag = null;
       clearDrop();
-      try { await onDrop(zone, payload); } catch (err) { console.warn("[vivarc] drop:", err); }
+      try { await onDrop(zone, payload, { x: e.clientX, y: e.clientY }); } catch (err) { console.warn("[vivarc] drop:", err); }
     });
   };
 
@@ -1651,7 +1651,17 @@
       wireDrop(grid, {
         horizontal: true,
         accept: (d) => !(d.type === "bm" && d.node.children),
-        onDrop: async (_zone, data) => insertPinned(data, (await ensureFolder("Favorites")).id, null),
+        // A drop in a gap between tiles lands beside the nearest tile, on the side the pointer is (09-fav-drop.js; ported
+        // from KASOGIT/vivarc#138), as a drop on that tile would; with no tile it goes to the end.
+        onDrop: async (_zone, data, at) => {
+          const tiles = [...grid.children].filter((t) => t.classList.contains("vm-fav"));
+          const centers = tiles.map((t) => { const r = t.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+          const slot = window.__vm.favDrop?.slot(centers, at);
+          const target = slot ? favLeaves[slot.index] : null;
+          if (!target) return insertPinned(data, (await ensureFolder("Favorites")).id, null);
+          if (data.type === "bm" && data.node.id === target.id) return;
+          await insertPinned(data, target.parentId, target.index + (slot.after ? 1 : 0));
+        },
       });
     }
     if (state.space) {

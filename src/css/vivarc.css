@@ -824,6 +824,12 @@
 #browser.vm-on #vm-panel .vm-tab.vm-selected.active { background-color: color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 24%, transparent); }
 #browser.vm-on.vm-glass #vm-panel .vm-tab.vm-selected { box-shadow: var(--vm-lozenge-rim), inset 0 0 0 1.5px color-mix(in srgb, var(--colorHighlightBg, #5d7aee) 75%, transparent); }
 
+/* While a favorite is dragged the tiles stay put (a tile growing under the pointer would move the drop zones), and the
+   drop marker shows over the glass tiles' rim (ported from KASOGIT/vivarc#138). */
+#browser.vm-on.vm-dragging #vm-panel .vm-favs > .vm-fav:is(:hover, :active) { transform: none; } /* outranks the glass hover below */
+#browser.vm-on.vm-glass #vm-panel .vm-fav.drop-before { box-shadow: var(--vm-lozenge-rim), inset 3px 0 0 0 var(--colorHighlightBg, #7b8cff); }
+#browser.vm-on.vm-glass #vm-panel .vm-fav.drop-after { box-shadow: var(--vm-lozenge-rim), inset -3px 0 0 0 var(--colorHighlightBg, #7b8cff); }
+
 /* Liquid glass (setting "glass"), after Apple's Human Interface Guidelines, Materials: glass is for the layer of controls
    and navigation (sidebar, menus, command bar, dialogs), never for the content layer, and never stacked on itself, so the
    rows and tiles inside a glass surface keep plain fills. This is the regular variant: blurred and saturated backdrop,
