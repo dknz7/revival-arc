@@ -83,10 +83,11 @@ const sets = [], logs = [], prefs = { "vivaldi.actions": [sc.table], "vivaldi.to
 const ev = { addListener() {} };
 global.setTimeout = () => 0;
 global.console = { log: (m) => logs.push(m), warn: (m) => logs.push(m) };
-global.chrome = { extension: { inIncognitoContext: sc.incognito },
+const bg = {}, order = [];
+global.chrome = { extension: { inIncognitoContext: sc.incognito, getBackgroundPage: () => new Proxy(bg, { set: (o, k, v) => { order.push("bg:" + String(k)); o[k] = v; return true; } }) },
   windows: { getCurrent: async () => ({ id: 1, type: "normal" }), getAll: async () => [{ id: sc.leader ? 1 : 0, type: "normal" }, { id: 1, type: "normal" }] },
   tabs: { query: async () => [], update: async () => ({}), onCreated: ev, onUpdated: ev } };
-global.vivaldi = { prefs: { get: async (path) => ({ value: JSON.parse(JSON.stringify(prefs[path] ?? null)) }), set: async ({ path, value }) => { sets.push(path); prefs[path] = value; } } };
+global.vivaldi = { prefs: { get: async (path) => ({ value: JSON.parse(JSON.stringify(prefs[path] ?? null)) }), set: async ({ path, value }) => { sets.push(path); order.push("set:" + path); prefs[path] = value; } } };
 const stored = new Map(Object.entries(sc.stored || {}));
 global.window = { __vm: { config: { startUrl: "file:///guide.html" }, windows: true, shortcut: (c) => c,
   workspaces: { leaderOf: (wins) => Math.min(...wins.map((w) => w.id)) },
@@ -94,7 +95,9 @@ global.window = { __vm: { config: { startUrl: "file:///guide.html" }, windows: t
 vm.runInThisContext(fs.readFileSync(require("path").join(process.argv[1], "05-bootstrap.js"), "utf8"));
 (async () => {
   for (let i = 0; i < 80; i++) await new Promise((r) => setImmediate(r));
-  process.stdout.write(JSON.stringify({ sets, stored: Object.fromEntries(stored), table: prefs["vivaldi.actions"][0], logs }) + "\n");
+  const ready = await Promise.race([window.__vm.bootstrap.keysReady.then(() => true), new Promise((r) => setImmediate(() => r(false)))]);
+  process.stdout.write(JSON.stringify({ sets, stored: Object.fromEntries(stored), table: prefs["vivaldi.actions"][0], logs, bg, order, ready,
+    freedThisRun: await window.__vm.bootstrap.freedThisRun() }) + "\n");
 })();
 '''
 VIVALDI = {"COMMAND_TAB_SWITCH_FORWARD_SETTING": {"shortcuts": ["ctrl+tab"]}, "COMMAND_TAB_SWITCH_BACK_SETTING": {"shortcuts": ["ctrl+shift+tab"]},
@@ -115,7 +118,14 @@ class FreeingCtrlTab(unittest.TestCase):
         self.assertEqual(out["table"]["COMMAND_TAB_SWITCH_BACK_SETTING"]["shortcuts"], [])
         self.assertEqual(out["table"]["COMMAND_PAGE_BACK"]["shortcuts"], ["alt+left"])
         self.assertTrue(out["stored"]["tabKeysFreed"])
-        self.assertIsInstance(out["stored"]["tabKeysFreedAt"], (int, float))
+        # the run is marked on the shared background page BEFORE the table is written, and nothing is kept with a clock
+        self.assertTrue(out["bg"]["__vivarcTabKeysFreedRun"])
+        self.assertTrue(out["freedThisRun"])
+        mark = out["order"].index("bg:__vivarcTabKeysFreedRun")
+        self.assertEqual(out["order"][:mark].count("set:vivaldi.actions"), 1)  # only Ctrl+S's write came before the mark
+        self.assertEqual(out["order"][mark + 1], "set:vivaldi.actions")  # the tab keys' write comes right after it
+        self.assertNotIn("tabKeysFreedAt", out["stored"])
+        self.assertTrue(out["ready"])
         self.assertIn("[vivarc] Ctrl+Tab freed from COMMAND_TAB_SWITCH_FORWARD_SETTING", out["logs"])
         self.assertIn("[vivarc] Ctrl+Shift+Tab freed from COMMAND_TAB_SWITCH_BACK_SETTING", out["logs"])
 
@@ -130,7 +140,8 @@ class FreeingCtrlTab(unittest.TestCase):
         # no freeing time: Vivaldi already did not have the key at launch, so the switcher can start now
         out = setup_run(table={"COMMAND_PAGE_BACK": {"shortcuts": ["alt+left"]}})
         self.assertTrue(out["stored"]["tabKeysFreed"])
-        self.assertNotIn("tabKeysFreedAt", out["stored"])
+        self.assertFalse(out["freedThisRun"])  # nothing freed this run: the switcher may take the keys now
+        self.assertTrue(out["ready"])
 
     def test_once_per_profile_a_key_put_back_later_stays(self):
         out = setup_run(stored={"tabKeysFreed": True, "sidebarKeyFreed": True, "bootstrap": 99, "extensionsDropdown": True})
@@ -146,6 +157,38 @@ class FreeingCtrlTab(unittest.TestCase):
         out = setup_run(incognito=True)
         self.assertEqual(out["sets"], [])
         self.assertEqual(out["stored"], {})
+        self.assertTrue(out["ready"])  # its switcher does not wait for a setup that never runs
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the tab switcher's JavaScript")
+class Decision(unittest.TestCase):
+    """When the switcher takes Ctrl+Tab. Anything not known leaves it to Vivaldi, whose cycling then works."""
+
+    def decide(self, **state):
+        return js("window.__vm.switcher.decision(state)", state=state)
+
+    def test_a_fresh_run_vivaldi_still_holds_the_keys(self):
+        out = self.decide(readable=True, holders=["COMMAND_TAB_SWITCH_FORWARD_SETTING"], freedThisRun=False)
+        self.assertFalse(out["armed"])
+        self.assertIn("COMMAND_TAB_SWITCH_FORWARD_SETTING", out["reason"])
+
+    def test_freed_during_this_run_vivaldi_keeps_them_until_the_next_start(self):
+        self.assertFalse(self.decide(readable=True, holders=[], freedThisRun=True)["armed"])
+
+    def test_freed_in_a_previous_run_the_switcher_takes_them(self):
+        self.assertEqual(self.decide(readable=True, holders=[], freedThisRun=False), {"armed": True, "reason": "armed"})
+
+    def test_a_read_error_leaves_ctrl_tab_to_vivaldi(self):
+        self.assertFalse(self.decide(readable=False)["armed"])
+        self.assertFalse(self.decide(readable=True, holders=[], freedThisRun=None)["armed"])
+
+    def test_no_clock_is_read_so_a_clock_step_cannot_strand_it(self):
+        # an old build's freeing time, in the future after a clock step back, changes nothing: the decision has no clock
+        self.assertTrue(self.decide(readable=True, holders=[], freedThisRun=False, tabKeysFreedAt=10 ** 15)["armed"])
+
+    def test_the_fallback_card_names_the_site(self):
+        self.assertEqual(js("[window.__vm.switcher.hostOf('https://www.github.com/x'), window.__vm.switcher.monogram({ url: 'https://news.ycombinator.com/' }), window.__vm.switcher.monogram({ url: 'about:blank', title: 'start' })]"),
+                         ["github.com", "N", "S"])
 
 
 if __name__ == "__main__":
