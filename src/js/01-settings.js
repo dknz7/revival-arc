@@ -14,6 +14,8 @@
       fromConfig: (c) => c.compactBottomBar, onClass: "vm-compact-bottom" },
     { key: "searchSuggestions", label: "Search suggestions", hint: "Show suggestions from your default search engine, when its Suggest URL is configured.", default: true,
       fromConfig: (c) => (c.suggestions === undefined ? undefined : ["default", "ddg"].includes(c.suggestions)) },
+    { key: "backCloses", label: "Back closes opened tabs", hint: "Back on a tab a link opened, with no page to go back to, closes it and shows the page the link was on, like Arc. Alt+Left (Cmd+Left on a Mac), the mouse's Back button and the Back button.",
+      default: false, onClass: "vm-back-closes" },
     { key: "diaLayout", label: "Dia layout", hint: "A slim row over the page for back, forward, reload, the page's site and title, and the window buttons, with the sidebar up to the top. Off puts your own toolbar and window frame back.",
       default: false, onClass: "vm-dia" },
     { key: "cleanupDaily", label: "Clean up tabs daily (idle 7 days)", hint: "Once a day, close the tabs you have not used for 7 days, in every space. Pinned tabs, favorites, tabs on screen and tabs playing sound stay. Cleaned tabs wait in New Tab menu > Recently Cleaned for 30 days.",
