@@ -56,12 +56,42 @@ export class Cdp {
   // stalling for good.
   send(method, params = {}, deadlineMs = 90000) {
     if (this.closed) return Promise.reject(new Error("closed"));
+    this.track(method, params);
     const id = ++this.id;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { if (this.pending.delete(id)) reject(new Error(`no reply to ${method} in ${Math.round(deadlineMs / 1000)} s`)); }, deadlineMs);
       this.pending.set(id, { resolve: (v) => { clearTimeout(timer); resolve(v); }, reject: (e) => { clearTimeout(timer); reject(e); } });
       this.ws.send(JSON.stringify({ id, method, params }));
     });
+  }
+  // What this connection holds down (Task 9b fix round 1): a mouse button pressed and not released, a key (or a modifier)
+  // down and not up. Recorded as it is SENT, so a press whose reply never comes (the input-ack hang, task 8v) still counts
+  // as held. releaseAll() lets everything go, best effort, each with a short deadline: the harness calls it after every case.
+  track(method, params) {
+    this.held ??= { buttons: new Map(), keys: new Map() };
+    if (method === "Input.dispatchMouseEvent") {
+      const b = params.button || "left";
+      if (params.type === "mousePressed") this.held.buttons.set(b, { x: params.x, y: params.y });
+      else if (params.type === "mouseReleased") this.held.buttons.delete(b);
+    } else if (method === "Input.dispatchKeyEvent") {
+      const k = `${params.code || params.key}`;
+      if (params.type === "keyDown" || params.type === "rawKeyDown") this.held.keys.set(k, { key: params.key, code: params.code, windowsVirtualKeyCode: params.windowsVirtualKeyCode, nativeVirtualKeyCode: params.nativeVirtualKeyCode });
+      else if (params.type === "keyUp") this.held.keys.delete(k);
+    }
+  }
+  heldNow() { return { buttons: [...(this.held?.buttons.keys() || [])], keys: [...(this.held?.keys.keys() || [])] }; }
+  async releaseAll(deadlineMs = 5000) {
+    if (!this.held || this.closed) return this.heldNow();
+    const was = this.heldNow();
+    for (const [button, at] of [...this.held.buttons]) {
+      await this.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: at.x ?? 0, y: at.y ?? 0, button, buttons: 0, clickCount: 1 }, deadlineMs).catch(() => {});
+      this.held.buttons.delete(button);
+    }
+    for (const [k, key] of [...this.held.keys].reverse()) {
+      await this.send("Input.dispatchKeyEvent", { type: "keyUp", ...key, modifiers: 0 }, deadlineMs).catch(() => {});
+      this.held.keys.delete(k);
+    }
+    return was;
   }
   // The reply's deadline is never shorter than the caller's own timeout (CU.over-the-cap evaluates for up to 120 s): the
   // eval's own timeout is the one that reports.

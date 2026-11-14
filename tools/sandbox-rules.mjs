@@ -49,6 +49,41 @@ const waitFor = async (fn, ms = 8000, every = 200) => {
   return v;
 };
 
+// ---------- input (Task 9b fix round 1) ----------
+// Every press is released and every key and modifier comes back up, in a finally, even when a send fails or its reply never
+// comes (the input-ack hang): a held button or key would leak into the next case. The release is best effort with a short
+// deadline. On top of that, runCase lets go of anything a connection still holds (Cdp.releaseAll, sandbox-lib.mjs).
+const RELEASE_MS = 5000;
+const cdpOf = (win) => (typeof win === "number" ? h.cdp(win) : win);
+// A click (or a press held `holdMs`) at x, y: moved there first unless `move` is false.
+const tap = async (win, x, y, { button = "left", clickCount = 1, move = true, modifiers = 0, holdMs = 0 } = {}) => {
+  const c = cdpOf(win);
+  if (move) await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y, modifiers });
+  try {
+    await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, buttons: button === "right" ? 2 : 1, clickCount, modifiers });
+    if (holdMs) await sleep(holdMs);
+  } finally {
+    await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, buttons: 0, clickCount, modifiers }, RELEASE_MS).catch(() => {});
+  }
+};
+const MOD_KEYS = [[2, { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 }], [1, { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 18 }],
+  [4, { key: "Meta", code: "MetaLeft", windowsVirtualKeyCode: 91, nativeVirtualKeyCode: 91 }], [8, { key: "Shift", code: "ShiftLeft", windowsVirtualKeyCode: 16, nativeVirtualKeyCode: 16 }]];
+// A key as the keyboard sends it: its modifiers down, the key down (with its text, for keys that type: Enter, Space), held
+// `holdMs`, then the key up and the modifiers up in a finally. `native`: with nativeVirtualKeyCode (Vivaldi's shortcuts read it).
+const keyTap = async (win, key, code, vk, { mods = 0, text = null, native = true, holdMs = 60 } = {}) => {
+  const c = cdpOf(win);
+  const ids = { key, code, windowsVirtualKeyCode: vk, ...(native ? { nativeVirtualKeyCode: vk } : {}) };
+  const down = [];
+  try {
+    for (const [bit, m] of MOD_KEYS) if (mods & bit) { down.push(m); await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...m, modifiers: mods }); }
+    await c.send("Input.dispatchKeyEvent", text != null ? { type: "keyDown", ...ids, text, modifiers: mods } : { type: "rawKeyDown", ...ids, modifiers: mods });
+    if (holdMs) await sleep(holdMs);
+  } finally {
+    await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...ids, modifiers: mods }, RELEASE_MS).catch(() => {});
+    for (const m of down.reverse()) await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...m, modifiers: 0 }, RELEASE_MS).catch(() => {});
+  }
+};
+
 let server = null, origin = null;
 const startServer = async () => {
   server = http.createServer((req, res) => {
@@ -543,7 +578,7 @@ def("D.sidebar-button", {
 const cdpClick = async (win, sel) => {
   const p = await h.ev(`(() => { const e = document.querySelector(${J(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2]; })()`, win);
   if (!p) return false;
-  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.cdp(win).send("Input.dispatchMouseEvent", { type, x: p[0], y: p[1], button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+  await tap(win, p[0], p[1]);
   return true;
 };
 // The sidebar hides per window (Task 8e): a class on this window's #browser, never Vivaldi's profile-wide pref, so the other
@@ -555,12 +590,7 @@ const sideState = (win) => h.ev(`(() => { const b = document.querySelector("#bro
 // onKeyboardShortcut hears it; every window hears it, and only the one it was pressed in may act.
 const ctrlS = async (win) => {
   await focus(win);
-  const c = h.cdp(win), ctrl = { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 }, s = { key: "s", code: "KeyS", windowsVirtualKeyCode: 83, nativeVirtualKeyCode: 83 };
-  await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...ctrl, modifiers: 2 });
-  await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...s, modifiers: 2 });
-  await sleep(60);
-  await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...s, modifiers: 2 });
-  await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...ctrl, modifiers: 0 });
+  await keyTap(win, "s", "KeyS", 83, { mods: 2 });
   await sleep(900);
 };
 const twoWindows = async () => { await mkWin("W", { width: 1100 }); await mkWin("O", { width: 1100 }); await focus(ctx.W); await sleep(1000); };
@@ -817,10 +847,10 @@ const SHIELD_STATE = (win) => h.ev(`(() => { const p = document.querySelector(".
     shield: sr ? [Math.round(sr.left), Math.round(sr.bottom), Math.round(sr.right)] : null, W: innerWidth, fieldH: fr ? Math.round(fr.height) : null, onTop: at ? !!at.closest(".SiteInfo") : null,
     active: document.activeElement?.tagName ?? null, inField: !!document.activeElement?.closest?.(".UrlBar-AddressField") && !document.activeElement.closest(".SiteInfo"), expanded: s?.getAttribute("aria-expanded") ?? null,
     level: document.querySelector(".SiteInfo-Field-ContentBlocker select")?.selectedIndex ?? null, bar: !!document.querySelector("#vm-cmd") }; })()`, win);
-const pressKey = async (win, key, code, vk) => { for (const type of ["rawKeyDown", "keyUp"]) await h.cdp(win).send("Input.dispatchKeyEvent", { type, key, code, windowsVirtualKeyCode: vk }); };
+const pressKey = (win, key, code, vk) => keyTap(win, key, code, vk, { native: false, holdMs: 0 });
 const overrideOf = (win, host) => h.ev(`new Promise((r) => vivaldi.contentBlocking.getAllBlockingCategoryOverrides("ad_blocking", (list) => r((list || []).find((o) => o.domain === ${J(host)})?.selected_category?.blocking_category ?? null)))`, win);
 const pageClick = async (win) => { const p = await h.ev(`(() => { const r = document.querySelector("#webview-container").getBoundingClientRect(); return [r.left + 80, r.bottom - 80]; })()`, win);
-  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.cdp(win).send("Input.dispatchMouseEvent", { type, x: p[0], y: p[1], button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 }); };
+  await tap(win, p[0], p[1]); };
 const shieldOpenOk = (x, what) => !x ? [`${what}: no state`] : [x.open && x.mark ? null : `${what}: popup ${x.open}, mark ${x.mark}`, x.fieldH === 0 ? null : `${what}: the address field is ${x.fieldH}px tall`,
   x.onTop ? null : `${what}: the popup is not on top`, x.expanded === "true" ? null : `${what}: aria-expanded ${x.expanded}`,
   x.pop && x.shield && x.pop[1] >= x.shield[1] && x.pop[1] - x.shield[1] < 20 && x.pop[2] <= x.W && Math.abs(x.pop[2] - x.shield[2]) <= 2 ? null : `${what}: popup ${J(x.pop)} not under the Shield ${J(x.shield)}`];
@@ -929,15 +959,12 @@ def("D.shield-hidden-and-keys", {
     } finally { if ((await sideState(ctx.W)).hidden) await ctrlS(ctx.W); }
     // Enter as the keyboard sends it (a keyDown with its text, so the button activates), to the focused Shield.
     const enter = async () => { await h.ev(`(document.querySelector("#vm-dia-crumb .vm-dia-shield").focus(), 1)`, ctx.W);
-      await h.cdp(ctx.W).send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: String.fromCharCode(13) });
-      await h.cdp(ctx.W).send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 }); await sleep(900); };
+      await keyTap(ctx.W, "Enter", "Enter", 13, { text: String.fromCharCode(13), native: false, holdMs: 0 }); await sleep(900); };
     await enter(); r.keyOpen = await SHIELD_STATE(ctx.W);
     await enter(); r.keyClose = await SHIELD_STATE(ctx.W);
     await cdpClick(ctx.W, "#vm-dia-crumb .vm-dia-shield"); await sleep(900); r.open3 = await SHIELD_STATE(ctx.W);
     // Ctrl+L as the keyboard sends it while the popup is open
-    { const c = h.cdp(ctx.W), ctrl = { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 }, l = { key: "l", code: "KeyL", windowsVirtualKeyCode: 76, nativeVirtualKeyCode: 76 };
-      await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...ctrl, modifiers: 2 }); await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...l, modifiers: 2 }); await sleep(60);
-      await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...l, modifiers: 2 }); await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...ctrl, modifiers: 0 }); await sleep(900); }
+    await keyTap(ctx.W, "l", "KeyL", 76, { mods: 2 }); await sleep(900);
     r.fieldFocused = await h.ev(`(() => { const f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"), i = document.querySelector("#vm-cmd input"); return { mark: document.querySelector("#browser").classList.contains("vm-shield-open"),
       fieldH: Math.round(f.getBoundingClientRect().height), active: document.activeElement?.id, bar: !!i, inBar: !!i && document.activeElement === i, open: !!document.querySelector(".SiteInfo.button-popup") }; })()`, ctx.W);
     await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(400); await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(600);
@@ -957,14 +984,7 @@ def("D.shield-hidden-and-keys", {
 // the UI. The field must never take the cursor meanwhile (a focusin spy), nor float once the sidebar is back.
 // The device chooser lists this machine's devices: their names are made unreadable before any screenshot.
 const MASK_DEVICES = `(() => { if (!document.getElementById("vm-mask-devices")) { const s = document.createElement("style"); s.id = "vm-mask-devices"; s.textContent = ".device-list-container *, .device-list-container { color: transparent !important; text-shadow: none !important; } .device-list-container label { background: rgba(128,128,128,0.35) !important; border-radius: 4px; }"; document.head.append(s); } return 1; })()`;
-const keyCombo = async (c, key, code, vk, mods = 0) => {
-  const mod = mods & 2 ? { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 } : mods & 1 ? { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 18 } : null;
-  if (mod) await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...mod, modifiers: mods });
-  await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
-  await sleep(60);
-  await c.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers: mods });
-  if (mod) await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...mod, modifiers: 0 });
-};
+const keyCombo = (c, key, code, vk, mods = 0) => keyTap(c, key, code, vk, { mods });
 const focusPage = (win) => h.ev(`chrome.tabs.query({ active: true, windowId: ${win} }).then(([t]) => { document.getElementById(String(t.id))?.focus(); return document.activeElement?.tagName; })`, win);
 const focusUi = (win) => h.ev(`(document.activeElement?.blur?.(), document.body.focus(), document.activeElement?.tagName)`, win);
 const FIELD_SPY = `(() => { window.__fieldSpy = []; if (!window.__fieldSpyOn) { window.__fieldSpyOn = true; document.addEventListener("focusin", (e) => { if (e.target?.id === "urlFieldInput") window.__fieldSpy?.push(Date.now()); }, true); } return 1; })()`;
@@ -993,8 +1013,7 @@ for (const layout of ["dia", "arc"]) {
         // Enter on a new address navigates the same tab, the sidebar still hidden
         if (r.ctrlL.inBar) {
           await c.send("Input.insertText", { text: `${origin}/en-2` }); await sleep(300);
-          await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: String.fromCharCode(13) });
-          await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 });
+          await keyTap(c, "Enter", "Enter", 13, { text: String.fromCharCode(13), holdMs: 0 });
           r.after = await waitFor(async () => { const t = await activeUrl(ctx.W); return t.url.endsWith("/en-2") ? t : null; }, 6000, 200) || await activeUrl(ctx.W);
           r.tabs = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
           r.enter = await BAR_STATE(ctx.W);
@@ -1073,7 +1092,7 @@ for (const layout of ["dia", "arc"]) {
         await h.ev(MASK_DEVICES, ctx.W);
         await shot(ctx.W, "hidden-sidebar-uncarded-popup");
         if (r.during.cancel) {
-          for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.cdp(ctx.W).send("Input.dispatchMouseEvent", { type, x: r.during.cancel[0], y: r.during.cancel[1], button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+          await tap(ctx.W, r.during.cancel[0], r.during.cancel[1]);
           r.gone = await waitFor(async () => { const x = await look(); return x.popup ? null : x; }, 5000, 150) || await look();
         }
         await sleep(400);
@@ -1610,7 +1629,7 @@ ntCase("N.chevron-and-menu", {
 ntCase("N.row-click-opens-bar", {
   act: async () => {
     const r = await h.ev(`(() => { const b = ${NT_ROW}.getBoundingClientRect(); return { l: b.left, y: b.top + b.height / 2 }; })()`, ctx.W);
-    await mouse(ctx.W, "mouseMoved", r.l + 30, r.y); await sleep(200); await mouse(ctx.W, "mousePressed", r.l + 30, r.y); await mouse(ctx.W, "mouseReleased", r.l + 30, r.y);
+    await mouse(ctx.W, "mouseMoved", r.l + 30, r.y); await sleep(200); await tap(ctx.W, r.l + 30, r.y, { move: false });
     const bar = await waitFor(() => hasEl(ctx.W, "#vm-cmd"), 4000);
     const menu = await hasEl(ctx.W, ".vm-menu");
     await escapeAll(ctx.W); await h.ev(`document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })) ?? 1`, ctx.W);
@@ -1713,8 +1732,8 @@ ntCase("N.press-during-refresh", {
       down = true;
       await mouse(win, "mousePressed", p.x, p.y);
       await sleep(1100); // past the moment it would render
-      down = false;
       await mouse(win, "mouseReleased", p.x, p.y);
+      down = false;
       r.menu = !!(await waitFor(() => hasEl(win, NT_MENU), 3000));
       r.spy = await h.ev(NT_SPY_READ, win);
     } finally {
@@ -1747,8 +1766,8 @@ ntCase("N.press-during-replace", {
       r.moved = await h.ev(`(() => { const panel = document.querySelector("#vm-panel"); const d = document.createElement("div"); d.id = "vm-8t-stand-in"; panel.after(d); return panel.nextElementSibling === d; })()`, win);
       await sleep(400); // place() has run (a mutation, then a frame)
       r.orderDuring = await h.ev(`document.querySelector("#vm-panel").nextElementSibling?.id ?? null`, win);
-      down = false;
       await mouse(win, "mouseReleased", p.x, p.y);
+      down = false;
       r.menu = !!(await waitFor(() => hasEl(win, NT_MENU), 3000));
       r.spy = await h.ev(NT_SPY_READ, win);
       r.orderAfter = await h.ev(`document.querySelector("#vm-panel").nextElementSibling?.id ?? "anchor"`, win);
@@ -2115,10 +2134,10 @@ ntCase("N.close-all-doubleclick", {
     const p = await hoverOn(ctx.W, menuRow("Close All Tabs")); if (!p) return { error: "no Close All Tabs row" };
     const count = () => h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
     const before = await count();
-    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y); // the click that opens the question
+    await tap(ctx.W, p.x, p.y, { move: false }); // the click that opens the question
     await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
     const under = await h.ev(`(() => { const e = document.elementFromPoint(${p.x}, ${p.y}); return e ? (e.textContent || e.className).slice(0, 40) : null; })()`, ctx.W);
-    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y); // ...and the second click of a double-click
+    await tap(ctx.W, p.x, p.y, { move: false }); // ...and the second click of a double-click
     await sleep(1200);
     return { before, after: await count(), under };
   },
@@ -2132,7 +2151,7 @@ ntCase("N.chevron-open-clears", {
     await openDropdown(ctx.W); out.litOpen = await lit();
     await escapeAll(ctx.W); await sleep(250); out.escape = await lit();
     await openDropdown(ctx.W);
-    await mouse(ctx.W, "mousePressed", 700, 420); await mouse(ctx.W, "mouseReleased", 700, 420); await sleep(250); out.outside = await lit(); out.outsideMenu = await hasEl(ctx.W, ".vm-menu");
+    await tap(ctx.W, 700, 420, { move: false }); await sleep(250); out.outside = await lit(); out.outsideMenu = await hasEl(ctx.W, ".vm-menu");
     await openDropdown(ctx.W);
     await clickOn(ctx.W, menuRow("Search Tabs…")); await sleep(300); out.pick = await lit();
     await h.ev(`document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })) ?? 1`, ctx.W);
@@ -2378,11 +2397,11 @@ cuCase("CU.clear-list", {
     const out = {};
     if (!(await openDropdown(ctx.W)) || !(await openFly(ctx.W, "Recently Cleaned"))) return { error: "no flyout" };
     const p = await hoverOn(ctx.W, flyRow("Clear list"));
-    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y);
+    await tap(ctx.W, p.x, p.y, { move: false });
     await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
     out.ask = await rowsOf(ctx.W, NT_MENU + " > div");
     out.under = await h.ev(`(() => { const e = document.elementFromPoint(${p.x}, ${p.y}); return e ? (e.textContent || e.className).slice(0, 40) : null; })()`, ctx.W);
-    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y); await sleep(600); // the second click of a double-click
+    await tap(ctx.W, p.x, p.y, { move: false }); await sleep(600); // the second click of a double-click
     out.afterDouble = (await cleanedList(ctx.W)).length;
     if (!(await hasEl(ctx.W, ".vm-menu"))) { await openDropdown(ctx.W); await openFly(ctx.W, "Recently Cleaned"); await clickOn(ctx.W, flyRow("Clear list")); await waitFor(() => hasEl(ctx.W, NT_MENU), 3000); }
     await clickOn(ctx.W, menuRow("Cancel")); await sleep(500);
@@ -2461,16 +2480,16 @@ ntCase("N.close-all-doubleclick-bottom", {
     const p = await hoverOn(ctx.W, menuRow("Close All Tabs")); if (!p) return { error: "no row" };
     const count = () => h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((t) => t.length)`, ctx.H);
     const before = await count();
-    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y);
+    await tap(ctx.W, p.x, p.y, { move: false });
     await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
     const under = await dangerUnderPointer(ctx.W, p);
-    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y);
+    await tap(ctx.W, p.x, p.y, { move: false });
     await sleep(900);
     const stillOpen = await hasEl(ctx.W, ".vm-menu");
     // after the guard time, the same click confirms
     await sleep(500);
     const p2 = await hoverOn(ctx.W, `document.querySelector(".vm-menu .vm-menu-item.danger")`);
-    await mouse(ctx.W, "mousePressed", p2.x, p2.y); await mouse(ctx.W, "mouseReleased", p2.x, p2.y); await sleep(1500);
+    await tap(ctx.W, p2.x, p2.y, { move: false }); await sleep(1500);
     return { before, afterDouble: before, under, stillOpen, afterLate: await count() };
   },
   expect: (s, b, r) => [r.error ?? null, r.under ? null : "setup: the red row was not under the pointer, the test proves nothing", r.stillOpen ? null : "the ignored click closed the menu", r.afterLate < r.before ? null : "a later click did not confirm", ...(r.under ? [] : [])],
@@ -2481,10 +2500,10 @@ cuCase("CU.clear-list-doubleclick-bottom", {
     await h.ev(`window.__vm.cleanup.run({ win: ${ctx.W}, space: ${sp("X")} }).then((r) => r.count)`, ctx.W); await sleep(900);
     if (!(await openDropdown(ctx.W)) || !(await openFly(ctx.W, "Recently Cleaned"))) return { error: "no flyout" };
     const p = await hoverOn(ctx.W, flyRow("Clear list"));
-    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y);
+    await tap(ctx.W, p.x, p.y, { move: false });
     await waitFor(() => rowsOf(ctx.W, NT_MENU + " > div").then((x) => (x.includes("Cancel") ? x : null)), 4000);
     const under = await dangerUnderPointer(ctx.W, p);
-    await mouse(ctx.W, "mousePressed", p.x, p.y); await mouse(ctx.W, "mouseReleased", p.x, p.y); await sleep(800);
+    await tap(ctx.W, p.x, p.y, { move: false }); await sleep(800);
     return { under, listed: (await cleanedList(ctx.W)).length, stillOpen: await hasEl(ctx.W, ".vm-menu") };
   },
   expect: (s, b, r) => [r.error ?? null, r.under ? null : "setup: the red row was not under the pointer", r.listed === 2 ? null : `a double-click cleared the list (${r.listed} left, want 2)`, r.stillOpen ? null : "the ignored click closed the menu"],
@@ -2771,10 +2790,7 @@ const srWait = (win, pred, ms = 6000) => waitFor(async () => { const s = await s
 const srClick = async (win, sel) => {
   const p = await h.ev(`(() => { const e = document.querySelector(${J(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, win);
   if (!p) return "no such button";
-  const c = h.cdp(win);
-  await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] });
-  await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: p[0], y: p[1], button: "left", clickCount: 1 });
-  await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p[0], y: p[1], button: "left", clickCount: 1 });
+  await tap(win, p[0], p[1]);
   return "clicked";
 };
 const srOpt = (n) => `#vm-notify .vm-site-card:nth-child(1) .vm-site-actions .vm-site-opt:nth-child(${n})`;
@@ -2866,8 +2882,7 @@ for (const layout of ["dia", "arc"]) {
       const { ready } = await srAskAndWait(t, "notif");
       await h.ev(`(document.querySelector(${J(srOpt(1))}).focus(), 1)`, ctx.W);
       const c = h.cdp(ctx.W);
-      await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
-      await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 });
+      await keyTap(c, "Escape", "Escape", 27, { native: false, holdMs: 0 });
       await sleep(900);
       return { ready, after: await srState(ctx.W), perm: await srPerm(t, "notif") };
     },
@@ -2882,8 +2897,7 @@ for (const layout of ["dia", "arc"]) {
       await sleep(300);
       const c = h.cdp(ctx.W);
       for (const [key, code, vk] of [["Enter", "Enter", 13], [" ", "Space", 32]]) { // keys sent to the page, where the cursor is
-        await c.send("Input.dispatchKeyEvent", { type: "keyDown", key, code, windowsVirtualKeyCode: vk });
-        await c.send("Input.dispatchKeyEvent", { type: "keyUp", key, code, windowsVirtualKeyCode: vk });
+        await keyTap(c, key, code, vk, { text: key === "Enter" ? String.fromCharCode(13) : key, native: false, holdMs: 0 });
       }
       await sleep(700);
       return { ready, after: await srState(ctx.W), perm: await srPerm(t, "notif") };
@@ -2966,8 +2980,7 @@ for (const layout of ["dia", "arc"]) {
       const c = h.cdp(ctx.W);
       await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] });
       for (const n of [1, 2]) { // a real double-click: the second press lands where the first card was
-        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: p[0], y: p[1], button: "left", clickCount: n });
-        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p[0], y: p[1], button: "left", clickCount: n });
+        await tap(c, p[0], p[1], { clickCount: n, move: false });
         await sleep(40);
       }
       await sleep(900);
@@ -2982,7 +2995,7 @@ for (const layout of ["dia", "arc"]) {
       const a = await srTab(ctx.W, "A");
       await srAskAndWait(a, "notif");
       const gutter = await h.ev(`(() => { const r = document.querySelector("#vm-panel").getBoundingClientRect(); return [r.left + 3, r.top + r.height * 0.6]; })()`, ctx.W); // the sidebar's own gutter: a real press on empty window, which Vivaldi closes the popup on
-      const cx = h.cdp(ctx.W); await cx.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: gutter[0], y: gutter[1] }); await cx.send("Input.dispatchMouseEvent", { type: "mousePressed", x: gutter[0], y: gutter[1], button: "left", clickCount: 1 }); await cx.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: gutter[0], y: gutter[1], button: "left", clickCount: 1 });
+      await tap(ctx.W, gutter[0], gutter[1]);
       await sleep(300);
       const back = await srWait(ctx.W, (s) => s.cards.length === 1, 5000);
       return { back: !!back, s: await srState(ctx.W), perm: await srPerm(a, "notif") };
@@ -3000,10 +3013,7 @@ for (const layout of ["dia", "arc"]) {
         await h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes(${J(text)})); r?.scrollIntoView({ block: "center" }); return 1; })()`, ctx.W); await sleep(250);
         const p = await h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((r) => r.textContent.includes(${J(text)})); if (!r) return null; const b = r.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2; return r.contains(document.elementFromPoint(x, y)) ? [x, y] : null; })()`, ctx.W);
         if (!p) return "no row";
-        const c = h.cdp(ctx.W);
-        await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p[0], y: p[1] });
-        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: p[0], y: p[1], button: "left", clickCount: 1 });
-        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: p[0], y: p[1], button: "left", clickCount: 1 });
+        await tap(ctx.W, p[0], p[1]);
         return "clicked";
       };
       const away = await srState(ctx.W);
@@ -3048,9 +3058,7 @@ for (const layout of ["dia", "arc"]) {
       const p = await h.ev(`(() => { const r = document.querySelector(${J(srOpt(1))}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, ctx.W);
       const c = h.cdp(ctx.W);
       const deny = await h.ev(`(() => { const r = document.querySelector(${J(srOpt(2))}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, ctx.W); // Deny is enabled at once on a reopened popup (Allow wakes after a second)
-      const click = async (q = p) => { await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: q[0], y: q[1] });
-        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: q[0], y: q[1], button: "left", clickCount: 1 });
-        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: q[0], y: q[1], button: "left", clickCount: 1 }); };
+      const click = (q = p) => tap(c, q[0], q[1]);
       await click(); // answers the first question
       const samples = [];
       for (let i = 0; i < 14; i++) { await sleep(150); const s = await srState(ctx.W); samples.push([Date.now() % 100000, s.cards.map((x) => x.opts.join("/"))]); if (i === 4) await click(deny); } // one more click ~750 ms on, on Deny of the slot
@@ -3076,8 +3084,7 @@ for (const layout of ["dia", "arc"]) {
         await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: pt[0], y: pt[1] });
         await sleep(150);
         const btn = open === "row" ? "right" : "left";
-        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: pt[0], y: pt[1], button: btn, clickCount: 1 });
-        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: pt[0], y: pt[1], button: btn, clickCount: 1 });
+        await tap(c, pt[0], pt[1], { button: btn, move: false });
         await sleep(250);
         const early = await h.ev(`document.querySelectorAll(".vm-menu").length`, ctx.W);
         await sleep(1800); // past every automatic reopen
@@ -3096,9 +3103,7 @@ for (const layout of ["dia", "arc"]) {
       const a = await srTab(ctx.W, "A");
       await srAskAndWait(a, "notif");
       const c = h.cdp(ctx.W);
-      const realClick = async (pt, button = "left") => { await c.send("Input.dispatchMouseEvent", { type: "mouseMoved", x: pt[0], y: pt[1] });
-        await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x: pt[0], y: pt[1], button, clickCount: 1 });
-        await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x: pt[0], y: pt[1], button, clickCount: 1 }); };
+      const realClick = (pt, button = "left") => tap(c, pt[0], pt[1], { button });
       const centre = (expr) => h.ev(`(() => { const e = ${expr}; if (!e) return null; e.scrollIntoView({ block: "nearest" }); const b = e.getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; })()`, ctx.W);
       const rename = async (from, to) => {
         await realClick(await centre(`[...document.querySelectorAll("#vm-panel .vm-row.vm-link")].find((r) => r.textContent.includes(${J(from)}))`), "right");
@@ -3109,8 +3114,7 @@ for (const layout of ["dia", "arc"]) {
         await sleep(1800); // longer than the card's reopen attempts
         const typing = await h.ev(`document.activeElement?.className ?? null`, ctx.W);
         await c.send("Input.insertText", { text: to });
-        await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
-        await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13 });
+        await keyTap(c, "Enter", "Enter", 13, { text: String.fromCharCode(13), native: false, holdMs: 0 });
         await sleep(900);
         return typing;
       };
@@ -3473,7 +3477,7 @@ async function typeInBar(win, text) {
   const c = h.cdp(win);
   await c.send("Input.insertText", { text });
   await sleep(600);
-  for (const type of ["keyDown", "keyUp"]) await c.send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, ...(type === "keyDown" ? { text: "\r" } : {}) });
+  await keyTap(c, "Enter", "Enter", 13, { text: "\r", native: false, holdMs: 0 });
   return true;
 }
 const closeBar = async (win) => { await h.ev(`document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })) ?? 1`, win); await sleep(400); };
@@ -3510,7 +3514,7 @@ ntCase("N.start-page-row", {
 const typedStart = (text) => async () => {
   const r0 = await rowCount(ctx.W);
   const r = await h.ev(`(() => { const b = ${NT_ROW}.getBoundingClientRect(); return { l: b.left, y: b.top + b.height / 2 }; })()`, ctx.W);
-  await mouse(ctx.W, "mouseMoved", r.l + 30, r.y); await sleep(200); await mouse(ctx.W, "mousePressed", r.l + 30, r.y); await mouse(ctx.W, "mouseReleased", r.l + 30, r.y);
+  await mouse(ctx.W, "mouseMoved", r.l + 30, r.y); await sleep(200); await tap(ctx.W, r.l + 30, r.y, { move: false });
   if (!(await typeInBar(ctx.W, text))) return { error: "the bar did not open" };
   await sleep(1200);
   const first = await startFacts(ctx.W);
@@ -3551,7 +3555,7 @@ ntCase("N.start-page-others-still-get-the-bar", {
     await h.ev(`(window.dispatchEvent(new CustomEvent("vm-open-command-bar")), 1)`, ctx.W);
     out.ctrlT = await barWithin(ctx.W, 2500); await closeBar(ctx.W);
     const row = await h.ev(`(() => { const b = ${NT_ROW}.getBoundingClientRect(); return { l: b.left, y: b.top + b.height / 2 }; })()`, ctx.W);
-    await mouse(ctx.W, "mouseMoved", row.l + 30, row.y); await sleep(200); await mouse(ctx.W, "mousePressed", row.l + 30, row.y); await mouse(ctx.W, "mouseReleased", row.l + 30, row.y);
+    await mouse(ctx.W, "mouseMoved", row.l + 30, row.y); await sleep(200); await tap(ctx.W, row.l + 30, row.y, { move: false });
     out.plusRow = await barWithin(ctx.W, 2500); await closeBar(ctx.W);
     // a tab Vivaldi opens on its start page by itself (its New Tab command, a window starting): not asked for here
     const rows0 = await rowCount(ctx.W);
@@ -3602,9 +3606,8 @@ const NB = (win) => h.ev(`(() => { const host = document.getElementById("vm-noti
     drop: [px("--vm-drop-x"), px("--vm-drop-y")], win: [innerWidth, innerHeight] }; })()`, win);
 const nbAt = (x, what) => { const r = x.host[0]?.box; return !r ? `${what}: nothing in the stack` : near(r[0], x.drop[0]) && near(r[1], x.drop[1]) ? null : `${what}: the first toast is at ${J(r)}, not at the drop point ${J(x.drop)}`; };
 const ctrlL = async (win) => { await focusPage(win); await sleep(200); await keyCombo(h.cdp(win), "l", "KeyL", 76, 2); await sleep(900); };
-const keyEnter = async (win) => { const c = h.cdp(win); await c.send("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: String.fromCharCode(13) });
-  await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 }); };
-const keyArrow = async (win, key) => { const c = h.cdp(win), vk = key === "ArrowDown" ? 40 : 38; for (const type of ["rawKeyDown", "keyUp"]) await c.send("Input.dispatchKeyEvent", { type, key, code: key, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk }); };
+const keyEnter = (win) => keyTap(win, "Enter", "Enter", 13, { text: String.fromCharCode(13), holdMs: 0 });
+const keyArrow = (win, key) => keyTap(win, key, key, key === "ArrowDown" ? 40 : 38, { holdMs: 0 });
 const SCROLL_STATE = `(() => { const tc = document.querySelector("#tabs-container"), side = document.querySelector("#tabs-tabbar-container")?.getBoundingClientRect(), panel = document.querySelector("#vm-panel")?.getBoundingClientRect();
   const f = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField"), i = document.querySelector("#vm-cmd input");
   return { scrollLeft: tc ? tc.scrollLeft : null, shift: side && panel ? Math.round(panel.left - side.left) : null, fieldH: f ? Math.round(f.getBoundingClientRect().height) : null,
@@ -3746,14 +3749,14 @@ for (const layout of ["dia", "arc"]) {
         r.click2 && r.closed.stacked && notes(r.closed).length === 1 ? null : `Show less did not fold it again: ${J(r.closed.host)}`];
     },
   });
-  // Notifications belong to their tab: a question and a tab's own toast hide on a switch and come back on return; Vivarc's
-  // own message (no tab) stays.
+  // Notifications belong to their tab: a question, a tab's own toast and a Vivarc message that came on it hide on a switch
+  // and come back on return (fix round 1: Vivarc's messages too).
   def(`9B.a-tabs-notifications-hide-on-a-switch-and-come-back-${layout}`, {
     layout, setup: srSetup,
     act: async () => {
       const a = await srTab(ctx.W, "A");
       await srAskAndWait(a, "notif");
-      await h.ev(`(window.__vm.notify.add({ id: "nb-tab", tab: ${a.id}, type: "popupBlocked", text: "A's own toast" }), window.__vm.notify.add({ id: "nb-any", tab: null, type: "message", text: "Vivarc's message" }), 1)`, ctx.W);
+      await h.ev(`(window.__vm.notify.add({ id: "nb-tab", tab: ${a.id}, type: "popupBlocked", text: "A's own toast" }), window.dispatchEvent(new CustomEvent("vm-toast", { detail: { message: "Vivarc's message", ms: 30000 } })), 1)`, ctx.W);
       await sleep(400);
       const before = await NB(ctx.W);
       const bId = await h.ev(`chrome.tabs.create(${J({ windowId: ctx.W, url: `${origin}/en-b`, active: true })}).then((t) => t.id)`, ctx.H);
@@ -3761,14 +3764,14 @@ for (const layout of ["dia", "arc"]) {
       const away = await NB(ctx.W);
       await activate(a.id); await sleep(1800);
       const back = await NB(ctx.W);
-      await h.ev(`(window.__vm.notify.remove("nb-tab"), window.__vm.notify.remove("nb-any"), 1)`, ctx.W);
+      await h.ev(`(window.__vm.notify.remove("nb-tab"), window.__vm.notify.remove("vm-toast"), 1)`, ctx.W);
       return { before, away, back, bId };
     },
     expect: (s, b, r) => {
       const has = (x, what) => x.host.some((i) => i.text.includes(what) || (what === "card" && i.cls.includes("vm-site-card")));
       return [has(r.before, "card") && has(r.before, "A's own toast") && has(r.before, "Vivarc's message") ? null : `setup: ${J(r.before.host)}`,
-        !has(r.away, "card") && !has(r.away, "A's own toast") ? null : `another tab still shows A's notifications: ${J(r.away.host)}`, has(r.away, "Vivarc's message") ? null : "Vivarc's own message hid on the switch",
-        has(r.back, "card") && has(r.back, "A's own toast") ? null : `back on A they did not come back: ${J(r.back.host)}`];
+        !has(r.away, "card") && !has(r.away, "A's own toast") && !has(r.away, "Vivarc's message") ? null : `another tab still shows A's notifications: ${J(r.away.host)}`,
+        has(r.back, "card") && has(r.back, "A's own toast") && has(r.back, "Vivarc's message") ? null : `back on A they did not come back: ${J(r.back.host)}`];
     },
   });
   // x on a question keeps it pending (a pill stays); opening the bar brings it into the fly-up, answerable there.
@@ -3990,11 +3993,177 @@ for (const layout of ["dia", "arc"]) {
       // The row once the tab has its title (late in a sweep background tabs take a while to get theirs).
       const p = await waitFor(() => h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((x) => x.textContent.includes("C2")); if (!r) return null; const q = r.getBoundingClientRect(); return { x: q.left + 60, y: q.top + q.height / 2 }; })()`, ctx.W), 8000);
       if (!p) return { error: "no C2 row" };
-      try { await mouse(ctx.W, "mouseMoved", p.x, p.y); await mouse(ctx.W, "mousePressed", p.x, p.y); } finally { await mouse(ctx.W, "mouseReleased", p.x, p.y); }
+      await tap(ctx.W, p.x, p.y);
       await sleep(1200);
       return { bar: await hasEl(ctx.W, "#vm-cmd") };
     },
     expect: (s, b, r) => r.error ? [r.error] : [r.bar ? "the bar is still open" : null, activeOf(s, ctx.W)?.id === ctx.tabs.C2 ? null : `one click did not reach C2 (active: ${activeOf(s, ctx.W)?.title})`],
+  });
+}
+
+
+// ---------- Task 9b fix round 1 ----------
+const FIELD_STATE9 = (win) => h.ev(`(() => { const f = document.querySelector("#tabs-tabbar-container #urlFieldInput"), af = f?.closest(".UrlBar-AddressField"), q = af?.getBoundingClientRect(), i = document.querySelector("#vm-cmd input");
+  return { native: document.querySelector("#browser").classList.contains("vm-native-field"), fieldFocused: document.activeElement === f, value: f?.value ?? null, vis: af ? getComputedStyle(af).visibility : null,
+    box: q ? [q.left, q.top, q.width, q.height].map(Math.round) : null, bar: !!i, inBar: !!i && document.activeElement === i, barValue: i?.value ?? null, active: document.activeElement?.tagName }; })()`, win);
+for (const layout of ["dia", "arc"]) {
+  // Important 1: Vivaldi's own ways to focus its field (its menu's and custom shortcuts' commands, a new tab, a new window,
+  // the startup seconds) all call focus() on the field, which no longer takes the cursor: they open the command bar.
+  def(`9B.vivaldis-own-focus-of-its-field-opens-the-bar-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const r = {};
+      const focusField = () => h.ev(`(document.querySelector("#tabs-tabbar-container #urlFieldInput").focus(), 1)`, ctx.W);
+      await sleep(1200); // well past the last tab switch: not Task 8o's case
+      await focusField(); await sleep(700);
+      r.page = { ...(await FIELD_STATE9(ctx.W)), url: (await activeUrl(ctx.W)).url };
+      await escBar(ctx.W);
+      // a blank tab made in a new window's first seconds (the bar's own new-tab path waits 5 s there)
+      const W2 = await h.ev(`chrome.windows.create({ focused: true, left: 120, top: 80, width: 1000, height: 640 }).then((w) => w.id)`, ctx.H);
+      await h.waitForWin(W2);
+      await sleep(1500);
+      await h.ev(`chrome.tabs.create({ windowId: ${W2}, active: true }).then(() => 1)`, ctx.H); await sleep(400);
+      await h.ev(`(document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), 1)`, W2); await sleep(300);
+      await h.ev(`(document.querySelector("#tabs-tabbar-container #urlFieldInput").focus(), 1)`, W2); await sleep(700);
+      r.blank = await FIELD_STATE9(W2);
+      r.blankAge = await h.ev(`performance.now() | 0`, W2);
+      await h.ev(`chrome.windows.remove(${W2}).then(() => 1, () => 0)`, ctx.H); await sleep(600);
+      // Task 8o stands: a focus nobody asked for right after a switch to a page leaves the cursor in the page
+      const other = await h.ev(`chrome.tabs.create(${J({ windowId: ctx.W, url: `${origin}/en-other`, active: false })}).then((t) => t.id)`, ctx.H); await sleep(1500);
+      await h.ev(`(chrome.tabs.onActivated.addListener(function once() { chrome.tabs.onActivated.removeListener(once); setTimeout(() => document.querySelector("#tabs-tabbar-container #urlFieldInput").focus(), 30); }), chrome.tabs.update(${other}, { active: true }), 1)`, ctx.W); await sleep(800);
+      r.afterSwitch = await FIELD_STATE9(ctx.W);
+      return r;
+    },
+    expect: (s, b, r) => [r.page.bar && r.page.inBar && r.page.barValue === r.page.url && !r.page.fieldFocused ? null : `focus() on the field over a page: ${J(r.page)}, want the bar editing ${J(r.page?.url)}`,
+      r.blank.bar && r.blank.inBar && r.blank.barValue === "" && !r.blank.fieldFocused ? null : `focus() on the field over a new blank tab (window ${r.blankAge} ms old): ${J(r.blank)}, want an empty bar`,
+      !r.afterSwitch.bar && !r.afterSwitch.fieldFocused ? null : `a focus right after a tab switch opened ${J(r.afterSwitch)} (Task 8o: the page keeps the cursor)`],
+  });
+  // Important 2: the bar resolves addresses the way Vivaldi's field does (localhost, an IP with a port, data:, view-source:,
+  // chrome://), and what Vivaldi will not load from a mod goes through its own field.
+  def(`9B.typed-addresses-load-like-vivaldis-field-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const port = origin.split(":").pop();
+      const out = {};
+      for (const [name, typed, want] of [["localhost", `localhost:${port}/en-lh`, `http://localhost:${port}/en-lh`], ["ip", `127.0.0.1:${port}/en-ip`, `http://127.0.0.1:${port}/en-ip`],
+        ["viewsource", `view-source:${origin}/en-vs`, `view-source:${origin}/en-vs`], ["data", "data:text/html,<title>DATA9B</title>hi", "data:text/html,<title>DATA9B</title>hi"],
+        ["chrome", "chrome://version", "chrome://version/"]]) {
+        await ctrlL(ctx.W);
+        await h.ev(`(() => { const i = document.querySelector("#vm-cmd input"); i.value = ""; return 1; })()`, ctx.W);
+        await h.cdp(ctx.W).send("Input.insertText", { text: typed }); await sleep(700);
+        const lead = await h.ev(`document.querySelector("#vm-cmd .vm-cmd-row.sel")?.textContent ?? null`, ctx.W);
+        await keyEnter(ctx.W);
+        const got = await waitFor(async () => { const u = (await activeUrl(ctx.W)).url; return u === want ? u : null; }, 5000, 200) || (await activeUrl(ctx.W)).url;
+        out[name] = { lead, got, want, native: (await FIELD_STATE9(ctx.W)).native };
+        await sleep(300);
+      }
+      return out;
+    },
+    expect: (s, b, r) => Object.entries(r).map(([name, x]) => x.got === x.want ? null : `${name}: typed, the tab is on ${J(x.got)}, want ${J(x.want)} (lead row ${J(x.lead)})`),
+  });
+  // The escape hatch: "Open in Vivaldi's address field" shows Vivaldi's own field with the text, where the toasts drop; it
+  // works there (Enter loads), and it is hidden again once it is done.
+  def(`9B.the-escape-hatch-shows-vivaldis-own-field-for-one-entry-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const r = {};
+      await ctrlL(ctx.W);
+      await h.ev(`(() => { const i = document.querySelector("#vm-cmd input"); i.value = ""; return 1; })()`, ctx.W);
+      const typed = `${origin}/en-hatch`;
+      await h.cdp(ctx.W).send("Input.insertText", { text: typed }); await sleep(900);
+      r.rows = await h.ev(`[...document.querySelectorAll("#vm-cmd .vm-cmd-row")].map((x) => x.querySelector(".vm-cmd-title")?.textContent)`, ctx.W);
+      await keyArrow(ctx.W, "ArrowUp"); await sleep(150); // the last row
+      r.picked = await h.ev(`document.querySelector("#vm-cmd .vm-cmd-row.sel .vm-cmd-title")?.textContent ?? null`, ctx.W);
+      await keyEnter(ctx.W); await sleep(900);
+      r.shown = { ...(await FIELD_STATE9(ctx.W)), drop: await h.ev(`["--vm-drop-x", "--vm-drop-y"].map((n) => Math.round(parseFloat(document.querySelector("#browser").style.getPropertyValue(n))))`, ctx.W) };
+      await shot(ctx.W, "escape-hatch-vivaldis-field");
+      await keyEnter(ctx.W);
+      r.loaded = await waitFor(async () => ((await activeUrl(ctx.W)).url.endsWith("/en-hatch") ? true : null), 5000, 200);
+      await sleep(900);
+      r.after = await FIELD_STATE9(ctx.W);
+      return r;
+    },
+    expect: (s, b, r) => [r.rows?.at(-1) === "Open in Vivaldi's address field" ? null : `the last row is ${J(r.rows?.at(-1))}`, r.picked === "Open in Vivaldi's address field" ? null : `ArrowUp picked ${J(r.picked)}`,
+      r.shown.native && r.shown.fieldFocused && r.shown.vis === "visible" && r.shown.box?.[3] > 0 && !r.shown.bar ? null : `Vivaldi's field not shown with the cursor: ${J(r.shown)}`,
+      String(r.shown.value).includes("/en-hatch") ? null : `the field holds ${J(r.shown.value)}`,
+      r.shown.box && near(r.shown.box[0], r.shown.drop[0]) && near(r.shown.box[1], r.shown.drop[1]) ? null : `the field is at ${J(r.shown.box)}, not the drop point ${J(r.shown.drop)}`,
+      r.loaded ? null : "Enter in Vivaldi's field did not load the address", !r.after.native && r.after.vis === "hidden" && !r.after.fieldFocused ? null : `the field did not go away: ${J(r.after)}`],
+  });
+  // Important 5: Tab goes from the bar's input into the fly-up and back; Escape there comes back to the input.
+  def(`9B.tab-goes-into-the-fly-up-and-back-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "A");
+      await srAskAndWait(t, "notif");
+      await ctrlL(ctx.W);
+      const where = () => h.ev(`(() => { const a = document.activeElement; return a?.closest("#vm-cmd .vm-cmd-fly") ? "fly:" + (a.textContent || "").trim().slice(0, 20) : a === document.querySelector("#vm-cmd input") ? "input" : (a?.tagName || "none"); })()`, ctx.W);
+      const r = { start: await where() };
+      await keyTap(ctx.W, "Tab", "Tab", 9, { holdMs: 0 }); await sleep(200); r.tab1 = await where();
+      await keyTap(ctx.W, "Tab", "Tab", 9, { holdMs: 0 }); await sleep(200); r.tab2 = await where();
+      await keyTap(ctx.W, "Tab", "Tab", 9, { mods: 8, holdMs: 0 }); await sleep(200); r.back1 = await where();
+      await keyTap(ctx.W, "Tab", "Tab", 9, { mods: 8, holdMs: 0 }); await sleep(200); r.back2 = await where();
+      await keyTap(ctx.W, "Tab", "Tab", 9, { holdMs: 0 }); await sleep(200);
+      await keyTap(ctx.W, "Escape", "Escape", 27, { holdMs: 0 }); await sleep(300);
+      r.esc = await where();
+      r.bar = await hasEl(ctx.W, "#vm-cmd");
+      r.perm = await srPerm(t, "notif");
+      await escBar(ctx.W);
+      return r;
+    },
+    expect: (s, b, r) => [r.start === "input" ? null : `the bar's input had no cursor (${r.start})`, r.tab1?.startsWith("fly:") ? null : `Tab went to ${J(r.tab1)}, not the fly-up`,
+      r.tab2?.startsWith("fly:") && r.tab2 !== r.tab1 ? null : `a second Tab: ${J(r.tab2)}`, r.back1 === r.tab1 ? null : `Shift+Tab: ${J(r.back1)}, want ${J(r.tab1)}`,
+      r.back2 === "input" ? null : `Shift+Tab from the first: ${J(r.back2)}, want the input`, r.bar ? null : "the bar closed",
+      r.perm === "default" ? null : `moving through the fly-up answered the question (${r.perm})`],
+  });
+  // Important 3: a second question of the tab comes into the fly-up when the first is answered there, not behind a pill.
+  def(`9B.a-following-question-comes-into-the-open-bar-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "A");
+      await srAsk(t, "notif"); await sleep(400); await srAsk(t, "geo");
+      await srWait(ctx.W, (q) => q.cards.length >= 1);
+      await sleep(1300);
+      await ctrlL(ctx.W);
+      const first = await waitFor(async () => { const x = await NB(ctx.W); return x.fly.some((i) => i.cls.includes("vm-site-card")) ? x : null; }, 5000) || await NB(ctx.W);
+      await sleep(1200);
+      const click = await srClick(ctx.W, "#vm-cmd .vm-cmd-fly .vm-site-card .vm-site-opt:nth-child(2)");
+      const second = await waitFor(async () => { const x = await NB(ctx.W); const c = x.fly.find((i) => i.cls.includes("vm-site-card")); return c && c.text !== first.fly.find((i) => i.cls.includes("vm-site-card"))?.text ? x : null; }, 6000) || await NB(ctx.W);
+      await escBar(ctx.W);
+      return { first, click, second };
+    },
+    expect: (s, b, r) => [r.first.fly.some((i) => i.cls.includes("vm-site-card")) ? null : `no first question in the fly-up: ${J(r.first.fly)}`, r.click === "clicked" ? null : `click: ${r.click}`,
+      r.second.fly.some((i) => i.cls.includes("vm-site-card")) && !r.second.fly.some((i) => i.cls.includes("vm-site-pill")) ? null : `the second question did not come into the open bar: ${J(r.second.fly)}`],
+  });
+  // Important 3: Ctrl+T's bar over a page shows that page's rows (Byron: "everything pending or shown for that tab").
+  def(`9B.ctrl-t-bar-over-a-page-has-the-pages-rows-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      await h.ev(`(window.dispatchEvent(new CustomEvent("vm-open-command-bar")), 1)`, ctx.W); await sleep(800);
+      const x = await NB(ctx.W);
+      await escBar(ctx.W);
+      return x;
+    },
+    expect: (s, b, r) => [r.bar ? null : "no bar", r.fly.some((i) => i.cls.includes("vm-fly-indicator") && /Not Secure/i.test(i.text)) ? null : `no page row in Ctrl+T's fly-up: ${J(r.fly)}`],
+  });
+  // Important 4: Allow on the blocked pop-up toast still works after a round trip to another tab (Vivaldi renders the
+  // field's buttons anew).
+  def(`9B.pop-up-allow-works-after-a-tab-round-trip-${layout}`, {
+    layout, setup: srSetup,
+    act: async () => {
+      const t = await srTab(ctx.W, "P");
+      await srVal(t, `(window.open(${J(t.origin + "/opened-rt-" + layout)}), 1)`);
+      await waitFor(async () => ((await NB(ctx.W)).host.some((i) => i.text.includes("Pop-up blocked")) ? true : null), 4000);
+      const other = await h.ev(`chrome.tabs.create(${J({ windowId: ctx.W, url: `${origin}/en-rt`, active: true })}).then((x) => x.id)`, ctx.H);
+      await sleep(900);
+      await activate(t.id); await sleep(900);
+      const toast = await NB(ctx.W);
+      const allow = await clickOn(ctx.W, `[...document.querySelectorAll("#vm-notify .vm-note-btn")].find((b) => b.textContent === "Allow")`);
+      const opened = await waitFor(() => h.ev(`chrome.tabs.query({}).then((ts) => ts.some((x) => (x.pendingUrl || x.url || "").includes("/opened-rt-${layout}")))`, ctx.H), 5000);
+      await h.ev(`new Promise((r) => chrome.contentSettings.popups.clear({}, () => r(1)))`, ctx.W).catch(() => {});
+      return { toast, allow, opened, other };
+    },
+    expect: (s, b, r) => [r.toast.host.some((i) => i.text.includes("Pop-up blocked")) ? null : `the toast did not come back with its tab: ${J(r.toast.host)}`,
+      r.allow && r.opened ? null : `Allow after the round trip: clicked ${r.allow}, opened ${r.opened}`],
   });
 }
 
@@ -4050,6 +4219,13 @@ async function runCase(c, layout) {
     else if (e.skip) Object.assign(out, { pass: false, bad: [`error: ${e.message || e} (refused as a split, but this case does not declare one)`], ms: Date.now() - t0 });
     else Object.assign(out, { pass: false, bad: [`error: ${e.message || e}`], ms: Date.now() - t0 });
   }
+  // Anything a connection still holds down (a press or a key whose release never went out) is let go, and logged.
+  await h.refresh().catch(() => {});
+  for (const e of h.byWin.values()) {
+    const was = await e.cdp.releaseAll().catch(() => null);
+    if (was && (was.buttons.length || was.keys.length)) (out.released ||= []).push({ win: e.win, ...was });
+  }
+  if (out.released) console.log(`      (released after ${c.id}: ${J(out.released)})`);
   const tag = `${out.skip ? "SKIP" : out.pass ? "PASS" : "FAIL"} ${layout} ${c.id}`;
   const timing = out.heldAtMs !== undefined ? ` (invariants held ${out.heldAtMs ?? "never"} ms after the act)` : "";
   if (out.skip) console.log(`${tag}: ${out.skip} (${out.bad.join(" | ")})`);
