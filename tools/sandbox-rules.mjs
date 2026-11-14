@@ -85,6 +85,7 @@ async function start() {
 
 // One window (H) on its default space with one default tab, no spaces, no test bookmarks.
 async function reset() {
+  for (const undo of (ctx.cleanups || []).splice(0)) await undo().catch(() => {});
   await busy();
   await h.refresh();
   const H = ctx.H;
@@ -3654,12 +3655,16 @@ swCase("X.switcher-quick-press", {
     await focus(ctx.W);
     const r = { notArmed: await armed(ctx.W) };
     await keyDown(ctx.W, "Control", 2);
-    try { await keyDown(ctx.W, "Tab", 2); await keyUp(ctx.W, "Tab", 2); await sleep(120); } finally { await keyUp(ctx.W, "Control", 0); }
+    await h.ev(`(window.__9dShown = false, new MutationObserver(() => { if (document.querySelector("#vm-switch.in")) window.__9dShown = true; }).observe(document.body, { subtree: true, childList: true, attributes: true, attributeFilter: ["class"] }), 1)`, ctx.W);
+    // a quick press: Ctrl goes up straight after Tab, before the row could be made (Task 9d fix round)
+    try { await keyDown(ctx.W, "Tab", 2); await keyUp(ctx.W, "Tab", 2); } finally { await keyUp(ctx.W, "Control", 0); }
     await sleep(900);
     r.after = await switcherState(ctx.W);
+    r.shown = await h.ev(`window.__9dShown`, ctx.W);
     return r;
   },
-  expect: (s, b, r) => [r.notArmed, r.after?.open ? "the row stayed open" : null, tabIs(s, "X2", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X"))],
+  expect: (s, b, r) => [r.notArmed, r.after?.open ? `the row stayed open (${J(r.after)})` : null, r.shown ? "the row showed for a quick press" : null,
+    tabIs(s, "X2", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X"))],
 });
 
 // The tab menu's new rows (upstream #134, #136): each run from a real right-click on a row.
@@ -3809,6 +3814,7 @@ async function dragToPoint(win, finder, pointExpr) {
     if (!at) return "no gap to drop in";
     ctx.dropAt = at;
     for (const type of ["dragEnter", "dragOver", "dragOver"]) { await c.send("Input.dispatchDragEvent", { type, x: at.x, y: at.y, data }); await sleep(120); }
+    ctx.dropMarks = await h.ev(`[...document.querySelectorAll("#vm-panel .drop-before, #vm-panel .drop-after")].map((n) => (n.title || n.className.split(" ")[0]) + ":" + (n.classList.contains("drop-after") ? "after" : "before"))`, win);
     await c.send("Input.dispatchDragEvent", { type: "drop", x: at.x, y: at.y, data });
     await sleep(1200);
   } finally {
@@ -3822,8 +3828,12 @@ def("X.fav-gap-drop", {
   setup: async () => {
     await mkWin("W", { width: 1000 });
     const favs = await favoritesFolder();
-    // only three tiles in the grid, so the gaps are known: earlier favorites go to the trash for the case
-    await h.ev(`chrome.bookmarks.getChildren(${J(favs)}).then(async (cs) => { for (const c of cs) if (c.url) await chrome.bookmarks.remove(c.id); return 1; })`, ctx.H);
+    // only three tiles in the grid, so the gaps are known: the profile's own favorites (the starter ones) wait in a folder
+    // beside Favorites and go back, in their order, at the next reset, whatever this case did
+    const hold = await h.ev(`chrome.bookmarks.get(${J(favs)}).then(async ([f]) => { const box = await chrome.bookmarks.create({ parentId: f.parentId, title: "9d-held-favorites" });
+      const cs = (await chrome.bookmarks.getChildren(f.id)).filter((c) => c.url); for (const c of cs) await chrome.bookmarks.move(c.id, { parentId: box.id }); return box.id; })`, ctx.H);
+    (ctx.cleanups ||= []).push(() => h.ev(`(async () => { const kids = await chrome.bookmarks.getChildren(${J(hold)}).catch(() => []);
+      for (const [i, c] of kids.entries()) await chrome.bookmarks.move(c.id, { parentId: ${J(favs)}, index: i }); await chrome.bookmarks.remove(${J(hold)}).catch(() => {}); return kids.length; })()`, ctx.H));
     for (const n of ["GAP1", "GAP2", "GAP3"]) await bookmark(favs, n, `${origin}/${n.toLowerCase()}`);
     await focus(ctx.W);
   },
@@ -3836,7 +3846,8 @@ def("X.fav-gap-drop", {
     ctx.favOrder = await waitFor(async () => { const o = await FAV_ORDER(); return J(o) !== J(["GAP1", "GAP2", "GAP3"]) ? o : null; }, 4000) ?? await FAV_ORDER();
     return r;
   },
-  expect: () => [J(ctx.favOrder) === J(["GAP2", "GAP1", "GAP3"]) ? null : `favorites now ${J(ctx.favOrder)}, want GAP2, GAP1, GAP3 (dropped at ${J(ctx.dropAt)}, just right of GAP2)`],
+  expect: () => [J(ctx.favOrder) === J(["GAP2", "GAP1", "GAP3"]) ? null : `favorites now ${J(ctx.favOrder)}, want GAP2, GAP1, GAP3 (dropped at ${J(ctx.dropAt)}, just right of GAP2)`,
+    J(ctx.dropMarks) === J(["GAP2:after"]) ? null : `while over the gap the marker was on ${J(ctx.dropMarks)}, want GAP2's right edge`],
 });
 
 // Back closes a tab a link opened (option, off by default; upstream PR #168): W shows X, BK-OPENER's link opens BK-CHILD.
@@ -3887,6 +3898,88 @@ backCase("X.back-with-history-goes-back", true, {
   expect: (s) => [ctx.childUrl === bkUrl("child") ? null : `the tab is at ${J(ctx.childUrl)}, want it back on ${bkUrl("child")}`, tabIs(s, "CHILD", { win: ctx.W, active: true })],
 });
 
+// Task 9d fix round: a click on a menu that sits over the greyed-out Back button is the menu's, not Back's.
+backCase("X.back-click-on-a-menu-over-the-button", true, {
+  gesture: true,
+  act: async () => {
+    const at = await h.ev(`(() => { const b = [...document.querySelectorAll('[data-name="Back"]')].find((e) => e.getBoundingClientRect().width > 0); if (!b) return null;
+      const r = b.getBoundingClientRect(); return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) }; })()`, ctx.W);
+    if (!at) return "no Back button";
+    // the sidebar's own menu (right-click on the list), opened so that it covers the Back button
+    await h.ev(`(async () => { const p = document.querySelector("#vm-panel"); p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: ${at.x - 12}, clientY: ${at.y - 12} }));
+      for (let i = 0; i < 20 && !document.querySelector(".vm-menu"); i++) await new Promise((r) => setTimeout(r, 50)); return 1; })()`, ctx.W);
+    ctx.overBack = await h.ev(`(() => { const n = document.elementFromPoint(${at.x}, ${at.y}); return n ? (n.closest(".vm-menu") ? "menu" : n.className || n.tagName) : null; })()`, ctx.W);
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) await h.cdp(ctx.W).send("Input.dispatchMouseEvent", { type, x: at.x, y: at.y, button: "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: 1 });
+    await sleep(1200);
+    await escapeAll(ctx.W);
+    return "clicked";
+  },
+  expect: (s) => [ctx.overBack === "menu" ? null : `the menu did not cover the Back button (${J(ctx.overBack)}), nothing was tested`, tabIs(s, "CHILD", { win: ctx.W, active: true })],
+});
+// A page cannot close itself by faking the mouse's Back button (only a real press counts).
+backCase("X.back-mouse-forged-ignored", true, {
+  act: async () => { await inPage(bkUrl("child"), `dispatchEvent(new MouseEvent("mouseup", { button: 3, bubbles: true })), document.body.dispatchEvent(new MouseEvent("mouseup", { button: 3, bubbles: true })), 1`); await sleep(1200); return "ok"; },
+  expect: (s) => [tabIs(s, "CHILD", { win: ctx.W, active: true })],
+});
+// Move to Window lists the other windows on this window's side only: a private window is not offered to a normal one.
+tmCase("X.menu-no-private-window", {
+  act: async () => {
+    const pid = await openPrivate();
+    try {
+      if (pid == null) return { error: "no private window" };
+      await focus(ctx.W);
+      const r = await tabMenu(ctx.W, "X2", "Reload Tab");
+      r.privateTitle = await h.cdp(pid).eval(`chrome.tabs.query({ active: true }).then(([t]) => t?.title ?? null)`, 10000).catch(() => null);
+      return r;
+    } finally { await closePrivate(); }
+  },
+  // W's menu offers Z1 (O) and H, the sandbox's own window: a third row would be the private window
+  expect: (s, b, r) => { const rows = (r.menu || []).filter((m) => m.startsWith("Move to Window:")); return [r.error ?? null,
+    rows.length === 2 && rows.includes("Move to Window: Z1") ? null : `window rows ${J(rows)} (the private window is on ${J(r.privateTitle)})`]; },
+});
+// Escape pressed in another window keeps this window's picks; a right-click on a row that is not picked lets them go.
+pickCase("X.pick-escape-elsewhere-and-right-click", {
+  setup: async () => { await SET_PICK(); await mkWin("O", { width: 700 }); await focus(ctx.W); },
+  act: async () => {
+    const r = {};
+    await clickRow(ctx.W, "X1", PICK()); await sleep(200);
+    r.before = await picked(ctx.W);
+    await focus(ctx.O); await keyDown(ctx.O, "Escape", 0); await keyUp(ctx.O, "Escape", 0); await sleep(500);
+    r.afterEscapeInO = await picked(ctx.W);
+    await focus(ctx.W);
+    await h.ev(`(async () => { const r = ${tabRowOf("X3")}; const b = r.getBoundingClientRect(); r.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 40, clientY: b.top + 8 }));
+      for (let i = 0; i < 30 && !document.querySelector(".vm-menu"); i++) await new Promise((res) => setTimeout(res, 50)); return 1; })()`, ctx.W);
+    await sleep(300);
+    r.afterRightClick = await picked(ctx.W);
+    r.menu = await h.ev(`[...document.querySelectorAll(".vm-menu .vm-menu-item")].map((d) => d.textContent)`, ctx.W);
+    await escapeAll(ctx.W);
+    return r;
+  },
+  expect: (s, b, r) => [r.before?.length === 2 ? null : `Ctrl+click picked ${J(r.before)}`, r.afterEscapeInO?.length === 2 ? null : `Escape in another window let ${J(r.before)} go here (${J(r.afterEscapeInO)})`,
+    r.afterRightClick?.length ? `a right-click on an unpicked row left ${J(r.afterRightClick)} picked` : null, (r.menu || []).includes("Reload Tab") ? null : `not the one-tab menu: ${J(r.menu)}`],
+});
+// With Reduce Transparency the wallpaper goes and the sidebar is opaque, Liquid Glass or not.
+def("X.wallpaper-reduced-transparency", {
+  layout: "dia",
+  setup: async () => { await mkWin("W", { width: 1000 }); await tab(ctx.W, "X1", sp("X")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); },
+  act: async () => {
+    const c = h.cdp(ctx.W), r = {};
+    const read = () => h.ev(`(() => { const cs = getComputedStyle(document.querySelector("#tabs-tabbar-container")); return { img: cs.backgroundImage.slice(0, 120), color: cs.backgroundColor }; })()`, ctx.W);
+    await h.ev(`Promise.resolve(window.__vm.settings.set("sidebarWallpaper", true)).then(() => 1)`, ctx.W);
+    try {
+      await c.send("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-transparency", value: "reduce" }] });
+      await sleep(400); r.plain = await read();
+      await h.ev(`Promise.resolve(window.__vm.settings.set("glass", true)).then(() => 1)`, ctx.W); await sleep(400); r.glass = await read();
+    } finally {
+      await c.send("Emulation.setEmulatedMedia", { features: [] }).catch(() => {});
+      await h.ev(`Promise.all([window.__vm.settings.set("glass", false), window.__vm.settings.set("sidebarWallpaper", false)]).then(() => 1)`, ctx.W).catch(() => {});
+    }
+    return r;
+  },
+  expect: (s, b, r) => [...["plain", "glass"].flatMap((k) => [r[k].img.includes("url(") ? `${k}: the wallpaper stayed (${r[k].img})` : null,
+    /rgba?\([^)]*,\s*0\)$|transparent/.test(r[k].color) || /rgba\([^)]*,\s*0?\.\d+\)$/.test(r[k].color) ? `${k}: the sidebar is not opaque (${r[k].color})` : null])],
+});
+
 // The space-switch transition (upstream #85): a click on a tile animates the sidebar list and the page; Reduce Motion stops it.
 const SET_MOTION = async () => { await mkWin("W", { width: 1000 }); await tab(ctx.W, "X1", sp("X")); await tab(ctx.W, "Y1", sp("Y")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); };
 const motionRun = async (reduced) => {
@@ -3897,7 +3990,8 @@ const motionRun = async (reduced) => {
     const clicked = await clickTile(ctx.W, "Y");
     await sleep(reduced ? 600 : 900);
     const r = { clicked, last: await h.ev(`window.__vm.spaceMotion.last`, ctx.W),
-      running: await h.ev(`[document.querySelector("#vm-panel"), document.querySelector("#browser.vm-dia #webview-container") || document.querySelector("#webpage-stack")].map((n) => n?.getAnimations().length ?? -1)`, ctx.W) };
+      running: await h.ev(`[document.querySelector("#vm-panel .vm-scroll"), document.querySelector("#browser.vm-dia #webview-container") || document.querySelector("#webpage-stack"),
+        document.querySelector("#vm-panel")].map((n) => n?.getAnimations().length ?? -1)`, ctx.W) };
     if (!reduced) { await shot(ctx.W, "9d-motion-frame1"); await sleep(1500); await shot(ctx.W, "9d-motion-frame2"); }
     return r;
   } finally {
@@ -3909,6 +4003,7 @@ def("X.space-motion", {
   gesture: true, setup: SET_MOTION,
   act: async () => { const r = await motionRun(false); return { ...r, error: r.clicked === "clicked" ? undefined : r.clicked }; },
   expect: (s, b, r) => [r.last?.animated && r.last.next === sp("Y") ? null : `the switch did not animate: ${J(r.last)}`, r.running?.[0] > 0 && r.running?.[1] > 0 ? null : `animations running on the list and the page: ${J(r.running)}`,
+    r.running?.[2] === 0 ? null : `the whole panel animated (${r.running?.[2]}): only the list should`,
     recIs(s, ctx.W, sp("Y")), showsSpace(s, ctx.W, sp("Y"))],
 });
 def("X.space-motion-reduce-motion", {
