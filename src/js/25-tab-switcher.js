@@ -46,6 +46,7 @@
   let held = { n: 0, at: 0 };
   let keysSeen = false;
   let scope = null; // { windowId, space } the row was opened for
+  let ended = null; // what ended the last row (for the tests): a key, the mouse, a click, the window losing focus
 
   // Armed only while Vivaldi does not hold the keys itself: not in the actions table as read now, and not freed during
   // this run of Vivaldi (freed now, Vivaldi still has them until the next start: 05-bootstrap.js records when). The
@@ -127,7 +128,7 @@
     label.append(faviconOf(tab, "vm-sw-ico"), el("span", "vm-sw-title", titleOf(tab)));
     c.append(thumb, label);
     c.addEventListener("mousemove", () => select(index));
-    c.addEventListener("mousedown", (e) => { e.preventDefault(); select(index); commit(); });
+    c.addEventListener("mousedown", (e) => { e.preventDefault(); select(index); ended = "click"; commit(); });
     return c;
   };
 
@@ -191,7 +192,7 @@
   // The keys while the row is up: it has the cursor (focused below), so Tab, Shift+Tab, the arrows, Escape, Enter and the
   // release of Ctrl come here first.
   const onKeyDown = (e) => {
-    if (!e.ctrlKey && e.key !== "Control") { commit(); return; }
+    if (!e.ctrlKey && e.key !== "Control") { ended = `keydown ${e.key} without Ctrl`; commit(); return; }
     if (e.key === "Tab" || e.key === "ArrowRight" || e.key === "ArrowLeft") {
       e.preventDefault();
       e.stopPropagation();
@@ -202,16 +203,19 @@
     } else if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
+      ended = "Escape";
       cancel();
     } else if (e.key === "Enter") {
       e.preventDefault();
+      ended = "Enter";
       commit();
     }
   };
-  const onKeyUp = (e) => { if (e.key === "Control") commit(); };
-  // A Ctrl released before the row had the cursor never reaches it: the next move of the mouse without Ctrl ends it.
-  const onMouseMove = (e) => { if (!e.ctrlKey) commit(); };
-  const onBlur = () => cancel();
+  const onKeyUp = (e) => { if (e.key === "Control") { ended = "Ctrl released"; commit(); } };
+  // A Ctrl released before the row had the cursor never reaches it: the next move of the mouse without Ctrl ends it. Only a
+  // real move: the row appearing under a still pointer makes the browser send a mousemove of its own, with no movement.
+  const onMouseMove = (e) => { if (!e.ctrlKey && (e.movementX || e.movementY)) { ended = "mouse moved without Ctrl"; commit(); } };
+  const onBlur = () => { ended = "window lost focus"; cancel(); };
 
   const open = async (dir) => {
     if (opening || bar) return;
@@ -232,6 +236,7 @@
     if (bar) return;
     const start = first(dir, tabs.length);
     if (start == null) return;
+    ended = null;
     items = tabs;
     selected = start;
     lastStep = held.at = Date.now();
@@ -246,7 +251,7 @@
     const panel = el("div", "vm-sw-panel");
     panel.append(strip);
     bar.append(panel);
-    bar.addEventListener("mousedown", (e) => { if (e.target === bar) cancel(); });
+    bar.addEventListener("mousedown", (e) => { if (e.target === bar) { ended = "click outside"; cancel(); } });
     (document.querySelector("#browser") || document.body).append(bar);
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
@@ -285,7 +290,7 @@
   });
 
   Object.assign(window.__vm.switcher, {
-    state: () => ({ armed, reason, open: !!bar, shown: !!bar?.classList.contains("in"), items: items.map((t) => t.id), selected, scope }),
+    state: () => ({ armed, reason, open: !!bar, shown: !!bar?.classList.contains("in"), items: items.map((t) => t.id), selected, scope, ended }),
     recheck: () => decide().then(() => ({ armed, reason })),
   });
   console.log("[vivarc] tab switcher started");
