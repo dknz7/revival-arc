@@ -63,7 +63,8 @@ const tap = async (win, x, y, { button = "left", clickCount = 1, move = true, mo
     await c.send("Input.dispatchMouseEvent", { type: "mousePressed", x, y, button, buttons: button === "right" ? 2 : 1, clickCount, modifiers });
     if (holdMs) await sleep(holdMs);
   } finally {
-    await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, buttons: 0, clickCount, modifiers }, RELEASE_MS).catch(() => {});
+    await c.send("Input.dispatchMouseEvent", { type: "mouseReleased", x, y, button, buttons: 0, clickCount, modifiers }, RELEASE_MS)
+      .catch((error) => console.log(`      (mouse release not acknowledged at ${Math.round(x)},${Math.round(y)}: ${error.message}; the case's end retries it)`));
   }
 };
 const MOD_KEYS = [[2, { key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 17, nativeVirtualKeyCode: 17 }], [1, { key: "Alt", code: "AltLeft", windowsVirtualKeyCode: 18, nativeVirtualKeyCode: 18 }],
@@ -79,8 +80,9 @@ const keyTap = async (win, key, code, vk, { mods = 0, text = null, native = true
     await c.send("Input.dispatchKeyEvent", text != null ? { type: "keyDown", ...ids, text, modifiers: mods } : { type: "rawKeyDown", ...ids, modifiers: mods });
     if (holdMs) await sleep(holdMs);
   } finally {
-    await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...ids, modifiers: mods }, RELEASE_MS).catch(() => {});
-    for (const m of down.reverse()) await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...m, modifiers: 0 }, RELEASE_MS).catch(() => {});
+    const said = (what) => (error) => console.log(`      (${what} release not acknowledged: ${error.message}; the case's end retries it)`);
+    await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...ids, modifiers: mods }, RELEASE_MS).catch(said(code));
+    for (const m of down.reverse()) await c.send("Input.dispatchKeyEvent", { type: "keyUp", ...m, modifiers: 0 }, RELEASE_MS).catch(said(m.code));
   }
 };
 
@@ -3765,16 +3767,19 @@ for (const layout of ["dia", "arc"]) {
       const bId = await h.ev(`chrome.tabs.create(${J({ windowId: ctx.W, url: `${origin}/en-b`, active: true })}).then((t) => t.id)`, ctx.H);
       await sleep(1200);
       const away = await NB(ctx.W);
+      // a message on the other tab (same kind): it must not replace A's
+      await h.ev(`(window.dispatchEvent(new CustomEvent("vm-toast", { detail: { message: "B's message", ms: 30000 } })), 1)`, ctx.W); await sleep(300);
       await activate(a.id); await sleep(1800);
       const back = await NB(ctx.W);
-      await h.ev(`(window.__vm.notify.remove("nb-tab"), window.__vm.notify.remove("vm-toast"), 1)`, ctx.W);
+      await h.ev(`(window.__vm.notify.remove("nb-tab"), window.__vm.notify.remove("vm-toast:${a.id}"), 1)`, ctx.W);
       return { before, away, back, bId };
     },
     expect: (s, b, r) => {
       const has = (x, what) => x.host.some((i) => i.text.includes(what) || (what === "card" && i.cls.includes("vm-site-card")));
       return [has(r.before, "card") && has(r.before, "A's own toast") && has(r.before, "Vivarc's message") ? null : `setup: ${J(r.before.host)}`,
         !has(r.away, "card") && !has(r.away, "A's own toast") && !has(r.away, "Vivarc's message") ? null : `another tab still shows A's notifications: ${J(r.away.host)}`,
-        has(r.back, "card") && has(r.back, "A's own toast") && has(r.back, "Vivarc's message") ? null : `back on A they did not come back: ${J(r.back.host)}`];
+        has(r.back, "card") && has(r.back, "A's own toast") && has(r.back, "Vivarc's message") ? null : `back on A they did not come back: ${J(r.back.host)}`,
+        has(r.back, "B's message") ? `B's message shows on A: ${J(r.back.host)}` : null];
     },
   });
   // x on a question keeps it pending (a pill stays); opening the bar brings it into the fly-up, answerable there.
@@ -4203,6 +4208,58 @@ for (const layout of ["dia", "arc"]) {
   });
 }
 
+
+// ---------- Task 9b fix round 2 ----------
+for (const layout of ["dia", "arc"]) {
+  // Review round 2, C1 and I3: a script address handed to Vivaldi's field is never submitted, whoever asks; each hand-over is
+  // a session: a newer one is not torn down by the older one's timers, and a tab switch ends it.
+  def(`9B.hand-overs-are-sessions-and-never-submit-a-script-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const r = {};
+      const tabId = (await activeUrl(ctx.W)).id;
+      const title0 = await h.ev(`chrome.tabs.get(${tabId}).then((t) => t.title)`, ctx.H);
+      await h.ev(`(window.__vm.commandBar.handOver("javascript:document.title='PWNED-9B'", { tabId: ${tabId}, submit: true }), 1)`, ctx.W);
+      await sleep(1500);
+      r.script = { ...(await FIELD_STATE9(ctx.W)), title: await h.ev(`chrome.tabs.get(${tabId}).then((t) => t.title)`, ctx.H), title0 };
+      await h.ev(`(document.activeElement?.blur?.(), 1)`, ctx.W); await sleep(600);
+      // two hand-overs in a row: the first submitted (its 600 ms end timer), the second shown; the first's timer must not end it
+      await h.ev(`(window.__vm.commandBar.handOver(${J(`${origin}/en-first`)}, { tabId: ${tabId}, submit: true }), 1)`, ctx.W);
+      await sleep(320);
+      await h.ev(`(window.__vm.commandBar.handOver("second entry", { tabId: ${tabId}, submit: false }), 1)`, ctx.W);
+      await sleep(1400);
+      r.second = await FIELD_STATE9(ctx.W);
+      // a tab switch ends the session
+      const other = await h.ev(`chrome.tabs.create(${J({ windowId: ctx.W, url: `${origin}/en-other2`, active: true })}).then((x) => x.id)`, ctx.H);
+      await sleep(900);
+      r.switched = await FIELD_STATE9(ctx.W);
+      await activate(tabId); await sleep(600);
+      return r;
+    },
+    expect: (s, b, r) => [r.script.title === r.script.title0 && !String(r.script.title).includes("PWNED") ? null : `a script ran: title ${J(r.script.title)}`,
+      r.script.native && String(r.script.value).startsWith("javascript:") ? null : `the script address was not shown for the user's own Enter: ${J(r.script)}`,
+      r.second.native && r.second.value === "second entry" && r.second.fieldFocused ? null : `the second hand-over was torn down by the first's timer: ${J(r.second)}`,
+      !r.switched.native ? null : `a tab switch left Vivaldi's field shown: ${J(r.switched)}`],
+  });
+  // Review round 2, I4: a second focus request right after the bar closed opens it again (the old 400 ms debounce swallowed it).
+  def(`9B.a-focus-request-right-after-the-bar-closed-opens-it-again-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const focusField = () => h.ev(`(document.querySelector("#tabs-tabbar-container #urlFieldInput").focus(), 1)`, ctx.W);
+      await sleep(1200);
+      await focusField(); await sleep(150);
+      const first = await FIELD_STATE9(ctx.W);
+      await h.ev(`(document.querySelector("#vm-cmd input")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })), 1)`, ctx.W);
+      await sleep(80);
+      await focusField(); await sleep(600);
+      const second = await FIELD_STATE9(ctx.W);
+      await escBar(ctx.W);
+      return { first, second };
+    },
+    expect: (s, b, r) => [r.first.bar ? null : `the first request opened no bar: ${J(r.first)}`, r.second.bar && r.second.inBar ? null : `a request 80 ms after the bar closed was swallowed: ${J(r.second)}`],
+  });
+}
+
 // ---------- running ----------
 async function setLayout(dia) {
   await h.refresh();
@@ -4218,6 +4275,7 @@ const ACTED = new Set(["clicked", "ok", "dropped"]);
 const actFailure = (r) => typeof r === "string" ? (ACTED.has(r) ? null : `the act did not happen: ${r}`)
   : r && typeof r === "object" && !Array.isArray(r) && r.error ? `the act did not happen: ${r.error}` : null;
 
+let lastPerf = null;
 async function runCase(c, layout) {
   const t0 = Date.now();
   const out = { id: c.id, layout };
@@ -4255,13 +4313,17 @@ async function runCase(c, layout) {
     else if (e.skip) Object.assign(out, { pass: false, bad: [`error: ${e.message || e} (refused as a split, but this case does not declare one)`], ms: Date.now() - t0 });
     else Object.assign(out, { pass: false, bad: [`error: ${e.message || e}`], ms: Date.now() - t0 });
   }
-  // Anything a connection still holds down (a press or a key whose release never went out) is let go, and logged.
+  // Anything a connection still holds down (a press or a key whose release never went out or was never acknowledged) is let
+  // go with bounded retries, and logged with any release that failed; what is still held after that is logged too.
   await h.refresh().catch(() => {});
   for (const e of h.byWin.values()) {
-    const was = await e.cdp.releaseAll().catch(() => null);
-    if (was && (was.buttons.length || was.keys.length)) (out.released ||= []).push({ win: e.win, ...was });
+    const r = await e.cdp.releaseAll().catch((error) => ({ held: null, failed: [{ error: String(error?.message || error) }], left: null }));
+    if (r.failed?.length || r.held?.buttons?.length || r.held?.keys?.length || r.left?.buttons?.length || r.left?.keys?.length) (out.released ||= []).push({ win: e.win, ...r });
   }
-  if (out.released) console.log(`      (released after ${c.id}: ${J(out.released)})`);
+  if (out.released) console.log(`      (input still held or failed to release after ${c.id}: ${J(out.released)})`);
+  // The UI's own counters (Vivarc's observers and the bar's computations, window.__vm.perf) in H, the sweep's long-lived window.
+  out.perf = await h.ev(`JSON.parse(JSON.stringify(window.__vm.perf || null))`, ctx.H).catch(() => null);
+  if (out.perf) lastPerf = out.perf;
   const tag = `${out.skip ? "SKIP" : out.pass ? "PASS" : "FAIL"} ${layout} ${c.id}`;
   const timing = out.heldAtMs !== undefined ? ` (invariants held ${out.heldAtMs ?? "never"} ms after the act)` : "";
   if (out.skip) console.log(`${tag}: ${out.skip} (${out.bad.join(" | ")})`);
@@ -4297,6 +4359,8 @@ for (const layout of layouts) {
   results.push(...mine);
   const n = mine.filter((r) => r.pass).length, skipped = mine.filter((r) => r.pass === null).length;
   console.log(`${layout}: ${n} pass, ${mine.length - n - skipped} fail${skipped ? `, ${skipped} skipped (${SPLIT_REFUSED})` : ""}`);
+  const hangs = mine.filter((r) => (r.bad || []).some((b) => /no reply to Input\.dispatch/.test(b))).map((r) => r.id);
+  console.log(`${layout}: input-ack hangs ${hangs.length}${hangs.length ? ` (${hangs.join(", ")})` : ""}; H's counters at the end: ${J(lastPerf)}`);
 }
 await reset().catch(() => {});
 await setLayout(false).catch(() => {});
