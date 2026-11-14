@@ -4,6 +4,8 @@
   // What a blank tab is, and the start page the user asked for (which is not one), is workspaces.isBlank (07-workspaces.js).
   // One argument only: it is passed to filter/every, whose index would be taken for the second.
   const isBlank = (tab) => window.__vm.workspaces.isBlank(tab);
+  // A tab the bar opens empty over: a blank one, or a private window's introduction page (Task 9b).
+  const startsEmpty = (tab) => isBlank(tab) || !!window.__vm.workspaces.privateIntro?.(tab);
   const startedAt = Date.now();
 
   const DEFAULT = {}; // Marks rows that resolve Vivaldi's current default at execution time.
@@ -241,7 +243,10 @@
   const close = (removeBlank) => {
     const blank = targetTab;
     const keep = keepTarget;
+    const was = !!bar;
+    try { window.__vm.notify?.barClosed(); } catch (error) { console.warn("[vivarc] fly-up:", error); }
     bar?.remove();
+    if (was) window.dispatchEvent(new CustomEvent("vm-command-bar", { detail: { open: false } }));
     bar = input = list = chipHolder = targetTab = mode = null;
     keepTarget = false;
     editing = null;
@@ -567,9 +572,17 @@
     head.append(glyph, chipHolder, input);
     list = el("div", "vm-cmd-list");
     box.append(head, list);
-    bar.append(box);
+    // The fly-up (17-notify.js) sits right above the input: the tab's questions, messages, indicators and page actions.
+    const stack = el("div", "vm-cmd-stack");
+    const fly = el("div", "vm-cmd-fly");
+    fly.hidden = true;
+    stack.append(fly, box);
+    bar.append(stack);
     // A click just after opening is the rest of a double or triple click that opened it, not a click away.
     bar.addEventListener("mousedown", (e) => { if (e.target === bar && Date.now() - openedAt > 500) close(true); });
+    if (typeof ResizeObserver === "function") {
+      new ResizeObserver(() => { bar?.style.setProperty("--vm-fly-h", fly.hidden ? "0px" : `${Math.ceil(fly.getBoundingClientRect().height) + 8}px`); }).observe(fly);
+    }
     input.addEventListener("keydown", onKey);
     // Only the latest text is completed inline: an older keystroke's lookups would complete the text typed since.
     input.addEventListener("input", async () => { showLeadRows(); if (await compute()) autocomplete(); });
@@ -586,6 +599,11 @@
     setTimeout(focus, 250);
     showLeadRows(); // an address filled in for editing: Enter acts on it before the lookups answer
     compute();
+    try {
+      const page = editing !== null ? targetTab : null;
+      window.__vm.notify?.barOpened({ fly, close: () => close(true), tab: () => page }); // null: the window's active tab
+    } catch (error) { console.warn("[vivarc] fly-up:", error); }
+    window.dispatchEvent(new CustomEvent("vm-command-bar", { detail: { open: true } }));
     // Like Arc, a new tab scrolls the sidebar to the new-tab area; editing the current page leaves it where it is.
     if (editing === null) window.dispatchEvent(new CustomEvent("vm-command-bar-opened"));
     return true;
@@ -611,8 +629,12 @@
   Promise.resolve(window.__vm.ready).then(async (cssLoaded) => {
     if (!cssLoaded) return false;
     await new Promise((resolve) => setTimeout(resolve, 300)); // let Vivaldi finish opening the window
+    // Vivaldi put the cursor in its field before the stylesheet was confirmed (measured: within ~150 ms of the window, the
+    // guard below not yet on): it leaves the field now, so nothing types into a field that does not show.
+    const field = document.getElementById?.("urlFieldInput");
+    if (ownsField && field && document.activeElement === field) { field.blur(); unscroll(field); }
     const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
-    return !!(active && isBlank(active) && !bar && await open(active.id, active.windowId, true));
+    return !!(active && startsEmpty(active) && !bar && await open(active.id, active.windowId, true));
   }).catch((error) => {
     console.warn("[vivarc] launch bar:", error);
     return false;
@@ -720,12 +742,18 @@
     }
   });
 
-  // A tab switch must not pop the collapsed address field open. Vivaldi remembers per tab where the cursor was; a tab
-  // left with it in the address field (any switch made while the field had focus) puts it back there on every return,
-  // and the field floats open over the sidebar. When the field gains focus just after a tab activation in this window
-  // and nobody asked for it, the active page gets the focus instead (webview.focus(), which is how the page gets it
-  // when Vivaldi has no such memory; Vivaldi then records "page" for the tab, so the next switch is quiet). A new tab
-  // is left alone: Vivaldi putting the cursor in the field is what hands the tab to the command bar.
+  // The command bar replaces Vivaldi's address field for typing (Task 9b). Whenever the field would take the cursor (Ctrl+L,
+  // F6, Alt+D: 12-sidebar-hide.js takes those first where it can; Vivaldi focusing it on a new tab, a tab switch or a new
+  // window; anything else), the cursor leaves it at once and the bar opens instead: editing the page's address, or empty on
+  // a blank tab or a private window's introduction page. The field itself never shows (vivarc.css), and its
+  // popups drop from where Vivarc's toasts do (17-notify.js). Only in a window the bar can open in (a normal window): a
+  // popup or settings window keeps Vivaldi's field.
+  // Task 8o's rule stays for a focus nobody asked for just after a tab switch: Vivaldi remembers per tab where the cursor was,
+  // and putting it back in the field on every return would open the bar on every switch, so the page gets it instead
+  // (webview.focus(), as Vivaldi gives it when it has no such memory; Vivaldi then records "page" for the tab).
+  // Measured on 8.3 (task 9b): the field, 348 px wide in a 323 px sidebar, made Chromium scroll #tabs-container sideways
+  // when it took the cursor floated (the whole sidebar moved left, Byron's private-window bug); vivarc.css clips that
+  // container (overflow: clip, no scrolling at all), and the guard puts any scroll it finds back to 0.
   const ASKED_MS = 1500; // a Ctrl+L, F6 or click on the field this recently is the user asking for it
   // (State: myWindow, activation, asked and noteActivation, above the tab events, which feed them.)
   const ASK_KEYS = new Set(["ctrl+l", "l+meta", "f6", "alt+d"].map((k) => window.__vm.normalise(k)));
@@ -734,31 +762,55 @@
     if (e.key === "F6" || ((e.ctrlKey || e.metaKey) && e.key?.toLowerCase() === "l") || (e.altKey && e.key?.toLowerCase() === "d")) asked();
   }, true);
   document.addEventListener("pointerdown", (e) => { if (!window.__vm.synthetic?.(e) && e.target?.closest?.(".UrlBar-AddressField")) asked(); }, true);
+  // Whether this window's field is the bar's (a normal window), known once the window is read.
+  let ownsField = false;
+  chrome.windows.getCurrent().then((win) => {
+    let kind = "normal";
+    try { kind = JSON.parse(win.vivExtData || "{}").windowType || "normal"; } catch (_) {}
+    ownsField = win.type === "normal" && kind === "normal";
+  }, () => {});
+  const unscroll = (field) => {
+    for (let e = field.parentElement; e && e !== document.body; e = e.parentElement) {
+      if (e.scrollLeft) e.scrollLeft = 0;
+      if (e.scrollTop && e.matches?.("#tabs-container, #tabs-tabbar-container, .toolbar-tabbar-before")) e.scrollTop = 0;
+      if (e.id === "browser") break;
+    }
+  };
+  let barAt = 0;
   document.addEventListener("focusin", async (e) => {
     try {
       const field = e.target;
       if (field?.id !== "urlFieldInput" || !field.closest?.(".UrlBar-AddressField")) return;
+      if (!ownsField || !window.__vm.cssLoaded || !document.querySelector("#browser.vm-on")) return;
       const sinceActivation = Date.now() - activation.at;
       const current = activation;
+      const userAsked = Date.now() - askedAt < ASKED_MS;
+      field.blur();
+      unscroll(field);
+      requestAnimationFrame(() => unscroll(field));
+      if (bar) { input?.focus(); return; }
+      if (launching) return; // the launch code opens the bar on a blank tab or a private window's intro page (above)
       const give = window.__vm.workspaces?.returnFocus;
-      if (!give || current.handled || sinceActivation > window.__vm.workspaces.RETURN_FOCUS_MS || launching || bar) return;
-      if (!document.querySelector("#browser.vm-on")) return;
-      const tab = await current.tab;
-      if (current !== activation || !tab || tab.active === false || isBlank(tab) || document.activeElement !== field) return;
-      const verdict = give({
+      const tab = !current.handled && sinceActivation <= window.__vm.workspaces.RETURN_FOCUS_MS ? await current.tab : null;
+      if (give && tab && current === activation && tab.active !== false && !startsEmpty(tab) && give({
         msSinceActivation: sinceActivation,
-        userAsked: Date.now() - askedAt < ASKED_MS,
-        edited: !window.__vm.workspaces.showsPage(field.value, tab),
-        popupOpen: !!document.querySelector(".addressfield-popup-container:not(.vm-site-carded)"),
-      });
-      if (!verdict) return;
-      const view = document.getElementById(String(tab.id));
-      if (view?.tagName !== "WEBVIEW") return;
-      current.handled = true;
-      view.focus();
+        userAsked,
+        edited: false,
+        popupOpen: false,
+      })) {
+        const view = document.getElementById(String(tab.id));
+        if (view?.tagName === "WEBVIEW") { current.handled = true; view.focus(); return; }
+      }
+      if (bar || Date.now() - barAt < 400) { input?.focus(); return; }
+      barAt = Date.now();
+      const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
+      if (!active || bar) return;
+      if (startsEmpty(active)) open(active.id, active.windowId, true);
+      else window.dispatchEvent(new CustomEvent("vm-edit-url"));
     } catch (error) {
-      console.warn("[vivarc] return focus to the page:", error);
+      console.warn("[vivarc] address field to the command bar:", error);
     }
   }, true);
+  window.__vm.commandBar = { ownsField: () => ownsField, isOpen: () => !!bar };
   console.log("[vivarc] command bar started");
 })();

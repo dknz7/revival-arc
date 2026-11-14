@@ -1,9 +1,11 @@
-// Vivarc: a site's permission question (notifications, location, camera, microphone...) as a card at the top right of the
-// page, not a floating address bar. Vivaldi asks inside a popup of its address field (.addressfield-popup-container),
+// Vivarc: a site's permission question (notifications, location, camera, microphone...) as a card in Vivarc's notifications
+// (17-notify.js: a toast under the breadcrumb or the sidebar's URL bar, or a row of the command bar's fly-up while the bar is
+// open), not a floating address bar. Vivaldi asks inside a popup of its address field (.addressfield-popup-container),
 // which Vivarc keeps collapsed; the card is drawn from that popup (the site, what it asks, and a button for each of
 // Vivaldi's own buttons, with Vivaldi's labels) and a click on it clicks Vivaldi's button, so Vivaldi records the answer
 // exactly as if its own prompt had been clicked. A popup that is not an undecided Allow/Deny question (the site-info panel,
-// a decided permission, a device list, anything unseen) is not carded: the field keeps floating for it (vivarc.css).
+// a decided permission, a device list, anything unseen) is not carded: Vivaldi's popup itself drops from where the toasts do
+// (vivarc.css), the field staying collapsed.
 //
 // Measured on Vivaldi 8.2: the popup opens by itself with the focus on its Deny button; Escape, the icon in the field, or a
 // press anywhere outside the popup closes it, and the request stays pending (the icon stays "undecided"); switching tabs
@@ -18,19 +20,20 @@
   if (!W?.siteRequest) return;
   const POPUP = ".addressfield-popup-container";
   const CARDED = "vm-site-carded"; // on a popup shown as a card: the CSS then leaves the field collapsed
-  const HOST = "vm-site-requests";
+  const NOTE = ".vm-site-card, .vm-site-pill"; // Vivarc's own: a press or a focus there is not "outside" Vivaldi's popup
+  const STOP = "#vm-notify, #vm-cmd .vm-cmd-stack"; // presses that must not reach Vivaldi's outside-press closer (below)
   const ICON_ANY = ".UrlBar-AddressField .button-addressfield.permission-popup.is-undecided";
   const ICON = `${ICON_ANY}:not(.is-dialog-open) button.ToolbarButton-Button`;
   const MOVE_MS = 600; // a click this soon after a card left the stack answers nothing: the card below has moved under the pointer
   const AUTO_REOPEN_MAX = 3; // automatic re-opens within AUTO_REOPEN_MS; past that the pill takes over
   const AUTO_REOPEN_MS = 8000;
-  const cards = new Map(); // popup element -> { card, labels, tab }
+  const cards = new Map(); // popup element -> { card, labels, tab, id }
   const acted = new WeakSet(); // popups the user answered or dismissed on the card
   const owed = new Set(); // tabs whose popup went without an answer: it comes back (at once, or on return)
   const dismissed = new Set(); // tabs whose card the user closed: the pill stays while the request is pending
   const reopens = new Map(); // tab -> times of automatic re-opens
-  let host = null;
   let pill = null;
+  let cardSeq = 0;
   let myWindow = null;
   let activeTab = null;
   let stackMovedAt = 0;
@@ -74,16 +77,20 @@
   // reopened popup would take the cursor (its Deny button is autofocused), an inline rename ends, unchanged, when its field
   // loses focus, and pressing the question's icon is a press outside the Shield's popup, which closes it. A menu stays
   // "open" for a moment after it closes: the item picked in it (Rename...) opens its field a tick later.
+  // The command bar counts as busy too, except where the question belongs to the bar's own tab (`barToo` false): the
+  // fly-up shows it there, so it is brought back while the bar is open (its popup's focus goes back to the bar's input).
   let busyAt = 0;
   let shieldHeld = false; // the Shield's button is pressed and not yet released (see the listeners at the end)
-  const busy = () => {
+  const busy = (barToo = true) => {
     if (shieldHeld) busyAt = Date.now();
     const a = document.activeElement;
-    const typing = !!a && !a.closest?.(`#${HOST}, ${POPUP}`) && (a.matches?.("input, textarea, [contenteditable]") || a.isContentEditable);
-    if (document.querySelector(".vm-menu, .vm-theme-pop, .vm-set-card, .vm-rename, .vm-rename-float, .vm-space-input, #vm-cmd, #browser.vm-shield-open, .UrlBar-AddressField .SiteInfo.button-popup") || typing) busyAt = Date.now();
+    const inBar = !!a?.closest?.("#vm-cmd");
+    const typing = !!a && !a.closest?.(`${NOTE}, ${POPUP}`) && !(inBar && !barToo) && (a.matches?.("input, textarea, [contenteditable]") || a.isContentEditable);
+    if (document.querySelector(`.vm-menu, .vm-theme-pop, .vm-set-card, .vm-rename, .vm-rename-float, .vm-space-input, ${barToo ? "#vm-cmd, " : ""}#browser.vm-shield-open, .UrlBar-AddressField .SiteInfo.button-popup`) || typing) busyAt = Date.now();
     return Date.now() - busyAt < 500;
   };
   const menuOpen = busy;
+  const barOpen = () => !!document.querySelector("#vm-cmd");
   // The Shield's popup has no time limit: while it is open the question waits in its pill however long that is.
   const shieldUp = () => shieldHeld || !!document.querySelector("#browser.vm-shield-open, .UrlBar-AddressField .SiteInfo.button-popup");
   const moved = () => { stackMovedAt = Date.now(); }; // something clickable has just appeared or gone where the pointer may be
@@ -107,7 +114,7 @@
   const releaseFocus = () => {
     try {
       const a = document.activeElement;
-      if (!a || !a.closest?.(`#${HOST}`)) return;
+      if (!a || !a.closest?.(NOTE)) return;
       let target = lastOutside;
       if (!target || !target.isConnected || target.tagName === "WEBVIEW") {
         const view = activeTab != null ? document.getElementById(String(activeTab)) : null;
@@ -157,40 +164,7 @@
     } catch (error) { warn("dismiss", error); }
   };
 
-  const hostEl = () => {
-    if (host?.isConnected) return host;
-    const browser = document.querySelector("#browser");
-    if (!browser) return null;
-    host = el("div");
-    host.id = HOST;
-    host.setAttribute("role", "region");
-    host.setAttribute("aria-label", "Site requests");
-    host.setAttribute("aria-live", "polite");
-    browser.append(host);
-    return host;
-  };
-
-  // Top right of the page column, clear of the window's own buttons (Windows draws them at the top right).
-  const place = () => {
-    try {
-      if (!host?.isConnected) return;
-      const view = document.querySelector("#webview-container")?.getBoundingClientRect();
-      let top = 12;
-      let right = 14;
-      if (view && view.width > 0) {
-        top = Math.max(12, Math.round(view.top) + 12);
-        right = Math.max(14, Math.round(window.innerWidth - view.right) + 14);
-      }
-      // Every button group there is (the Dia layout has two), the ones on screen at the right of the window.
-      for (const group of document.querySelectorAll(".window-buttongroup")) {
-        const buttons = group.getBoundingClientRect();
-        if (buttons.width > 0 && buttons.height > 0 && buttons.bottom > 0 && buttons.right > window.innerWidth / 2 && buttons.bottom + 8 > top &&
-            buttons.left < window.innerWidth - right) top = Math.round(buttons.bottom) + 8;
-      }
-      host.style.setProperty("--vm-sr-top", `${top}px`);
-      host.style.setProperty("--vm-sr-right", `${right}px`);
-    } catch (error) { warn("place", error); }
-  };
+  const notify = () => window.__vm.notify;
 
   const build = (popup, request) => {
     const card = el("div", "vm-site-card");
@@ -202,13 +176,27 @@
     if (svg) icon.append(svg.cloneNode(true));
     // What Vivaldi says, in its order: the words before the site, the site (bold), what it asks. Text only.
     const text = el("div", "vm-site-text");
-    if (request.prefix) text.append(el("span", "vm-site-pre", request.prefix), " ");
-    if (request.site) text.append(el("strong", "vm-site-name", request.site), " ");
-    text.append(el("span", "vm-site-ask", request.ask));
-    const close = el("button", "vm-site-x", "×");
+    const words = (r) => {
+      text.replaceChildren();
+      if (r.prefix) text.append(el("span", "vm-site-pre", r.prefix), " ");
+      if (r.site) text.append(el("strong", "vm-site-name", r.site), " ");
+      text.append(el("span", "vm-site-ask", r.ask));
+    };
+    words(request);
+    // Vivaldi's raw permission names ("window-placement", "local-fonts", with no site) are written as a sentence with the
+    // tab's site (17-notify.js, plainRequest); the tab's address comes asynchronously.
+    if (!request.site && activeTab != null) {
+      chrome.tabs.get(activeTab).then((tab) => {
+        const plain = notify()?.plainRequest?.(request, tab?.url || tab?.pendingUrl || "");
+        if (plain && plain !== request) words(plain);
+      }, () => {});
+    }
+    // Vivaldi's protocol-handler question is denied when its popup is closed: the close button says so, and so does the card.
+    const close = el("button", "vm-site-x", request.closeDenies ? "Deny" : "×");
     close.type = "button";
-    close.title = "Dismiss (Esc)";
-    close.setAttribute("aria-label", "Dismiss");
+    close.title = request.closeDenies ? "Deny (closing this question denies it)" : "Dismiss (Esc)";
+    close.setAttribute("aria-label", request.closeDenies ? "Deny" : "Dismiss");
+    if (request.closeDenies) close.classList.add("vm-site-x-deny");
     close.addEventListener("click", (e) => { try { if (e.detail <= 1) dismiss(popup); } finally { releaseFocus(); } });
     head.append(icon, text, close);
     const actions = el("div", "vm-site-actions");
@@ -220,7 +208,13 @@
       b.addEventListener("click", (e) => { try { if (e.detail <= 1) answer(popup, i, option.label); } finally { releaseFocus(); } });
       actions.append(b);
     });
-    card.append(head, actions);
+    // Two short buttons sit on the right of the message; longer ones, or more, under it (17-notify.js, buttonsFit).
+    const inline = !request.closeDenies && !!window.__vm.notifyLogic?.buttonsFit(request.options.map((o) => o.label), text.textContent);
+    card.classList.toggle("vm-site-inline", inline);
+    if (inline) head.insertBefore(actions, close);
+    card.append(head);
+    if (!inline) card.append(actions);
+    if (request.closeDenies) card.append(el("div", "vm-site-note", "Closing this question denies it, as Vivaldi does."));
     card.addEventListener("pointerup", () => setTimeout(releaseFocus, 0)); // a press that never became a click leaves the cursor on the button too
     card.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dismiss(popup); } });
     return card;
@@ -236,15 +230,14 @@
       entry.card.querySelectorAll(".vm-site-opt").forEach((b, i) => { if (b.disabled !== request.options[i].disabled) b.disabled = request.options[i].disabled; });
       return;
     }
-    const container = hostEl();
-    if (!container) return;
+    if (!notify()) return;
     const card = build(popup, request);
     moved();
-    if (entry) { entry.card.replaceWith(card); entry.card = card; entry.labels = labels; return; }
-    container.append(card);
-    cards.set(popup, { card, labels, tab: activeTab });
+    if (entry) { entry.card = card; entry.labels = labels; notify().add({ id: entry.id, tab: entry.tab, type: "permission", el: card }); return; }
+    const id = `site-${++cardSeq}`;
+    cards.set(popup, { card, labels, tab: activeTab, id });
     dismissed.delete(activeTab);
-    place();
+    notify().add({ id, tab: activeTab, type: "permission", el: card });
     giveBackFocus(popup);
   };
 
@@ -252,12 +245,13 @@
   const drop = (popup, byPopup = true) => {
     const entry = cards.get(popup);
     if (!entry) return;
+    notify()?.remove(entry.id);
     entry.card.remove();
     cards.delete(popup);
     moved();
     if (byPopup && !acted.has(popup) && entry.tab != null) {
       owed.add(entry.tab);
-      if (entry.tab === activeTab) reopen(entry.tab, 60);
+      if (entry.tab === activeTab) reopen(entry.tab, 60, false, barOpen());
     }
   };
 
@@ -267,7 +261,7 @@
     try {
       const tab = activeTab;
       if (tab != null && dismissed.has(tab) && !document.querySelector(ICON_ANY)) dismissed.delete(tab); // the request is over
-      const want = tab != null && dismissed.has(tab) && !cards.size && !!document.querySelector(ICON) && !!hostEl();
+      const want = tab != null && dismissed.has(tab) && !cards.size && !!document.querySelector(ICON) && !!notify();
       if (want && !pill?.isConnected) {
         pill = el("button", "vm-site-pill", "Site request pending");
         pill.type = "button";
@@ -279,10 +273,10 @@
           reopen(activeTab, 0, true);
         });
         moved();
-        host.append(pill);
-        place();
+        notify().add({ id: "site-pill", tab, type: "pending", el: pill });
       } else if (!want && pill) {
         moved();
+        notify()?.remove("site-pill");
         pill.remove();
         pill = null;
       }
@@ -313,7 +307,8 @@
   // `force`: the user asked (the pill): it always opens, and does not count toward the automatic limit. Nothing re-opens
   // while one of Vivarc's own menus is open (the press that closed the popup may be the one that opened it): the pill
   // holds the question until the menu is gone. The Shield's popup holds it the same way, for as long as it stays open.
-  const reopen = async (tab, first = 150, force = false) => {
+  // `bar`: the command bar is open on this tab: its fly-up is where the question shows, so the bar does not hold it.
+  const reopen = async (tab, first = 150, force = false, bar = false) => {
     const token = ++reopenToken;
     try {
       let tries = 0;
@@ -321,7 +316,7 @@
         await wait(i === 0 ? first : 150);
         if (token !== reopenToken || activeTab !== tab) return;
         if (cards.size) { owed.delete(tab); return; }
-        if (!force && menuOpen()) { dismissed.add(tab); syncPill(); if (shieldUp()) i--; continue; }
+        if (!force && menuOpen(!bar)) { dismissed.add(tab); syncPill(); if (shieldUp()) i--; continue; }
         tries++;
         const button = document.querySelector(ICON);
         if (!button) continue;
@@ -358,15 +353,26 @@
     chrome.tabs.onRemoved?.addListener((id) => { owed.delete(id); dismissed.delete(id); reopens.delete(id); });
     document.addEventListener("focusin", (e) => {
       const t = e.target;
-      if (t && t.nodeType === 1 && !t.closest?.(`${POPUP}, #${HOST}`)) lastOutside = t;
+      if (t && t.nodeType === 1 && !t.closest?.(`${POPUP}, ${NOTE}`)) lastOutside = t;
     }, true);
-    window.addEventListener("resize", place);
     // Vivaldi closes the popup (the request stays pending) on a press anywhere outside it, and the card is outside it:
     // measured, a real click on the card's button closed the popup before the click could answer it. A press on the card
-    // therefore goes no further than the card (window capture runs before Vivaldi's listeners).
+    // therefore goes no further than the card (window capture runs before Vivaldi's listeners). The same holds for the
+    // command bar's input and fly-up (a press there would close the question the fly-up shows), but not its backdrop, whose
+    // press closes the bar.
     for (const type of ["pointerdown", "mousedown", "touchstart"]) {
-      window.addEventListener(type, (e) => { if (e.target?.closest?.(`#${HOST}`)) e.stopImmediatePropagation(); }, true);
+      window.addEventListener(type, (e) => { if (e.target?.closest?.(STOP)) e.stopImmediatePropagation(); }, true);
     }
+    // The command bar opening on a tab with a question left pending (closed, or not brought back yet): it comes back, so the
+    // fly-up shows it with live buttons.
+    window.addEventListener("vm-command-bar", (e) => {
+      try {
+        if (!e.detail?.open || cards.size || activeTab == null || !document.querySelector(ICON)) return;
+        dismissed.delete(activeTab);
+        syncPill();
+        reopen(activeTab, 0, false, true);
+      } catch (error) { warn("bar", error); }
+    });
     // The Shield's popup opens on the click, but Vivaldi closes the question's popup on the press: a press on the Shield
     // counts as busy at once, so the question does not come back while the button is held (and spend an automatic reopen).
     window.addEventListener("pointerdown", (e) => { if (e.target?.closest?.(".vm-dia-shield")) { shieldHeld = true; busyAt = Date.now(); } }, true);

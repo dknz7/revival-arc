@@ -548,10 +548,23 @@ class SiteRequest(unittest.TestCase):
         got = self.read(message="Something unquoted wants a thing")
         self.assertEqual(got["prefix"], "")
 
-    def test_a_question_that_quotes_two_things_is_not_a_card(self):
-        # Vivaldi's protocol-handler question ("Allow “site” to open all “mailto” links?"): closing its popup DENIES it, so
-        # the card's close button could not be honest about it. It floats the field as before.
-        self.assertIsNone(self.read(message="Allow “https://a.example” to open all “mailto” links?"))
+    def test_the_protocol_handler_question_is_read_and_says_closing_denies(self):
+        # Vivaldi's protocol-handler question: closing its popup DENIES it (task 9b: a toast whose close says so).
+        got = self.read(message="Allow “https://a.example” to open all “mailto” links?")
+        self.assertEqual((got["prefix"], got["site"], got["second"], got["kind"], got["closeDenies"]),
+                         ("Allow", "https://a.example", "mailto", "protocol", True))
+        self.assertEqual(got["ask"], "to open all “mailto” links?")
+        self.assertEqual(self.read(message="Zulassen, dass „https://a.example“ alle „web+vm-test“-Links öffnet?")["kind"], "protocol")
+
+    def test_the_storage_access_question_names_both_sites_and_closing_keeps_it_pending(self):
+        got = self.read(message="Allow “https://a.example” to access cookies and site data on “https://b.example”?")
+        self.assertEqual((got["site"], got["second"], got["kind"], got["closeDenies"]), ("https://a.example", "https://b.example", "storage", False))
+        self.assertEqual(self.read(message="Allow “a.example” to access cookies and site data on “b.example”?")["kind"], "storage")
+
+    def test_a_one_name_question_has_no_kind(self):
+        got = self.read()
+        self.assertNotIn("kind", got)
+        self.assertNotIn("closeDenies", got)
 
     def test_the_site_is_text_not_markup(self):
         got = self.read(message="Website “<img src=x onerror=alert(1)>” would like to show notifications.")
@@ -570,6 +583,27 @@ class SiteRequest(unittest.TestCase):
         many = [{"label": f"B{i}", "type": "button", "disabled": False} for i in range(5)]
         self.assertIsNone(self.read(buttons=many))
         self.assertEqual(len(self.read(buttons=many[:4])["options"]), 4)
+
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class PrivateIntro(unittest.TestCase):
+    """Task 9b: a private window's first tab is Vivaldi's introduction page (measured on 8.3); the command bar opens empty
+    over it, as over a blank tab, though it is not a blank tab for the sidebar."""
+
+    INTRO = "chrome-extension://mpognobbkildjkofajifpdfhcoklimli/components/private-intro/private-intro.html"
+
+    def test_the_intro_page_is_known_by_its_address(self):
+        self.assertTrue(js("workspaces.privateIntro({ url })", url=self.INTRO))
+        self.assertTrue(js("workspaces.privateIntro({ url: '', pendingUrl: url })", url=self.INTRO))
+
+    def test_it_is_not_a_blank_tab(self):
+        self.assertFalse(js("workspaces.isBlank({ url })", url=self.INTRO))
+
+    def test_other_pages_are_not_it(self):
+        for url in ["https://example.com/components/private-intro/private-intro.html", "chrome://vivaldi-webui/startpage",
+                    "chrome-extension://mpognobbkildjkofajifpdfhcoklimli/components/startpage/startpage.html", ""]:
+            self.assertFalse(js("workspaces.privateIntro({ url })", url=url), url)
 
 
 if __name__ == "__main__":

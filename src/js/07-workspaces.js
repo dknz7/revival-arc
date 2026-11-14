@@ -626,6 +626,11 @@
   };
   // `wanted`: whether the tab is a start page the user asked for (default: its own flag).
   const isBlank = (tab, wanted = startWanted(tab)) => isBlankUrl(tab?.pendingUrl || tab?.url || "") && !wanted;
+  // A private window's first tab, Vivaldi's "Private Window Introduction" page (measured on 8.3: its own extension's
+  // components/private-intro/private-intro.html). It is a page, not a blank tab, but nothing was typed for it: the command
+  // bar opens empty over it, as over a blank tab (Task 9b).
+  const PRIVATE_INTRO = /^chrome-extension:\/\/[a-p]{32}\/components\/private-intro\/private-intro\.html(?:[?#].*)?$/i;
+  const privateIntro = (tab) => PRIVATE_INTRO.test(tab?.pendingUrl || tab?.url || "");
   // What the tab is called where Vivaldi gives it its address for a title (a start page asked for), or null.
   const startTitle = (tab) => (startWanted(tab) && isBlankUrl(tab?.pendingUrl || tab?.url || "") ? "Start Page" : null);
   // Whether text typed as an address means Vivaldi's start page: its addresses (and the new tab page's), not a section.
@@ -652,14 +657,23 @@
     if (!message || !Array.isArray(buttons) || !buttons.length || buttons.length > REQUEST_MAX_OPTIONS) return null;
     if (!buttons.every((b) => b && typeof b.label === "string" && b.label.trim())) return null;
     const quoted = /[“„‟"«]([^“”"»]+)[”“"»]/.exec(message);
-    // A second quoted thing means a question of another kind (the protocol-handler one: "Allow “site” to open all “mailto”
-    // links?", which Vivaldi DENIES when its popup is closed): not read, so it floats and its dismissal stays Vivaldi's own.
-    if (quoted && /[“„‟"«]([^“”"»]+)[”“"»]/.test(message.slice(quoted.index + quoted[0].length))) return null;
     const site = quoted ? quoted[1].trim().replace(/\/+$/, "") : "";
     const prefix = quoted ? message.slice(0, quoted.index).trim() : "";
     const ask = (quoted ? message.slice(quoted.index + quoted[0].length) : message).trim() || message;
-    return { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
+    const request = { prefix, site, ask, options: buttons.map((b) => ({ label: b.label.trim(), disabled: !!b.disabled })) };
+    // A second quoted thing: Vivaldi's two two-name questions, told apart by what the second name is, whatever the UI
+    // language. A scheme ("mailto", "web+x": no dot, no slash) is the protocol handler's ("Allow “site” to open all “mailto”
+    // links?"), which Vivaldi DENIES when its popup is closed (closeDenies: the card's close says so); a site is storage
+    // access's ("Allow “site” to access cookies and site data on “other”?"), which closing leaves pending like the rest.
+    const second = quoted ? /[“„‟"«]([^“”"»]+)[”“"»]/.exec(message.slice(quoted.index + quoted[0].length)) : null;
+    if (second) {
+      const name = second[1].trim();
+      request.second = name;
+      request.kind = /^[a-z][a-z0-9+.-]*$/i.test(name) && !name.includes(".") ? "protocol" : "storage";
+      request.closeDenies = request.kind === "protocol";
+    }
+    return request;
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, privateIntro, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome };
 })();
