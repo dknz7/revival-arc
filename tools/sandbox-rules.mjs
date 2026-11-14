@@ -1682,11 +1682,19 @@ ntCase("N.open-tabs-list", {
   },
   expect: (s, b, r) => {
     const i = (l) => r.rows.indexOf(l);
-    const order = ["# This window · X", "X1 *", "X2", "# This window · Y", "Y1"].map(i);
+    const at = (re) => r.rows.findIndex((x) => re.test(x));
+    // Task 9c1: every heading names the window and the space and counts the group's tabs, one window or several.
+    const order = [at(/^# This window · X · 2 tabs$/), i("X1 *"), i("X2"), at(/^# This window · Y · 1 tab$/), i("Y1")];
+    const miscounted = r.rows.map((x, k) => [x, k]).filter(([x]) => x.startsWith("# ")).filter(([x, k]) => {
+      const n = Number(/· (\d+) tabs?$/.exec(x)?.[1]);
+      let rows = 0; for (let j = k + 1; j < r.rows.length && !r.rows[j].startsWith("# ") && r.rows[j] !== "---"; j++) rows++;
+      return n !== rows;
+    }).map(([x]) => x);
     return [order.some((x) => x < 0) || order.some((x, k) => k && x <= order[k - 1]) ? `This window's groups are missing or out of order: ${J(r.rows)}` : null,
+      miscounted.length ? `headings whose count is not their rows: ${J(miscounted)} in ${J(r.rows)}` : null,
       r.rows.filter((x) => x.endsWith(" *")).length === 1 ? null : `want exactly one active tab marked: ${J(r.rows)}`,
-      r.rows.some((x) => /^# Window \d+ · Z$/.test(x)) && r.rows.includes("Z1") ? null : `the other window's Z group is missing: ${J(r.rows)}`,
-      i("# This window · X") < r.rows.findIndex((x) => /^# Window \d+/.test(x)) ? null : "this window does not come first",
+      at(/^# Window \d+ · Z · 1 tab$/) >= 0 && r.rows.includes("Z1") ? null : `the other window's Z group is missing: ${J(r.rows)}`,
+      at(/^# This window · X/) < at(/^# Window \d+/) ? null : "this window does not come first",
       r.box.favicons >= 4 ? null : `row icons ${r.box.favicons}`, parseFloat(r.box.maxH) <= 420 && r.box.overflowY === "auto" ? null : `height not capped: ${r.box.maxH} ${r.box.overflowY}`,
       r.box.left >= r.box.menuRight - 8 ? null : `flyout not beside the menu: ${J(r.box)}`, r.menuGone ? null : "Escape did not close the menu and flyout", unchanged(b, s)];
   },
@@ -4323,6 +4331,21 @@ pickCase("X.pick-move", {
   },
   // X4 (on screen) is picked first: X1, X2, X4 move to Y with Vivaldi's move; W stays on X, showing X3.
   expect: (s, b, r) => [r.error ?? null, ...["X1", "X2", "X4"].map((t) => tabIs(s, t, { win: ctx.W, space: sp("Y") })), tabIs(s, "X3", { win: ctx.W, space: sp("X"), active: true }), recIs(s, ctx.W, sp("X"))],
+});
+// Merge of 9a and 9d: Move N Tabs into a space PARKED in another window behaves as 9a's one-tab Move to Space
+// (MTS.parked-other-window). On 8.3 the picked tabs (X1 on screen, counted first, and X2) join Z in O, which stays parked,
+// W keeps X with X3 on screen, and the toast says they went to another window; on 8.2 the refusal names the space.
+def("X.pick-move-parked-other-window", { setup: menuSetup("parked"), ready: async () => (await waitTile(ctx.W, "X")) && (await waitFor(() => h.ev(`!!${TROW("X2")}`, ctx.W), 8000)),
+  act: async () => {
+    ctx.byTab = await h.ev(`window.__vm.native.movesByTab()`, ctx.W);
+    const c = await clickRow(ctx.W, "X2", PICK());
+    if (c !== "clicked") return { error: c };
+    await sleep(300);
+    return tabMenu(ctx.W, "X2", "Move 2 Tabs to Z");
+  },
+  expect: (s, b, r) => ctx.byTab ? [r.error ?? null, ...["X1", "X2"].map((t) => tabIs(s, t, { win: ctx.O, space: sp("Z"), active: false })), recIs(s, ctx.O, 0),
+    recIs(s, ctx.W, sp("X")), tabIs(s, "X3", { win: ctx.W, space: sp("X"), active: true }), /^Moved to Z, in another window/.test(r.toast || "") ? null : `toast ${J(r.toast)}, want "Moved to Z, in another window"`]
+    : [r.error ?? null, unchanged(b, s), /^Z is parked in another window/.test(r.toast || "") ? null : `toast ${J(r.toast)}, want the 8.2 refusal naming Z`],
 });
 pickCase("X.pick-escape-and-plain-click-let-go", {
   act: async () => {
