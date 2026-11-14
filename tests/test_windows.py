@@ -132,13 +132,46 @@ class WindowsSupport(unittest.TestCase):
         result = subprocess.run(['node', '-e', script], capture_output=True, text=True, encoding='utf8', check=True)
         self.assertEqual(json.loads(result.stdout), ['ctrl+t', 'ctrl+s', 'shift+ctrl+c', 'ctrl+shift+left', 'alt+ctrl+n', 'ctrl+left'])
 
-    @unittest.skipUnless(os.name == 'nt', 'requires Windows cmd.exe')
-    def test_batch_installer_downloads_local_archive_and_passes_arguments(self):
+    @staticmethod
+    def _git_gnu_tar_dir():
         import shutil
-        import sys
+        candidates = []
+        git_exe = shutil.which('git')
+        if git_exe:
+            for parent in Path(git_exe).resolve().parents:
+                candidates.append(parent / 'usr' / 'bin' / 'tar.exe')
+        for env_key, fallback in (('ProgramFiles', r'C:\Program Files'), ('ProgramFiles(x86)', r'C:\Program Files (x86)')):
+            base = os.environ.get(env_key, fallback)
+            if base:
+                candidates.append(Path(base) / 'Git' / 'usr' / 'bin' / 'tar.exe')
+        local_app_data = os.environ.get('LOCALAPPDATA')
+        if local_app_data:
+            candidates.append(Path(local_app_data) / 'Programs' / 'Git' / 'usr' / 'bin' / 'tar.exe')
+        candidates.extend(Path(entry) / 'tar.exe' for entry in os.environ.get('PATH', '').split(os.pathsep) if entry)
+        seen = set()
+        for candidate in candidates:
+            try:
+                if not candidate.is_file():
+                    continue
+                key = os.path.normcase(str(candidate.resolve()))
+            except OSError:
+                continue
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                proc = subprocess.run([str(candidate), '--version'], capture_output=True, text=True, timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if 'GNU tar' in proc.stdout:
+                return str(candidate.parent)
+        return None
+
+    def _assert_batch_installer_succeeds(self, path, failure_prefix=''):
+        import shutil
         import zipfile
         with tempfile.TemporaryDirectory(prefix='vivarc batch ') as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             batch = root / 'installer & files' / 'install.bat'
             batch.parent.mkdir()
             shutil.copy2(Path(__file__).parents[1] / 'install.bat', batch)
@@ -148,13 +181,36 @@ class WindowsSupport(unittest.TestCase):
                 package.writestr('release/windows_support.py', '')
                 package.writestr('release/install.bat', batch.read_text(encoding='utf8'))
             home = root / 'user home'
-            env = {**os.environ, 'USERPROFILE': str(home), 'VIVARC_PYTHON': sys.executable, 'VIVARC_ZIP_URL': archive.as_uri()}
+            temp = root / 'temp'
+            temp.mkdir()
+            base_env = {k: v for k, v in os.environ.items() if k.upper() != 'VIVARC_INSTALL_RUNNING'}
+            env = {**base_env, 'USERPROFILE': str(home), 'TEMP': str(temp), 'TMP': str(temp),
+                   'PATH': path, 'VIVARC_PYTHON': sys.executable, 'VIVARC_ZIP_URL': archive.as_uri()}
             comspec = os.environ.get('COMSPEC', 'cmd.exe')
             command = f'"{comspec}" /d /s /c ""{batch}" --no-peek"'
             result = subprocess.run(command, env=env, capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.returncode, 0, f"{failure_prefix}{result.stdout}{result.stderr}")
             self.assertEqual(json.loads((home / '.vivarc/app/called.json').read_text()), ['install', '--no-peek'])
             self.assertTrue((home / '.vivarc/app/install.bat').is_file())
+
+    @unittest.skipUnless(os.name == 'nt', 'requires Windows cmd.exe')
+    def test_batch_installer_downloads_local_archive_and_passes_arguments(self):
+        # The happy path, with System32 first; the test below puts Git's GNU tar first instead.
+        system32 = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32')
+        self._assert_batch_installer_succeeds(f"{system32}{os.pathsep}{os.environ.get('PATH', '')}")
+
+    @unittest.skipUnless(os.name == 'nt', 'requires Windows cmd.exe')
+    def test_batch_installer_works_with_git_gnu_tar_ahead_of_system32(self):
+        """install.bat calls Windows' own %SystemRoot%\\System32\\tar.exe, so Git's GNU tar earlier on PATH (which
+        rejects the C: paths) is never picked."""
+        git_tar_dir = self._git_gnu_tar_dir()
+        if git_tar_dir is None:
+            self.skipTest("Git's GNU tar.exe is not present on this machine")
+        system32 = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32')
+        self._assert_batch_installer_succeeds(
+            f"{git_tar_dir}{os.pathsep}{system32}{os.pathsep}{os.environ.get('PATH', '')}",
+            "install.bat's unqualified tar.exe resolved to Git's GNU tar ahead of System32:\n",
+        )
 
 
 class AutoHideLifecycle(unittest.TestCase):

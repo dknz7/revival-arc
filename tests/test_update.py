@@ -31,6 +31,7 @@ class UpdateCommandFile(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp, True)
         self.path = os.path.join(self.tmp, "Applications", "Update Vivarc.command")
 
+    @unittest.skipUnless(sys.platform == "darwin", "macOS .command file")
     def test_is_a_double_clickable_script_that_runs_update_from_this_copy(self):
         vivarc.write_update_command(self.path)
         self.assertTrue(os.stat(self.path).st_mode & stat.S_IXUSR)
@@ -41,12 +42,14 @@ class UpdateCommandFile(unittest.TestCase):
         self.assertIn("update", script)
         self.assertIn("open -a Vivaldi", script)
 
+    @unittest.skipUnless(sys.platform == "darwin", "macOS .command file")
     def test_quotes_a_path_with_spaces(self):
         with mock.patch.object(vivarc, "HERE", "/Users/some one/vivarc"):
             vivarc.write_update_command(self.path)
         with open(self.path) as f:
             self.assertIn("'/Users/some one/vivarc/vivarc.py'", f.read())
 
+    @unittest.skipUnless(sys.platform == "darwin", "macOS .command file")
     def test_reopens_vivaldi_and_keeps_the_exit_code_even_when_the_update_fails(self):
         fake = os.path.join(self.tmp, "app")
         os.makedirs(fake)
@@ -80,6 +83,7 @@ class Replaced(Exception):
     """os.execve never returns; the fake stops the run the same way."""
 
 
+@unittest.skipUnless(sys.platform == "darwin", "macOS .app bundle")
 class UpdateApp(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -122,7 +126,7 @@ class Update(unittest.TestCase):
 
     def run_update(self, here, latest, git_ok=True, running=False, out=None):
         out = out or io.StringIO()
-        calls = {"install": [], "execve": [], "git": [], "quit": [], "flushed": None}
+        calls = {"install": [], "execve": [], "git": [], "subprocess": [], "quit": [], "flushed": None}
         state = {"open": running}
 
         def fake_quit():
@@ -136,6 +140,7 @@ class Update(unittest.TestCase):
 
         def fake_git(cmd, **kwargs):
             calls["git"].append(cmd)
+            calls["subprocess"].append((cmd, kwargs))
             return mock.Mock(returncode=0 if git_ok else 1, stdout="", stderr="not a fast-forward")
 
         with mock.patch.object(vivarc, "HERE", here), \
@@ -156,9 +161,15 @@ class Update(unittest.TestCase):
     def test_a_newer_release_hands_over_to_the_installer_script_with_the_same_app_and_data(self):
         calls, out = self.run_update(self.copy, "v9.0.0")
         self.assertEqual(calls["install"], [])
-        (program, argv, env), = calls["execve"]
-        self.assertEqual(program, "/bin/bash")
-        self.assertEqual(argv[1], os.path.join(self.copy, "install.sh"))
+        if vivarc.IS_WINDOWS:
+            import windows_support
+            (command, kwargs), = calls["subprocess"]
+            self.assertIn(os.path.join(os.path.dirname(windows_support.__file__), "install.bat"), command)
+            env = kwargs["env"]
+        else:
+            (program, argv, env), = calls["execve"]
+            self.assertEqual(program, "/bin/bash")
+            self.assertEqual(argv[1], os.path.join(self.copy, "install.sh"))
         self.assertEqual(env["VIVARC_APP"], "/Apps/Vivaldi.app")
         self.assertEqual(env["VIVARC_DATA_DIR"], "/data")
         self.assertIn("9.0.0", out)
@@ -198,7 +209,11 @@ class Update(unittest.TestCase):
     def test_no_peek_is_passed_on_to_the_installer(self):
         self.args.no_peek = True
         calls, _ = self.run_update(self.copy, "v9.0.0")
-        self.assertIn("--no-peek", calls["execve"][0][1])
+        if vivarc.IS_WINDOWS:
+            (command, _), = calls["subprocess"]
+            self.assertIn("--no-peek", command)
+        else:
+            self.assertIn("--no-peek", calls["execve"][0][1])
 
     def test_when_already_up_to_date_it_reapplies_in_place(self):
         calls, out = self.run_update(self.copy, "v" + vivarc.VERSION)

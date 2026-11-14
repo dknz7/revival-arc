@@ -32,6 +32,11 @@ class ReminderCase(unittest.TestCase):
                   mock.patch.object(vivarc, "launchctl", self.launchctl)):
             p.start()
             self.addCleanup(p.stop)
+        if sys.platform != "darwin":
+            # resource_dir pinned to the fake app: on a Windows host it resolves Windows' layout and never sees it
+            p = mock.patch.object(vivarc, "resource_dir", return_value=self.resources)
+            p.start()
+            self.addCleanup(p.stop)
 
     def inject(self, html=True, bundle=True):
         with open(os.path.join(self.resources, "window.html"), "w") as f:
@@ -194,6 +199,7 @@ class GitClone(ReminderCase):
         self.assertIn("Vivaldi was updated", asked[0])
 
 
+@unittest.skipUnless(sys.platform == "darwin", "macOS launch agent")
 class ReminderAgent(ReminderCase):
     def test_on_writes_a_launch_agent_that_runs_remind_and_loads_it(self):
         vivarc.enable_reminder(self.app)
