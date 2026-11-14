@@ -3924,8 +3924,19 @@ def("PEEK.preview-hidden", {
 const clip = { get: () => execFileSync("powershell", ["-NoProfile", "-Command", "Get-Clipboard -Raw"], { encoding: "utf8" }).replace(/\r?\n$/, ""),
   set: (text) => execFileSync("powershell", ["-NoProfile", "-Command", "$input | Set-Clipboard"], { input: text ?? "", encoding: "utf8" }) };
 const rmouse = (win, type, x, y, button = "left") => h.cdp(win).send("Input.dispatchMouseEvent", { type, x, y, button, buttons: type === "mousePressed" ? (button === "right" ? 2 : 1) : 0, clickCount: type === "mouseMoved" ? 0 : 1 });
+// The system clipboard is shared with the machine: the case saves what is on it and puts it back, and runs only when
+// that is plain text or nothing (anything else, an image, files, rich text, is SKIPped before anything is written).
+clip.formats = () => execFileSync("powershell", ["-NoProfile", "-STA", "-Command",
+  "Add-Type -AssemblyName System.Windows.Forms; $d = [System.Windows.Forms.Clipboard]::GetDataObject(); if ($d) { $d.GetFormats() -join ',' }"], { encoding: "utf8" }).trim();
+const TEXT_FORMATS = new Set(["", "Text", "UnicodeText", "System.String", "OEMText", "Locale"]);
 def("CL.copy-link-page-focused", {
+  clip: true,
   setup: async () => {
+    let formats = null;
+    try { formats = clip.formats(); } catch (_) {}
+    if (formats === null || !formats.split(",").every((f) => TEXT_FORMATS.has(f.trim()))) {
+      const e = new Error("the clipboard holds more than text"); e.skip = `the clipboard holds ${formats === null ? "something unreadable" : formats} (only plain text can be saved and put back)`; throw e;
+    }
     await mkWin("W", { width: 1100 });
     ctx.copyUrl = `${origin}/copy-${Date.now()}`;
     const id = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(ctx.copyUrl)}, active: true }).then((t) => t.id)`, ctx.H);
@@ -3934,7 +3945,7 @@ def("CL.copy-link-page-focused", {
   },
   act: async () => {
     let saved = null;
-    try { saved = clip.get(); } catch (_) {}
+    try { saved = clip.get(); } catch (_) { return { error: "the clipboard could not be saved: nothing written" }; }
     try {
       clip.set("vivarc-sandbox-before-copy");
       const p = await h.ev(`(() => { const r = document.querySelector("#webview-container").getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()`, ctx.W);
@@ -3950,6 +3961,90 @@ def("CL.copy-link-page-focused", {
     } finally { try { clip.set(saved ?? ""); } catch (_) {} }
   },
   expect: (s, b, r) => [r.error ?? null, r.copied === ctx.copyUrl ? null : `the clipboard holds ${J(r.copied)}, want ${J(ctx.copyUrl)} (focus was on ${r.focusBefore})`],
+});
+
+// ---------- Task 9a fix round ----------
+// The heal re-checks every step as it runs (review-9a-codex, Critical 1). A batch of 3 orphans in W; just before the
+// SECOND heal step (spaceRepair.test.beforeStep, in the leader H) the user acts on the tab that step is about to move:
+// it is moved into the live space X, or its deleted space is re-created with its old id (undelete). That tab is not
+// moved to the default space; the first is healed; what is left is planned again.
+const healStepCase = (id, act) => def(id, {
+  busyThroughAct: true, setup: () => SET_ORPHANS({ twoWindows: false }),
+  act: async () => {
+    await h.ev(LOGS, ctx.H);
+    await h.ev(`(() => { window.__r9 = null; window.__vm.spaceRepair.test = { beforeStep: async (step, n) => { if (n !== 1 || window.__r9) return; window.__r9 = step.tab; ${act()} } }; return 1; })()`, ctx.H);
+    await unbusy();
+    await sleep(6000);
+    const target = await h.ev(`window.__r9`, ctx.H);
+    await h.ev(`(delete window.__vm.spaceRepair.test, 1)`, ctx.H);
+    ctx.target = target;
+    return { done: "ok", target, lines: await h.ev(`(window.__w9a || []).filter((l) => /not done/.test(l))`, ctx.H) };
+  },
+  expect: (s, b, r) => {
+    const t = r.target != null ? find(s, r.target) : null;
+    return [r.target == null ? "the hook never ran (no second heal step)" : null, !t ? "the tab acted on is gone" : null,
+      t && t.space === 0 ? `the tab acted on was moved to the default space anyway` : null,
+      r.lines?.length ? null : "no heal step was refused", tabIs(s, "X1", { win: ctx.W, space: sp("X") })];
+  },
+});
+healStepCase("R.heal-step-moved-into-live-space", () => `await vivaldi.tabsPrivate.move({ tabIds: [step.tab], target: step.tab, windowId: step.window, tweaks: ["do-not-reparent"], workspaceId: ${sp("X")}, debug: "sbx" });`);
+healStepCase("R.heal-step-space-re-created", () => `const s = window.__sbx; s.mgr.addWorkspaceWithId(step.from, "Y again", s.ws.getDefaultIcon?.(), ""); await new Promise((r) => setTimeout(r, 300));`);
+
+// Byron's ruling is general (fix round, Important 6): ANY tab restored from Recently Closed comes to the window clicked
+// in. A tab of a live space that lives in another window joins the space on screen here; a default-space tab comes to
+// this window's default space (shown). (A deleted space's tab: DEL.restore-from-other-window.)
+const SET_RESTORE = async (label, space) => {
+  await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, label, space);
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.X1);
+  await mkWin("O", { width: 900 }); await tab(ctx.O, "Z1", sp("Z"), { active: true }); await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1);
+  await waitFor(() => h.ev(`chrome.tabs.get(${ctx.tabs[label]}).then((t) => t.title === ${J(label)} && t.status === "complete")`, ctx.H), 8000);
+  await sleep(400); await h.ev(`chrome.tabs.remove(${ctx.tabs[label]}).then(() => 1)`, ctx.H); await sleep(600); await focus(ctx.O);
+};
+def("N.restore-live-from-other-window", {
+  gesture: true, setup: () => SET_RESTORE("RX2", sp("X")), ready: () => waitTile(ctx.O, "X"),
+  act: () => pickFrom(ctx.O, "Recently Closed", "RX2"),
+  expect: (s) => [labelIs(s, "RX2", { win: ctx.O, space: sp("Z"), active: true }), recIs(s, ctx.O, sp("Z")), recIs(s, ctx.W, sp("X")), tabIs(s, "X1", { win: ctx.W, active: true })],
+});
+def("N.restore-default-from-other-window", {
+  gesture: true, setup: () => SET_RESTORE("RD1", 0), ready: () => waitTile(ctx.O, "X"),
+  act: () => pickFrom(ctx.O, "Recently Closed", "RD1"),
+  expect: (s) => [labelIs(s, "RD1", { win: ctx.O, space: 0, active: true }), recIs(s, ctx.O, 0), recIs(s, ctx.W, sp("X"))],
+});
+
+// Peek across windows (Important 7): a preview open in W; O's Open Tabs (every window's tabs) does not list its tabs.
+def("PEEK.other-window-lists", {
+  peek: true, gesture: true,
+  setup: async () => { await SET_PEEK(null); await mkWin("O", { width: 900 }); await focus(ctx.W); },
+  act: async () => {
+    if (!(await openPeek())) return { error: "the preview did not open" };
+    await sleep(1500); await focus(ctx.O); await sleep(500);
+    if (!(await openDropdown(ctx.O)) || !(await openFly(ctx.O, "Open Tabs"))) return { error: "no Open Tabs flyout in O" };
+    const open = await rowsOf(ctx.O, ".vm-menu-flyout > div");
+    await h.ev(`(window.dispatchEvent(new Event("blur")), 1)`, ctx.O);
+    await focus(ctx.W); await peekButton("Close"); await sleep(1500);
+    return { done: "ok", open };
+  },
+  expect: (s, b, r) => [r.error ?? null, r.open?.some((x) => /peek-/i.test(x)) ? `O's Open Tabs lists the preview: ${J(r.open)}` : null],
+});
+// Recently Closed never hides a tab the user closed (Important 8): a preview of U closed (its two entries left out),
+// then the user opens U in a tab and closes it: that entry is listed.
+def("PEEK.user-close-same-address", {
+  peek: true, gesture: true, setup: () => SET_PEEK(null),
+  act: async () => {
+    if (!(await openPeek())) return { error: "the preview did not open" };
+    await sleep(1500);
+    if (!(await peekButton("Close"))) return { error: "no Close button" };
+    await sleep(1500);
+    const id = await h.ev(`chrome.tabs.create({ windowId: ${ctx.W}, url: ${J(ctx.peekUrl)}, active: false }).then((t) => t.id)`, ctx.H);
+    await waitFor(() => h.ev(`chrome.tabs.get(${id}).then((t) => t.status === "complete" && !!t.title)`, ctx.H), 8000);
+    await h.ev(`chrome.tabs.remove(${id}).then(() => 1)`, ctx.H); await sleep(1500);
+    if (!(await openDropdown(ctx.W)) || !(await openFly(ctx.W, "Recently Closed"))) return { error: "no Recently Closed flyout" };
+    const closed = await rowsOf(ctx.W, ".vm-menu-flyout > div");
+    await h.ev(`(window.dispatchEvent(new Event("blur")), 1)`, ctx.W);
+    return { done: "ok", closed };
+  },
+  expect: (s, b, r) => { const n = (r.closed || []).filter((x) => /peek-/i.test(x)).length;
+    return [r.error ?? null, n === 1 ? null : `${n} entries of the address in Recently Closed, want 1 (the user's): ${J(r.closed)}`]; },
 });
 
 // ---------- running ----------
@@ -4000,7 +4095,7 @@ async function runCase(c, layout) {
   } catch (e) {
     // SKIP only for a case that declares it builds a split (split: true); any other case refused that way FAILs, so
     // leftover state or a regression cannot quietly drop it out of the count.
-    if (e.skip && (c.split || c.peek)) Object.assign(out, { pass: null, skip: e.skip, bad: [`${e.message || e}`], ms: Date.now() - t0 });
+    if (e.skip && (c.split || c.peek || c.clip)) Object.assign(out, { pass: null, skip: e.skip, bad: [`${e.message || e}`], ms: Date.now() - t0 });
     else if (e.skip) Object.assign(out, { pass: false, bad: [`error: ${e.message || e} (refused as a split, but this case does not declare one)`], ms: Date.now() - t0 });
     else Object.assign(out, { pass: false, bad: [`error: ${e.message || e}`], ms: Date.now() - t0 });
   }
