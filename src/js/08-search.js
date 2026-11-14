@@ -52,58 +52,124 @@
     return phrases(await response.json());
   };
   // What typed text means, the way Vivaldi's own address field reads it, now that the command bar is the only place to type
-  // an address (Task 9b fix round 1). -> null (nothing typed), { kind: "url", url }, { kind: "search", alt? } (alt: an
-  // address it may also mean, offered as a second row), or { kind: "native" } (left to Vivaldi's own field: javascript:,
-  // whose running in the page is Vivaldi's own decision to make). `editing`: the address being edited, whose own scheme
-  // always reads as an address.
-  // Order matters: "localhost:3000" and "intranet:8080" also parse as a scheme, so host:port comes first.
+  // an address (Task 9b fix rounds 1-2). -> null (nothing typed), { kind: "url", url }, { kind: "search", alt? } (alt: an
+  // intranet address a bare word may also mean, a later row), or { kind: "native" }: left to Vivaldi's own field, shown
+  // there UNSUBMITTED for the user to confirm: a script scheme (javascript:, vbscript:), or address-shaped text that is not
+  // a valid address (a bracketed host that is not IPv6, "a::b::c", 999.1.1.1, a port over 65535, a space inside the host
+  // of an http address). Address-shaped text is never a search, so it never reaches a search engine. `editing`: the address
+  // being edited, whose own scheme always reads as an address.
+  // The text is split into its authority (up to the first / ? #) and the rest; a space is allowed in the rest (encoded as
+  // %20) but not in the authority. Hosts: localhost, IPv4 (each part 0-255), IPv6 (in brackets, with an optional %zone, or
+  // bare when it has "::" or eight groups, IPv4-embedded included), and DNS names (Unicode / punycode labels; the ideographic
+  // and fullwidth dots read as "."; one trailing dot allowed). A name with a top-level domain of letters (or xn--, or
+  // Unicode) is https://; localhost, an IP, or an intranet name with a path or port is http://.
   const SCHEMES = new Set(['http', 'https', 'ftp', 'file', 'about', 'view-source', 'chrome', 'vivaldi', 'data', 'blob', 'chrome-extension',
     'mailto', 'tel', 'sms', 'magnet', 'ws', 'wss', 'news', 'nntp', 'irc', 'ircs', 'geo', 'webcal', 'sftp', 'ssh', 'callto', 'xmpp', 'bitcoin', 'git']);
-  const NATIVE_SCHEMES = new Set(['javascript']);
-  const SPACED = new Set(['data', 'javascript', 'file', 'view-source', 'mailto']); // may hold spaces and still be one address
-  const LABEL = '[a-z0-9\\u00a1-\\uffff](?:[a-z0-9\\u00a1-\\uffff-]*[a-z0-9\\u00a1-\\uffff])?';
-  const IPV4 = '(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}';
-  const HOST = `(?:localhost|${IPV4}|\\[[0-9a-f:.]+\\]|${LABEL}(?:\\.${LABEL})*)`;
-  const TAIL = '(?:[/?#]\\S*)?';
-  const HOST_PORT = new RegExp(`^(${HOST}):(\\d{1,5})${TAIL}$`, 'iu');
-  const LOCAL = new RegExp(`^(?:localhost|${IPV4}|\\[[0-9a-f:.]+\\])${TAIL}$`, 'iu');
-  // Bare IPv6: "::" somewhere, or all eight groups (so a time like 12:00:00 is not one).
-  const BARE_IPV6 = /^(?:(?=.*::)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}|[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){7})$/i;
+  const SCRIPT_SCHEMES = new Set(['javascript', 'vbscript']);
+  const AUTHORITY_SCHEMES = new Set(['http', 'https', 'ftp', 'ws', 'wss', 'sftp', 'ssh', 'git']);
+  const SPACED = new Set(['data', 'javascript', 'vbscript', 'file', 'view-source', 'mailto']); // may hold spaces and still be one address
+  const DOTS = /[\u3002\uff0e\uff61]/g;
+  const LABEL_RE = /^[a-z0-9\u00a1-\uffff](?:[a-z0-9\u00a1-\uffff-]*[a-z0-9\u00a1-\uffff])?$/iu;
+  const TLD_RE = /^(?:[a-z]{2,63}|xn--[a-z0-9-]+|[\u00a1-\uffff]{2,})$/iu;
   const DRIVE_PATH = /^[a-z]:[\\/]/i; // C:\Users\x or C:/Users/x: a file on this computer, as Vivaldi's field reads it
-  const hostPort = (text) => {
-    const m = HOST_PORT.exec(text);
-    if (!m) return false;
-    const host = m[1].replace(/^\[|\]$/g, '');
-    return Number(m[2]) <= 65535 && !/^\d+$/.test(host); // 10:30 is a time, not host 10 on port 30
+  const isIPv4 = (s) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(s) && s.split('.').every((n) => Number(n) <= 255);
+  const isIPv6 = (raw) => {
+    const [addr, zone, extra] = String(raw).split('%');
+    if (extra !== undefined || (zone !== undefined && !/^[\w.-]+$/.test(zone)) || !addr) return false;
+    let a = addr;
+    const v4 = /^(.*:)(\d+(?:\.\d+){3})$/.exec(a);
+    if (v4) { if (!isIPv4(v4[2])) return false; a = `${v4[1]}0:0`; }
+    const halves = a.split('::');
+    if (halves.length > 2) return false;
+    const groups = (x) => (x === '' ? [] : x.split(':'));
+    const parts = halves.length === 2 ? [...groups(halves[0]), ...groups(halves[1])] : groups(a);
+    if (!parts.every((g) => /^[0-9a-f]{1,4}$/i.test(g))) return false;
+    return halves.length === 2 ? parts.length <= 7 : parts.length === 8;
   };
-  const DOMAIN = new RegExp(`^${LABEL}(?:\\.${LABEL})*\\.(?:[a-z]{2,63}|xn--[a-z0-9-]+|[\\u00a1-\\uffff]{2,})\\.?${TAIL}$`, 'iu');
-  const LABEL_PATH = new RegExp(`^${LABEL}/\\S*$`, 'iu');
-  const BARE_LABEL = new RegExp(`^${LABEL}$`, 'iu');
+  // -> { type: "local" | "ip" | "domain" | "label" } for a host, { type: "bad" } for an address-shaped host that is not
+  // valid, null for text that is not a host at all.
+  const hostKind = (raw) => {
+    const h = raw.replace(DOTS, '.');
+    if (h.startsWith('[')) {
+      if (!h.endsWith(']')) return { type: 'bad' };
+      return isIPv6(h.slice(1, -1).replace(/%25/g, '%')) ? { type: 'ip' } : { type: 'bad' };
+    }
+    const plain = h.endsWith('.') ? h.slice(0, -1) : h;
+    if (!plain) return null;
+    if (plain.toLowerCase() === 'localhost') return { type: 'local' };
+    if (/^\d+(?:\.\d+){3}$/.test(plain)) return isIPv4(plain) ? { type: 'ip' } : { type: 'bad' };
+    if (/^[\d.]+$/.test(plain)) return null; // 1.5, 2026: numbers
+    const labels = plain.split('.');
+    if (!labels.every((l) => LABEL_RE.test(l))) return null;
+    if (labels.length === 1) return { type: 'label' };
+    return { type: 'domain', tld: TLD_RE.test(labels[labels.length - 1]) && !/^\d+$/.test(labels[labels.length - 1]) };
+  };
+  const encodeSpaces = (s) => s.replace(/\s/g, (c) => (c === ' ' ? '%20' : encodeURIComponent(c)));
+  const NATIVE = { kind: 'native' };
   const resolve = (raw, { editing = null } = {}) => {
     const text = String(raw ?? '').trim();
     if (!text) return null;
     if (DRIVE_PATH.test(text)) return { kind: 'url', url: `file:///${text.replace(/\\/g, '/')}` };
     const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(text)?.[1].toLowerCase() || null;
-    if (/\s/.test(text) && !(scheme && SPACED.has(scheme))) return { kind: 'search' };
-    if (BARE_IPV6.test(text)) return { kind: 'url', url: `http://[${text}]/` };
-    // A known scheme wins over host:port ("tel:123", "mailto:x"); otherwise host:port comes first ("localhost:3000").
-    if (!(scheme && (SCHEMES.has(scheme) || NATIVE_SCHEMES.has(scheme))) && hostPort(text)) return { kind: 'url', url: `http://${text}` };
-    if (scheme) {
+    if (scheme && SCRIPT_SCHEMES.has(scheme)) return NATIVE;
+    if (scheme && (SCHEMES.has(scheme) || scheme.startsWith('web+') || text.slice(scheme.length + 1).startsWith('//'))) {
       const rest = text.slice(scheme.length + 1);
-      if (editing) {
-        const own = /^([a-z][a-z0-9+.-]*):/i.exec(editing)?.[1].toLowerCase();
-        if (own === scheme && !NATIVE_SCHEMES.has(scheme)) return { kind: 'url', url: text };
+      if (!rest) return { kind: 'search' };
+      if ((scheme === 'chrome' || scheme === 'vivaldi') && !rest.startsWith('//')) return /\s/.test(rest) ? NATIVE : { kind: 'url', url: `${scheme}://${rest}` };
+      if (AUTHORITY_SCHEMES.has(scheme) && rest.startsWith('//')) {
+        const tail = rest.slice(2);
+        const cut = tail.search(/[/?#]/);
+        const authority = cut < 0 ? tail : tail.slice(0, cut);
+        if (!authority || /\s/.test(authority)) return NATIVE; // a space in the host: malformed, never a search
+        return { kind: 'url', url: `${scheme}://${authority.replace(DOTS, '.')}${encodeSpaces(cut < 0 ? '' : tail.slice(cut))}` };
       }
-      if (NATIVE_SCHEMES.has(scheme)) return { kind: 'native' };
-      if ((scheme === 'chrome' || scheme === 'vivaldi') && rest && !rest.startsWith('//')) return { kind: 'url', url: `${scheme}://${rest}` };
-      if (SCHEMES.has(scheme) || scheme.startsWith('web+') || rest.startsWith('//')) return rest ? { kind: 'url', url: text } : { kind: 'search' };
-      return { kind: 'search' };
+      if (/\s/.test(rest) && !SPACED.has(scheme)) return NATIVE;
+      return { kind: 'url', url: text };
     }
-    if (LOCAL.test(text)) return { kind: 'url', url: `http://${text}` };
-    if (DOMAIN.test(text)) return { kind: 'url', url: `https://${text}` };
-    if (LABEL_PATH.test(text)) return { kind: 'url', url: `http://${text}` };
-    if (BARE_LABEL.test(text) && !/^\d+$/.test(text)) return { kind: 'search', alt: `http://${text}/` };
-    return { kind: 'search' };
+    if (editing && scheme) {
+      const own = /^([a-z][a-z0-9+.-]*):/i.exec(editing)?.[1].toLowerCase();
+      if (own === scheme && !/\s/.test(text)) return { kind: 'url', url: text };
+    }
+    const cut = text.search(/[/?#]/);
+    const authority = cut < 0 ? text : text.slice(0, cut);
+    const path = cut < 0 ? '' : text.slice(cut);
+    if (!authority || /\s/.test(authority)) return { kind: 'search' }; // words ("what is 2/3", "localhost is down")
+    const at = (host) => `${host.replace(DOTS, '.')}`;
+    // [v6] or [v6]:port
+    const bracket = /^(\[[^\]]*\])(?::(\d+))?$/.exec(authority);
+    if (bracket || authority.startsWith('[')) {
+      if (!bracket || hostKind(bracket[1]).type !== 'ip' || (bracket[2] && Number(bracket[2]) > 65535)) return NATIVE;
+      return { kind: 'url', url: `http://${authority}${encodeSpaces(path)}` };
+    }
+    // bare IPv6 (more than one colon)
+    if ((authority.match(/:/g) || []).length > 1) {
+      if (isIPv6(authority)) return { kind: 'url', url: `http://[${authority}]/${encodeSpaces(path.replace(/^\//, ''))}` };
+      return authority.includes('::') ? NATIVE : { kind: 'search' }; // 12:00:00 is a time
+    }
+    const port = /^(.+):(\d+)$/.exec(authority);
+    if (port) {
+      const kind = hostKind(port[1]);
+      if (!kind || /^\d+$/.test(port[1])) return { kind: 'search' }; // 10:30, re:1
+      if (kind.type === 'bad' || Number(port[2]) > 65535) return NATIVE;
+      return { kind: 'url', url: `http://${at(port[1])}:${port[2]}${encodeSpaces(path)}` };
+    }
+    if (authority.includes(':')) return { kind: 'search' }; // note:..., a word and a colon
+    const kind = hostKind(authority);
+    if (!kind) return { kind: 'search' };
+    if (kind.type === 'bad') return NATIVE;
+    if (kind.type === 'local' || kind.type === 'ip') return { kind: 'url', url: `http://${at(authority)}${encodeSpaces(path)}` };
+    if (kind.type === 'domain') {
+      if (kind.tld) return { kind: 'url', url: `https://${at(authority)}${encodeSpaces(path)}` };
+      return path ? { kind: 'url', url: `http://${at(authority)}${encodeSpaces(path)}` } : { kind: 'search' }; // a.b/x is an intranet page; x.y alone is words
+    }
+    // a single label: with a path it is an intranet page (not 1/2 or 2026/11/15: numbers); alone, a search with its address
+    if (path) return /^\d+$/.test(authority) ? { kind: 'search' } : { kind: 'url', url: `http://${at(authority)}${encodeSpaces(path)}` };
+    return /^\d+$/.test(authority) ? { kind: 'search' } : { kind: 'search', alt: `http://${at(authority)}/` };
   };
-  window.__vm.search = { templates, defaultEngine, expand, request, phrases, suggestions, resolve };
+  // Address-shaped: what must not go to a search engine's suggestions while it is typed (an address, an intranet name with
+  // a path, anything Vivaldi's field would treat as one).
+  const addressShaped = (text) => { const r = resolve(text); return !!r && (r.kind !== 'search' || (!/\s/.test(String(text).trim()) && /[./:\\[\]@]/.test(String(text)))); };
+  // A text whose submission would run a script in the page: never submitted automatically, whatever path brought it.
+  const runsScript = (text) => SCRIPT_SCHEMES.has(/^\s*([a-z][a-z0-9+.-]*):/i.exec(String(text ?? ''))?.[1].toLowerCase() || '');
+  window.__vm.search = { templates, defaultEngine, expand, request, phrases, suggestions, resolve, addressShaped, runsScript, isIPv6 };
 })();

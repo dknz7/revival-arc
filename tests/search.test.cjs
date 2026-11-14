@@ -544,9 +544,9 @@ test('what a blank tab is lives in one place (07-workspaces.js); the Dia breadcr
   assert.deepEqual(rules('15-dia.js'), rules('07-workspaces.js'));
 });
 
-// Task 9b fix round 1: the command bar is the only place to type an address, so a search it cannot run itself (a POST
-// engine, or Vivaldi's engines unreadable) goes to Vivaldi's own address field with the same words, submitted there, and
-// never to another engine.
+// Task 9b fix rounds 1-2: the command bar is the only place to type an address, so a search it cannot run itself goes to
+// Vivaldi's own address field, never to another engine. A POST engine is named by its own keyword (the default's too) and
+// submitted; when the engine cannot be named (Vivaldi's engines unreadable) the words are shown there, not submitted.
 const recordHandOvers = (context) => { const handed = []; context.window.__vm.nativeEntry = async (text, options) => { handed.push({ text, ...options }); return true; }; return handed; };
 const settle = async (n = 10) => { for (let i = 0; i < n; i++) await new Promise(resolve => setImmediate(resolve)); };
 for (const failure of ['missing default', 'native request error', 'POST search']) {
@@ -562,9 +562,49 @@ for (const failure of ['missing default', 'native request error', 'POST search']
     input.events.keydown({ key: 'Enter', preventDefault() {} });
     await settle();
     assert.equal(calls.navigation.some((n) => /duckduckgo/.test(n.url || '')), false, 'no DuckDuckGo');
-    assert.deepEqual(handed.map((h) => [h.text, h.submit]), [['test & caf\u00e9', true]]);
+    const want = failure === 'POST search' ? [['c test & caf\u00e9', true]] : [['test & caf\u00e9', false]];
+    assert.deepEqual(handed.map((h) => [h.text, h.submit]), want);
   });
 }
+// Review round 2, Critical: a Search suggestion that starts with javascript: stays a search; nothing ever submits a script.
+for (const failure of ['POST default engine', 'engines unreadable']) {
+  test(`a Search suggestion starting with javascript: never runs or auto-submits (${failure})`, async () => {
+    const { context, calls } = setup();
+    context.vivaldi.searchEngines.getSearchRequest = failure === 'POST default engine'
+      ? async () => ({ url: 'https://chosen.test/', postParams: 'q=x' }) : async () => { throw new Error('engines unreadable'); };
+    const handed = recordHandOvers(context);
+    context.fetch = async () => ({ ok: true, json: async () => ['js', ['javascript:alert(1)']] });
+    const input = await loadBar(context);
+    await settle(5);
+    input.value = 'js';
+    await input.events.input();
+    await settle();
+    // the rows: the typed words' search, then the suggestion; Enter on the suggestion
+    const want = 'javascript:alert(1)';
+    const at = 1; // js: its own search row first, the suggestion next
+    for (let i = 0; i < (at > 0 ? at : 1); i++) input.events.keydown({ key: 'ArrowDown', preventDefault() {} });
+    input.events.keydown({ key: 'Enter', preventDefault() {} });
+    await settle();
+    assert.equal(calls.navigation.some((n) => /^javascript:/i.test(n.url || '')), false, 'the bar never loads it');
+    assert.equal(handed.length, 1, `one hand-over: ${JSON.stringify(handed)}`);
+    assert.ok(handed[0].text.includes(want), `the suggestion was what got picked (${JSON.stringify(handed)})`);
+    assert.equal(handed[0].submit, false, `a script was submitted: ${JSON.stringify(handed)}`);
+  });
+}
+test("the hand-over boundary never submits a script, whoever asks", async () => {
+  const { context } = setup();
+  const handed = recordHandOvers(context);
+  context.vivaldi.searchEngines.getSearchRequest = async () => ({ url: 'https://chosen.test/', postParams: 'q=x' });
+  const input = await loadBar(context);
+  await settle(5);
+  // a keyword engine with no keyword of its own -> unnamed: shown, not submitted
+  context.vivaldi.searchEngines.getTemplateUrls = async () => ({ defaultSearch: 'nokw', defaultPrivate: 'nokw', templateUrls: [{ guid: 'nokw', name: 'No keyword', url: 'https://n.test/?q={searchTerms}' }] });
+  input.value = 'plain words';
+  await input.events.input();
+  input.events.keydown({ key: 'Enter', preventDefault() {} });
+  await settle();
+  assert.deepEqual(handed.map((h) => [h.text, h.submit]), [['plain words', false]], 'an engine without a keyword cannot be named: shown, not submitted');
+});
 test("a keyword engine that searches by POST goes to Vivaldi's field with its keyword before the words", async () => {
   const { context } = setup();
   context.vivaldi.searchEngines.getSearchRequest = async () => ({ url: 'https://chosen.test/', postParams: 'q=x' });
@@ -615,8 +655,9 @@ test("the resolver leaves javascript: to Vivaldi's own field, and searches for e
   const { search } = setup();
   assert.equal(search.resolve('javascript:alert(1)').kind, 'native');
   assert.equal(search.resolve('JavaScript:void(0)').kind, 'native');
-  for (const t of ['hello world', 'what is 2+2', 'note: buy milk', 're:something', '1234', 'x.y', 'http://a b', 'localhost is down', 'mailto:'])
+  for (const t of ['hello world', 'what is 2+2', 'note: buy milk', 're:something', '1234', 'x.y', 'localhost is down', 'mailto:', '1/2', '2026/11/15', '10:30', '12:00:00'])
     assert.equal(search.resolve(t).kind, 'search', t);
+  assert.equal(search.resolve('vbscript:x').kind, 'native');
   assert.equal(search.resolve(''), null);
   assert.equal(search.resolve('   '), null);
 });
@@ -627,12 +668,56 @@ test('the resolver does not take times, known schemes or impossible ports for ho
   assert.equal(url('mailto:x@y.test'), 'mailto:x@y.test');
   assert.equal(url('10:30'), 'search');
   assert.equal(url('12:00:00'), 'search');
-  assert.equal(url('localhost:99999'), 'search');
-  assert.equal(url('127.0.0.1:65536'), 'search');
+  assert.equal(url('localhost:99999'), 'native');
+  assert.equal(url('127.0.0.1:65536'), 'native');
   assert.equal(url('127.0.0.1:65535'), 'http://127.0.0.1:65535');
   assert.equal(url('2001:db8:0:0:0:0:0:1'), 'http://[2001:db8:0:0:0:0:0:1]/');
   assert.equal(url('C:\\Users\\x\\a.html'), 'file:///C:/Users/x/a.html');
   assert.equal(url('C:/Program Files/x.txt'), 'file:///C:/Program Files/x.txt');
+});
+// Review round 2, I1: hosts are parsed and validated; address-shaped text is never a search.
+test('the resolver reads trailing dots, IPv4-embedded and zoned IPv6, Unicode dots and paths with spaces as addresses', () => {
+  const { search } = setup();
+  const url = (t) => { const r = search.resolve(t); return r && r.kind === 'url' ? r.url : r && r.kind; };
+  assert.equal(url('http://nas/team plan'), 'http://nas/team%20plan');
+  assert.equal(url('example.com/a b'), 'https://example.com/a%20b');
+  assert.equal(url('https://x.y/?q= a'), 'https://x.y/?q=%20a');
+  assert.equal(url('localhost./admin'), 'http://localhost./admin');
+  assert.equal(url('nas.local.:8080/private'), 'http://nas.local.:8080/private');
+  assert.equal(url('a.b/private'), 'http://a.b/private');
+  assert.equal(url('::ffff:192.168.1.10'), 'http://[::ffff:192.168.1.10]/');
+  assert.equal(url('fe80::1%eth0'), 'http://[fe80::1%eth0]/');
+  assert.equal(url('[fe80::1%25eth0]:80/x'), 'http://[fe80::1%25eth0]:80/x');
+  assert.equal(url('\u4f8b\u5b50\u3002\u6d4b\u8bd5'), 'https://\u4f8b\u5b50.\u6d4b\u8bd5');
+  assert.equal(url('b\u00fccher.de'), 'https://b\u00fccher.de');
+  assert.equal(url('xn--bcher-kva.de'), 'https://xn--bcher-kva.de');
+});
+test('malformed address-shaped text goes to Vivaldi\'s field unsubmitted, never to a search', () => {
+  const { search } = setup();
+  for (const t of ['[1]', '[dead.beef]', '[::1', 'a::b::c', '999.1.1.1', '999.1.1.1/x', 'http://a b', 'http:// spaced', 'localhost:99999', '[::1]:70000'])
+    assert.equal(search.resolve(t).kind, 'native', t);
+  assert.equal(search.isIPv6('1:2:3:4:5:6:7:8'), true);
+  assert.equal(search.isIPv6('1:2:3:4:5:6:7'), false);
+  assert.equal(search.isIPv6('1::2::3'), false);
+  assert.equal(search.isIPv6('::ffff:300.1.1.1'), false);
+});
+test('address-shaped text is never sent to the suggestion service while it is typed', async () => {
+  for (const typed of ['intranet/wiki', 'nas.local:8080', '192.168.1.1', 'a.b/private', '[::1]', 'secret.corp']) {
+    const { context, calls } = setup();
+    const input = await loadBar(context);
+    await settle(5);
+    input.value = typed;
+    await input.events.input();
+    await settle();
+    assert.equal(calls.fetch.length, 0, `${typed} was sent for suggestions: ${JSON.stringify(calls.fetch)}`);
+  }
+  const { context, calls } = setup();
+  const input = await loadBar(context);
+  await settle(5);
+  input.value = 'plain words';
+  await input.events.input();
+  await settle();
+  assert.equal(calls.fetch.length, 1, 'plain words still get suggestions');
 });
 test('a bare word is a search first, with its intranet address offered too', () => {
   const { search } = setup();
