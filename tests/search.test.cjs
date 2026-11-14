@@ -1038,3 +1038,40 @@ test('plain words typed the same way do get suggestions and a search', async () 
   assert.deepEqual(calls.request.map((r) => r.query), [typed]);
   assert.deepEqual(handed, []);
 });
+
+// ---- Task 9b fix round 4 (review-9b-codex-r4.md): an explicit entry in Vivaldi's keyboard table replaces that command's
+// defaults, and a key explicitly bound to a tab-switching command is never an address request.
+test('addressKeys: a rebound focus command drops its defaults, and a key rebound to a tab switch never asks', () => {
+  const { context } = setup();
+  vm.runInContext(source('07-workspaces.js'), context);
+  const norm = (k) => k.toLowerCase().split('+').sort().join('+');
+  const table = { COMMAND_FOCUS_ADDRESSFIELD: { shortcuts: ['alt+k'] }, COMMAND_TAB_SWITCH_FORWARD_ORDER: { shortcuts: ['f8'] } };
+  const asks = context.window.__vm.workspaces.addressKeys(table, norm);
+  assert.equal(asks(norm('f8')), false, 'f8 is now a tab switch, not the field');
+  assert.equal(asks(norm('alt+k')), true, "alt+k is the field's command now");
+  assert.equal(asks(norm('ctrl+pagedown')), true, "the rebound switch command's own default is gone: just another shortcut");
+  assert.equal(asks(norm('ctrl+tab')), false, 'a command with no entry keeps its defaults');
+  // a key explicitly bound to a tab switch, though it is the focus command's default and that command has no entry
+  const other = context.window.__vm.workspaces.addressKeys({ COMMAND_TAB_SWITCH_1: { shortcuts: ['ctrl+l'] } }, norm);
+  assert.equal(other(norm('ctrl+l')), false, 'explicitly a tab switch: never an address request');
+  assert.equal(other(norm('f8')), true, "the focus command's other default still asks");
+  assert.equal(other(norm('ctrl+1')), true, "COMMAND_TAB_SWITCH_1's default was replaced");
+  // defaults with no table: a space switch and closing a window are tab moves too
+  const none = context.window.__vm.workspaces.addressKeys(null, norm);
+  for (const k of ['ctrl+shift+1', 'ctrl+shift+9', 'ctrl+shift+w', 'shift+meta+w', 'shift+meta+]', 'meta+9']) assert.equal(none(norm(k)), false, k);
+});
+test('in the bar: the live keyboard table decides (f8 rebound to a tab switch is passive after its switch)', async () => {
+  const { context, calls } = setup();
+  context.chrome.tabs.get = async (id) => ({ id, active: true, windowId: 1 });
+  context.vivaldi.prefs = { get: async (path) => (path === 'vivaldi.actions' ? { value: [{
+    COMMAND_FOCUS_ADDRESSFIELD: { shortcuts: ['alt+k'] }, COMMAND_TAB_SWITCH_FORWARD_ORDER: { shortcuts: ['f8'] } }] } : undefined), onChanged: { addListener() {} } };
+  await loadBar(context);
+  await settle(5);
+  context.Date = class extends Date { static now() { return 5000; } };
+  const shortcut = (key) => { for (const fn of context.shortcutFns) fn(key, key, 1); };
+  const activate = (tabId) => { for (const fn of calls.activatedAll) fn({ tabId, windowId: 1 }); };
+  activate(2); shortcut('f8');
+  assert.equal(context.window.__vm.commandBar.askedNow(), false, 'f8 (a tab switch here) heard after its switch');
+  activate(3); shortcut('alt+k');
+  assert.equal(context.window.__vm.commandBar.askedNow(), true, "alt+k (the field's command here) after a switch");
+});

@@ -612,29 +612,42 @@
   // Which shortcuts are a request for the address field: Vivaldi's own "focus the address field" keys and any other
   // shortcut (a custom binding, a menu's command), except the ones that switch, close or reopen a tab or switch a space:
   // those are what moves the cursor, never a request for the field (review round 3). From Vivaldi's keyboard table
-  // (vivaldi.actions[0], read live) and its defaults, measured in 8.3's prefs_definitions.json: Ctrl+Tab / Ctrl+Shift+Tab
-  // (COMMAND_TAB_SWITCH_*_SETTING), Ctrl+PgUp / PgDn and 1-4 (..._ORDER / _HISTORY), Ctrl+1...8 (COMMAND_TAB_SWITCH_n),
-  // Ctrl+9 (..._LAST), Ctrl+W / Ctrl+F4 (COMMAND_CLOSE_TAB), Ctrl+Shift+T / Ctrl+Z (..._REOPEN_RECENTLY_CLOSED); F8 and
-  // Ctrl+L focus the field (COMMAND_FOCUS_ADDRESSFIELD). A key bound to the field's command wins.
+  // (vivaldi.actions[0], read live) and, for a command it has no entry for, Vivaldi's defaults (DEFAULT_KEYS).
   const FOCUS_COMMAND = /^COMMAND_FOCUS_ADDRESSFIELD$/;
   const SWITCH_COMMAND = /^COMMAND_(TAB_SWITCH_|WORKSPACE_SWITCH_|CLOSE_TAB$|CLOSE_WINDOW$|TAB_REOPEN_RECENTLY_CLOSED$)/;
-  // (A Mac's, from the same file: Cmd+1...9, Cmd+W, Shift+Cmd+T, Cmd+Z, Shift+Cmd+[ / ], Alt+Cmd+Left / Right.)
-  const SWITCH_DEFAULTS = ["ctrl+tab", "ctrl+shift+tab", "ctrl+pageup", "ctrl+pagedown", "1", "2", "3", "4", "numpad1", "numpad2",
-    "numpad3", "numpad4", "ctrl+w", "ctrl+f4", "ctrl+shift+t", "ctrl+z", "shift+meta+[", "shift+meta+]", "alt+meta+left", "alt+meta+right",
-    ...[1, 2, 3, 4, 5, 6, 7, 8, 9].flatMap((n) => [`ctrl+${n}`, `ctrl+numpad${n}`])];
-  const FOCUS_DEFAULTS = ["f8", "ctrl+l"];
+  // Each command's defaults, measured in 8.3.4191.30's prefs_definitions.json (actions.default, default_linux and
+  // default_mac, merged per command: a key of another platform's never reaches this one).
+  const DEFAULT_KEYS = {
+    COMMAND_FOCUS_ADDRESSFIELD: ["f8", "ctrl+l", "meta+l"],
+    COMMAND_TAB_SWITCH_FORWARD_SETTING: ["ctrl+tab", "alt+meta+right"],
+    COMMAND_TAB_SWITCH_BACK_SETTING: ["ctrl+shift+tab", "alt+meta+left"],
+    COMMAND_TAB_SWITCH_FORWARD_ORDER: ["ctrl+pagedown", "2", "numpad2", "shift+meta+]"],
+    COMMAND_TAB_SWITCH_BACK_ORDER: ["ctrl+pageup", "1", "numpad1", "shift+meta+["],
+    COMMAND_TAB_SWITCH_FORWARD_HISTORY: ["4", "numpad4"],
+    COMMAND_TAB_SWITCH_BACK_HISTORY: ["3", "numpad3"],
+    ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8].map((n) => [`COMMAND_TAB_SWITCH_${n}`, [`ctrl+${n}`, `ctrl+numpad${n}`, `meta+${n}`]])),
+    COMMAND_TAB_SWITCH_LAST: ["ctrl+9", "ctrl+numpad9", "meta+9"],
+    COMMAND_CLOSE_TAB: ["ctrl+w", "ctrl+f4", "meta+w"],
+    COMMAND_CLOSE_WINDOW: ["ctrl+shift+w", "shift+meta+w"],
+    COMMAND_TAB_REOPEN_RECENTLY_CLOSED: ["ctrl+shift+t", "ctrl+z", "shift+meta+t", "meta+z"],
+    ...Object.fromEntries([1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => [`COMMAND_WORKSPACE_SWITCH_${n}`, [`ctrl+shift+${n}`]])),
+  };
   // -> (key) => whether that normalised shortcut is a request for the field. `table` is vivaldi.actions[0] (or nothing);
-  // `normalise` is 00-core's. Each default's Ctrl is also taken as Cmd (a Mac's).
+  // `normalise` is 00-core's. A command's entry in the table replaces its defaults (review round 4: a focus command
+  // rebound to Alt+K leaves F8 free for something else). A key explicitly bound to a switching command never asks, even
+  // when it is another command's default; a key bound to the field's command asks over a switching command's default.
   const addressKeys = (table, normalise = (k) => k) => {
-    const both = (k) => [normalise(k), normalise(k.replace(/^ctrl\+/, "meta+"))];
-    const focus = new Set(FOCUS_DEFAULTS.flatMap(both));
-    const switching = new Set(SWITCH_DEFAULTS.flatMap(both));
-    for (const [name, cmd] of Object.entries(table && typeof table === "object" ? table : {})) {
-      const keys = Array.isArray(cmd?.shortcuts) ? cmd.shortcuts.map((k) => normalise(k)) : [];
+    const live = table && typeof table === "object" ? table : {};
+    const focus = new Set();
+    const switching = new Set();
+    const explicitSwitch = new Set();
+    for (const name of new Set([...Object.keys(DEFAULT_KEYS), ...Object.keys(live)])) {
+      const explicit = Array.isArray(live[name]?.shortcuts);
+      const keys = (explicit ? live[name].shortcuts : DEFAULT_KEYS[name] || []).map((k) => normalise(k));
       if (FOCUS_COMMAND.test(name)) keys.forEach((k) => focus.add(k));
-      else if (SWITCH_COMMAND.test(name)) keys.forEach((k) => switching.add(k));
+      else if (SWITCH_COMMAND.test(name)) keys.forEach((k) => { switching.add(k); if (explicit) explicitSwitch.add(k); });
     }
-    return (key) => focus.has(key) || !switching.has(key);
+    return (key) => !explicitSwitch.has(key) && (focus.has(key) || !switching.has(key));
   };
 
   // Whether the address field shows the tab's own address and nothing typed. Vivaldi writes the address without a lone

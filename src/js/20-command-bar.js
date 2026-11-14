@@ -1003,7 +1003,7 @@
   const ASKED_MS = 1500; // a Ctrl+L, F6 or click on the field this recently is the user asking for it
   // (State: myWindow, activation, asked and noteActivation, above the tab events, which feed them.)
   const ASK_KEYS = new Set(["ctrl+l", "l+meta", "f6", "alt+d"].map((k) => window.__vm.normalise(k)));
-  window.__vm.onShortcut((key) => { if (ASK_KEYS.has(key)) asked(); });
+  window.__vm.onShortcut((key) => { if (ASK_KEYS.has(key) && asks(key)) asked(); }); // asks: below (a key rebound to a tab switch)
   // Any key Vivaldi handles as a shortcut in this window (a custom "focus address field" binding included), and a press in
   // Vivaldi's own menus, is the user asking: a focus that follows it is a command, not a tab's remembered focus coming back
   // (which stays Task 8o's page focus, the controller's ruling).
