@@ -42,7 +42,7 @@
     // This window's tab on screen, { id, space, page }, and the one before it for a moment: when the tab on screen closes,
     // Chromium may put another on screen (onActivated) before the close is reported (onRemoved).
     // What each of this window's tabs is ({ id, space, page }), kept from its own events: a tab activated and closed before
-    // its lookup answers is still known (review 9c, minor 7).
+    // its lookup answers is still known (review 9c, minor 7). The tab on screen is looked up again on each activation.
     const info = new Map();
     const learn = (tab) => { if (tab?.id != null && tab.windowId === me) info.set(tab.id, { id: tab.id, space: ws().of(tab), page: !ws().isBlank(tab) }); };
     let shown = null, previous = null;
@@ -55,9 +55,12 @@
       if (windowId !== me) return;
       if (shown && shown.id !== tabId) previous = { id: shown.id, until: Date.now() + 1000 };
       shown = { id: tabId };
-      if (!info.has(tabId)) chrome.tabs.get(tabId).then(learn, () => {});
+      // looked up again every time: a tab's space can change with no onUpdated (8.3 sets it by a move), so the cache is
+      // only the fallback for a tab closed before this answers
+      chrome.tabs.get(tabId).then(learn, () => {});
     });
     chrome.tabs.onUpdated?.addListener((id, change, tab) => learn(tab));
+    chrome.tabs.onMoved?.addListener((id, m) => { if (m?.windowId === me) chrome.tabs.get(id).then(learn, () => {}); });
     const snapshot = async () => {
       const native = window.__vm.native;
       const record = native?.hasSwitch?.() ? native.record() : null;
@@ -91,8 +94,8 @@
           if (!(await chrome.tabs.get(tabId)).active) await chrome.tabs.update(tabId, { active: true });
         } else return;
         // Vivaldi's own delete holds no Vivarc mark: a space deleted meanwhile must not keep the new tab (task 8y's dead id)
-        const known = await native.spaceIds?.();
-        if (closed.space && tabId != null && Array.isArray(known) && !known.includes(closed.space)) {
+        const listed = await native.spaceIds?.();
+        if (closed.space && tabId != null && Array.isArray(listed) && !listed.includes(closed.space)) {
           await native.setSpace(tabId, 0, { windowId: me }).catch(() => {});
           return;
         }
@@ -102,8 +105,8 @@
         console.warn("[vivarc] empty space:", error);
       } finally { end?.(); }
     };
-    chrome.tabs.onRemoved?.addListener((tabId, info) => {
-      if (info?.windowId !== me || info.isWindowClosing) return;
+    chrome.tabs.onRemoved?.addListener((tabId, removed) => {
+      if (removed?.windowId !== me || removed.isWindowClosing) return;
       const wasShown = shown?.id === tabId || (previous?.id === tabId && previous.until > Date.now());
       const closed = wasShown ? known(tabId) : null;
       info.delete(tabId);

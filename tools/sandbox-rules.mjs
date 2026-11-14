@@ -4005,12 +4005,18 @@ def("UD.live-elsewhere-after-restart", {
     await focus(ctx.H);
     if (!(await waitFor(() => hasEl(ctx.H, "#vm-panel .vm-newtab-chev"), 15000))) return { error: "no sidebar in H after the restart" };
     await h.ev(`(() => { window.__ud = []; for (const k of ["log", "warn"]) { const o = console[k]; console[k] = (...a) => { if (String(a[0]).includes("[vivarc]")) window.__ud.push(a.map((x) => x && x.stack ? x.message : String(x)).join(" ")); return o.apply(console, a); }; } return 1; })()`, ctx.H);
-    const r = await pickFrom(ctx.H, "Recently Deleted Spaces", "Y");
+    // the flyout's own action, called in H (the gather is the subject; the menu path is UD.after-restart's)
+    const r = await h.ev(`window.__vm.spaceEdit.list().then((l) => window.__vm.spaceEdit.undelete(l.find((e) => e.id === ${sp("Y")}), ${ctx.H})).then((x) => "ok", (e) => "threw " + e.message)`, ctx.H);
     if (r !== "ok") return { error: r };
-    await sleep(4000);
-    return { done: "ok", live, logs: await h.ev(`window.__ud`, ctx.H) };
+    const just = await h.snap(ctx.H);
+    const at = { rec: spaceName(recOf(just, ctx.H)), active: labelOf(activeOf(just, ctx.H) || { id: -1, url: "" }), list: just.spaces.map(([id]) => spaceName(id)),
+      pref: (await prefList()).map((w) => spaceName(w.id)),
+      raw: await h.ev(`[...window.__sbx.ws.getActiveWorkspaces()].map(([sp, w]) => [String(sp), w])`, ctx.H) };
+    await sleep(3000);
+    return { done: "ok", live, at, logs: await h.ev(`window.__ud`, ctx.H) };
   },
   expect: async (s, b, r) => [r.error ?? null, r.live?.length === 2 ? null : `before the undelete, live tabs of Y ${J(r.live)}, want 2 in W`,
+    r.at?.rec === "Y" ? null : `just after the undelete H was recorded ${r.at?.rec} (Vivaldi's record ${J(r.at?.raw)})`,
     (r.logs || []).some((l) => /ambiguous|did not go back/.test(l)) ? `refused: ${J(r.logs)}` : null,
     ...ctx.before.order.map((l) => labelIs(s, l, { win: ctx.H, space: sp("Y") })), recIs(s, ctx.H, sp("Y")), showsSpace(s, ctx.H, sp("Y")),
     tabsOf(s).some((t) => t.win === ctx.W && t.ws === sp("Y")) ? "a tab of Y is still in W" : null],
@@ -4022,12 +4028,13 @@ def("DEL.remove-fails", {
   setup: async () => { await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "Y1", sp("Y")); await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); },
   act: async () => {
     await h.ev(`(() => { window.__rej = []; window.addEventListener("unhandledrejection", (e) => window.__rej.push(String(e.reason?.message || e.reason)));
+      window.__toasts = []; window.addEventListener("vm-toast", (e) => window.__toasts.push(typeof e.detail === "string" ? e.detail : e.detail?.message));
       window.__realFindRemover = window.__vm.workspaces.findRemover;
       window.__vm.workspaces.findRemover = () => async () => { throw new Error("sandbox: the delete fails"); }; return 1; })()`, ctx.W);
     try {
       const r = await deleteSpace(ctx.W, "Y");
       await sleep(1500);
-      const toast = await h.ev(`document.querySelector("#vm-copied")?.textContent || null`, ctx.W);
+      const toast = (await h.ev(`window.__toasts`, ctx.W)).join(" | ") || null;
       return { done: "ok", r, toast, rej: await h.ev(`window.__rej`, ctx.W), held: (await h.ev(DELETED, ctx.H)).map((e) => e.id), spaces: (await prefList()).map((w) => w.id) };
     } finally { await h.ev(`(window.__vm.workspaces.findRemover = window.__realFindRemover, 1)`, ctx.W); }
   },

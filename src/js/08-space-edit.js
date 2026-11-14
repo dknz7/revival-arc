@@ -416,7 +416,11 @@
       for (const w of await chrome.windows.getAll({ populate: true }).catch(() => [])) {
         if (restoreMade.has(w.id) && (w.tabs || []).every((t) => ws().isBlank(t))) await chrome.windows.remove(w.id).catch(() => {});
       }
-      // 4. shown, the entry gone
+      // 4. shown, the entry gone. A window Vivaldi still records on the space (after a restart it seeds a window's record
+      // from its tab on screen, which can be one of the space's, held under its id) is switched to its default space
+      // first, as a pull frees a space: else the switch here only focuses that window (A2; seen in fix round 1).
+      const recordedIn = native.record()?.all()?.get(id);
+      if (recordedIn != null && recordedIn !== target) await native.switchTo(recordedIn, 0).catch((error) => console.warn("[vivarc] undelete: free the space:", error));
       await native.switchTo(target, id).catch((error) => console.warn("[vivarc] undelete: show the space:", error));
       if (target !== here) await native.focus(target).catch(() => {});
       // 5. folders, once the space is shown (Vivaldi's first switch into it undid a folder made before, measured, p3).
@@ -434,7 +438,9 @@
         for (let attempt = 0; attempt < 3 && !one(current); attempt++) {
           renew();
           try {
-            const r = await vivaldi.tabsPrivate.move({ tabIds: members, target: members[0], debug: "Vivarc.undelete",
+            // with the space and window named: a move without them files the tabs in the space the window shows (seen,
+            // fix round 1: after a restart, before the switch had taken)
+            const r = await vivaldi.tabsPrivate.move({ tabIds: members, target: members[0], windowId: target, workspaceId: id, debug: "Vivarc.undelete",
               tweaks: modern ? ["do-not-reparent", "create-new-group"] : ["do-not-reparent", "create-new-group", "target-is-tab"] });
             const title = made.find((m) => m.group === group)?.title;
             if (r?.group && title) await vivaldi.tabsPrivate.setGroupProperties({ groupExtId: r.group, groupTitle: title });
@@ -444,6 +450,9 @@
         }
         if (!one(current)) console.warn(`[vivarc] undelete: the folder of tabs ${members.join(", ")} did not come back`);
       }
+      // shown at the end: the switch above did not hold in one path (fix round 1, after a restart with tabs of the space
+      // gathered from another window: the window was left recorded on default, showing a tab of the space)
+      if (native.record()?.activeIn(target) !== id) await native.switchTo(target, id).catch((error) => console.warn("[vivarc] undelete: show the space again:", error));
       await forget(entry).catch((error) => console.warn("[vivarc] undelete: forget the entry:", error));
       return { window: target, space: id, tabs: made.length };
     } finally { restoring().delete(id); end?.(); }

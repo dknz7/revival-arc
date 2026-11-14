@@ -493,6 +493,78 @@ class FixRound1(unittest.TestCase):
         self.assertTrue(any(c[0] == "warn" and "keeps the name" in c[1] for c in r["calls"]), r["calls"])
 
 
+# 18-empty-space.js's runtime against fake tab events: the window's tabs (S.tabs), Vivaldi's record (S.rec: the space window
+# 7 shows), S.getDelay: how long chrome.tabs.get takes (ms). The script fires events through `fire`.
+KEEPER = """
+const fs = require("fs"), vm = require("vm"), path = require("path");
+const input = JSON.parse(process.argv[2]);
+const S = input.state, calls = [];
+const listeners = {};
+const ev = (name) => ({ addListener: (fn) => { (listeners[name] ||= []).push(fn); } });
+const fire = (name, ...a) => (listeners[name] || []).forEach((fn) => fn(...a));
+const tabs = S.tabs;
+const later = (ms, v) => new Promise((r) => setTimeout(() => r(v), ms));
+globalThis.console = { log: (...a) => calls.push(["log", a.join(" ")]), warn: (...a) => calls.push(["warn", a.map(String).join(" ")]), error() {} };
+globalThis.chrome = {
+  windows: { getCurrent: async () => ({ id: 7 }) },
+  tabs: {
+    query: async ({ windowId } = {}) => tabs.filter((t) => windowId == null || t.windowId === windowId),
+    get: (id) => later(S.getDelay || 0, tabs.find((t) => t.id === id)),
+    create: async (p) => { calls.push(["create", p]); const t = { id: 900, windowId: p.windowId, active: true, url: "chrome://vivaldi-webui/startpage", vivExtData: JSON.stringify(S.rec ? { workspaceId: S.rec } : {}) }; tabs.push(t); return t; },
+    update: async (id, p) => calls.push(["update", id, p]),
+    onCreated: ev("onCreated"), onAttached: ev("onAttached"), onDetached: ev("onDetached"), onActivated: ev("onActivated"),
+    onUpdated: ev("onUpdated"), onMoved: ev("onMoved"), onRemoved: ev("onRemoved"),
+  },
+};
+globalThis.window = { __vm: { ready: Promise.resolve(true), openEmptySpace: async (id, w) => calls.push(["bar", id, w]),
+  spaceRepair: { busy: () => false, gesture: () => () => {} },
+  native: { hasSwitch: () => true, record: () => ({ activeIn: () => S.rec ?? 0 }), spaceIds: async () => S.known, setSpace: async () => {}, switchTo: async () => {} } } };
+for (const f of ["07-workspaces.js", "18-empty-space.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], f), "utf8"));
+(async () => {
+  await later(20);
+  eval(input.script);
+  await later(400);
+  process.stdout.write(JSON.stringify(calls));
+})();
+"""
+
+
+def keeper(script, **state):
+    result = subprocess.run(["node", "-e", KEEPER, JS_DIR, json.dumps({"state": state, "script": script})], capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class EmptySpaceRuntime(unittest.TestCase):
+    """18-empty-space.js through its event listeners (fix round 1: the handler once threw on a shadowed name)."""
+
+    def state(self, **over):
+        st = {"tabs": [tab(1, 7, 0, 0), tab(2, 7, X, 1, active=True)], "rec": X, "known": [X, Y]}
+        st.update(over)
+        return st
+
+    CLOSE_X1 = """
+      const i = tabs.findIndex((t) => t.id === 2); tabs.splice(i, 1); tabs[0].active = true;
+      fire("onActivated", { tabId: 1, windowId: 7 }); fire("onRemoved", 2, { windowId: 7, isWindowClosing: false });
+    """
+
+    def test_the_last_page_closing_makes_the_blank_tab_and_opens_the_bar(self):
+        calls = keeper(self.CLOSE_X1, **self.state())
+        self.assertIn(["create", {"windowId": 7, "active": True}], calls)
+        self.assertIn(["bar", 900, 7], calls)
+
+    def test_a_tab_closed_before_its_lookup_answers_still_counts(self):
+        # X1 was put on screen and closed at once: the lookup (300 ms here) has not answered; the cache from the window's
+        # first read knows it
+        script = """fire("onActivated", { tabId: 2, windowId: 7 });""" + self.CLOSE_X1
+        calls = keeper(script, **self.state(tabs=[tab(1, 7, 0, 0, active=True), tab(2, 7, X, 1)], getDelay=300))
+        self.assertIn(["create", {"windowId": 7, "active": True}], calls)
+
+    def test_another_windows_close_and_a_closing_window_do_nothing(self):
+        self.assertEqual([c for c in keeper("""fire("onRemoved", 2, { windowId: 8, isWindowClosing: false });""", **self.state()) if c[0] != "log"], [])
+        self.assertEqual(keeper("""fire("onRemoved", 2, { windowId: 7, isWindowClosing: true });""", **self.state()), [])
+
+
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class Bundled(unittest.TestCase):
     def test_new_files_are_in_the_bundle_order(self):
