@@ -15,7 +15,7 @@ def resolve(config=None, saved=None):
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class Resolve(unittest.TestCase):
     def test_without_anything_saved_the_defaults_apply(self):
-        self.assertEqual(resolve(), {"showUrl": True, "glass": False, "glassOpacity": 55, "spaceBar": True, "compactBottomBar": True, "searchSuggestions": True, "backCloses": False, "diaLayout": False, "cleanupDaily": False})
+        self.assertEqual(resolve(), {"showUrl": True, "glass": False, "glassOpacity": 55, "sidebarWallpaper": False, "spaceBar": True, "compactBottomBar": True, "searchSuggestions": True, "backCloses": False, "diaLayout": False, "cleanupDaily": False})
 
     def test_the_install_config_sets_the_starting_point(self):
         values = resolve(config={"compactBottomBar": False, "suggestions": "off"})
@@ -55,6 +55,13 @@ class GlassOpacity(unittest.TestCase):
 class MarkerClasses(unittest.TestCase):
     def classes(self, values):
         return js("settings.classes(settings.SCHEMA, values)", values=values)
+
+    def test_the_wallpaper_and_back_closes_are_classes_while_on_and_off_by_default(self):
+        self.assertTrue(self.classes({"sidebarWallpaper": True})["vm-wallpaper"])
+        self.assertFalse(self.classes({"sidebarWallpaper": False})["vm-wallpaper"])
+        self.assertTrue(self.classes({"backCloses": True})["vm-back-closes"])
+        self.assertFalse(resolve()["sidebarWallpaper"])
+        self.assertFalse(resolve()["backCloses"])
 
     def test_compact_bottom_bar_is_a_class_while_on(self):
         self.assertTrue(self.classes({"compactBottomBar": True})["vm-compact-bottom"])

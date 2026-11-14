@@ -835,6 +835,36 @@
 #browser.vm-on.vm-back-closes [data-name="Back"]:disabled,
 #browser.vm-on.vm-back-closes [data-name="Back"] button:disabled { pointer-events: none; }
 
+/* The theme's wallpaper behind the sidebar (setting "sidebarWallpaper"; KASOGIT/vivarc issue #62). Vivaldi 8.3 already
+   paints a heavily blurred copy of the theme's image (--browserBlurredImage) behind the whole window; this puts the image
+   itself (--browserBackgroundImage, with Vivaldi's own size, position and repeat) behind the sidebar, fixed to the window so
+   it lines up with the frame, under a scrim of the theme's background colour so the text keeps its contrast. With Liquid
+   Glass the glass's own sheen stays on top and the scrim follows the glass opacity, never under 45%. A space with a colour
+   of its own (40-theme.js, vm-themed) keeps its colour: the theme editor wins. Reduce Transparency and Increase Contrast
+   turn the image off. A theme without an image shows the scrim over nothing, which is the theme's colour. */
+#browser.vm-on.vm-wallpaper { --vm-wall-scrim: color-mix(in srgb, var(--colorBg, #1c1c20) 58%, transparent); }
+#browser.vm-on.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container {
+  background-image: linear-gradient(var(--vm-wall-scrim), var(--vm-wall-scrim)), var(--browserBackgroundImage, none) !important;
+  background-size: auto, var(--browserBackgroundSize, cover) !important;
+  background-position: 0 0, var(--browserBackgroundPosition, 50%) !important;
+  background-repeat: no-repeat, var(--browserBackgroundRepeat, no-repeat) !important;
+  background-attachment: scroll, fixed !important;
+}
+#browser.vm-on.vm-glass.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container {
+  --vm-wall-scrim: color-mix(in srgb, var(--colorBg, #1c1c20) max(45%, var(--vm-glass-opacity, 55%)), transparent);
+  background-image:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0) 26%),
+    radial-gradient(120% 45% at 0% 0%, rgba(255, 255, 255, 0.14), transparent 70%),
+    linear-gradient(var(--vm-wall-scrim), var(--vm-wall-scrim)), var(--browserBackgroundImage, none) !important;
+  background-size: auto, auto, auto, var(--browserBackgroundSize, cover) !important;
+  background-position: 0 0, 0 0, 0 0, var(--browserBackgroundPosition, 50%) !important;
+  background-repeat: no-repeat, no-repeat, no-repeat, var(--browserBackgroundRepeat, no-repeat) !important;
+  background-attachment: scroll, scroll, scroll, fixed !important;
+}
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+  #browser.vm-on.vm-wallpaper:not(.vm-themed) #tabs-tabbar-container { background-image: none !important; }
+}
+
 /* Liquid glass (setting "glass"), after Apple's Human Interface Guidelines, Materials: glass is for the layer of controls
    and navigation (sidebar, menus, command bar, dialogs), never for the content layer, and never stacked on itself, so the
    rows and tiles inside a glass surface keep plain fills. This is the regular variant: blurred and saturated backdrop,
