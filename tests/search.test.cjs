@@ -620,6 +620,20 @@ test("the resolver leaves javascript: to Vivaldi's own field, and searches for e
   assert.equal(search.resolve(''), null);
   assert.equal(search.resolve('   '), null);
 });
+test('the resolver does not take times, known schemes or impossible ports for host:port, and reads drive paths as files', () => {
+  const { search } = setup();
+  const url = (t) => { const r = search.resolve(t); return r && r.kind === 'url' ? r.url : r && r.kind; };
+  assert.equal(url('tel:123'), 'tel:123');
+  assert.equal(url('mailto:x@y.test'), 'mailto:x@y.test');
+  assert.equal(url('10:30'), 'search');
+  assert.equal(url('12:00:00'), 'search');
+  assert.equal(url('localhost:99999'), 'search');
+  assert.equal(url('127.0.0.1:65536'), 'search');
+  assert.equal(url('127.0.0.1:65535'), 'http://127.0.0.1:65535');
+  assert.equal(url('2001:db8:0:0:0:0:0:1'), 'http://[2001:db8:0:0:0:0:0:1]/');
+  assert.equal(url('C:\\Users\\x\\a.html'), 'file:///C:/Users/x/a.html');
+  assert.equal(url('C:/Program Files/x.txt'), 'file:///C:/Program Files/x.txt');
+});
 test('a bare word is a search first, with its intranet address offered too', () => {
   const { search } = setup();
   assert.deepEqual({ ...search.resolve('intranet') }, { kind: 'search', alt: 'http://intranet/' });

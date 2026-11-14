@@ -174,11 +174,13 @@
       card.classList.add("vm-note-item");
       if (!spec.el) {
         card.querySelectorAll(".vm-note-btn").forEach((b, i) => b.addEventListener("click", (e) => {
-          if (e.detail > 1) return;
+          if (e.detail > 1 || card.dataset.vmBusy) return; // an action still running is not run again
           let result;
           try { result = spec.actions[i].run(); } catch (error) { warn("action", error); }
           if (result && typeof result.then === "function") {
-            result.then((done) => { if (done !== false && notes.get(spec.id)?.el === card) remove(spec.id); }, (error) => warn("action", error));
+            card.dataset.vmBusy = "1";
+            result.then((done) => { if (done !== false && notes.get(spec.id)?.el === card) remove(spec.id); }, (error) => warn("action", error))
+              .finally(() => { delete card.dataset.vmBusy; });
           } else if (result !== false) remove(spec.id);
         }));
         card.querySelector(".vm-note-x")?.addEventListener("click", (e) => {
@@ -455,7 +457,7 @@
   };
   let bookmarkKeyAt = 0;
   let zoomKeyAt = 0;
-  const ZOOM_KEYS = /^(?:ctrl|cmd|meta|command)\+(?:=|-|0|\+|plus|minus|add|subtract|numpad ?(?:\+|-|add|subtract|plus|minus))$/i;
+  const ZOOM_KEYS = /^(?:ctrl|cmd|meta|command)\+(?:shift\+)?(?:=|-|0|\+|plus|minus|add|subtract|numpad ?(?:\+|-|add|subtract|plus|minus))$/i;
   const navSeq = new Map(); // tab -> its navigations, so a toast about a page knows it is still that page
   const onBookmark = async (_id, node) => {
     try {

@@ -4118,7 +4118,30 @@ for (const layout of ["dia", "arc"]) {
     expect: (s, b, r) => [r.start === "input" ? null : `the bar's input had no cursor (${r.start})`, r.tab1?.startsWith("fly:") ? null : `Tab went to ${J(r.tab1)}, not the fly-up`,
       r.tab2?.startsWith("fly:") && r.tab2 !== r.tab1 ? null : `a second Tab: ${J(r.tab2)}`, r.back1 === r.tab1 ? null : `Shift+Tab: ${J(r.back1)}, want ${J(r.tab1)}`,
       r.back2 === "input" ? null : `Shift+Tab from the first: ${J(r.back2)}, want the input`, r.bar ? null : "the bar closed",
+      r.esc === "input" ? null : `Escape in the fly-up left the cursor on ${J(r.esc)}, want the bar's input`,
       r.perm === "default" ? null : `moving through the fly-up answered the question (${r.perm})`],
+  });
+  // Review (fix round 1), Critical: an entry handed to Vivaldi's field from Ctrl+T's bar (which has no tab of its own) goes
+  // into a new tab, never the page on screen.
+  def(`9B.the-escape-hatch-from-ctrl-t-uses-a-new-tab-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      const page = await activeUrl(ctx.W);
+      await waitFor(() => h.ev(`performance.now() > 6000`, ctx.W), 12000); // the bar's new-tab path is live (a window's first 5 s pass)
+      await h.ev(`(window.dispatchEvent(new CustomEvent("vm-open-command-bar")), 1)`, ctx.W);
+      await waitFor(() => h.ev(`document.activeElement === document.querySelector("#vm-cmd input")`, ctx.W), 3000);
+      await h.cdp(ctx.W).send("Input.insertText", { text: `${origin}/en-hatch-t` }); await sleep(900);
+      await keyArrow(ctx.W, "ArrowUp"); await sleep(150);
+      await keyEnter(ctx.W); await sleep(1200);
+      const shown = await FIELD_STATE9(ctx.W);
+      await keyEnter(ctx.W);
+      const loaded = await waitFor(async () => { const a = await activeUrl(ctx.W); return a.url.endsWith("/en-hatch-t") ? a : null; }, 5000, 200) || await activeUrl(ctx.W);
+      await sleep(900);
+      return { page, shown, loaded, pageNow: await h.ev(`chrome.tabs.get(${page.id}).then((t) => t.url)`, ctx.H), after: await FIELD_STATE9(ctx.W) };
+    },
+    expect: (s, b, r) => [r.shown.native && r.shown.fieldFocused ? null : `Vivaldi's field not shown: ${J(r.shown)}`,
+      r.loaded.url?.endsWith("/en-hatch-t") && r.loaded.id !== r.page.id ? null : `the entry loaded in ${J(r.loaded)} (the page was tab ${r.page.id})`,
+      r.pageNow === r.page.url ? null : `the page on screen was navigated: ${J(r.pageNow)}`, !r.after.native ? null : "the field stayed shown"],
   });
   // Important 3: a second question of the tab comes into the fly-up when the first is answered there, not behind a pill.
   def(`9B.a-following-question-comes-into-the-open-bar-${layout}`, {

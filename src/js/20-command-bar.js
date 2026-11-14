@@ -304,37 +304,56 @@
   // The tab: the bar's own (made active first), or for Ctrl+T's bar, which has none, a new one.
   let nativeOpen = false;
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  // `handing` is up from the first step: the tab made or activated for the entry is the hand-over's own (the bar's new-tab
+  // path and the focus route leave it alone), and nothing is typed or submitted unless that tab is the active one, so an
+  // entry can never land in another page. The field is found once the tab is active, the cursor must have reached it,
+  // and the field always hides again: on its blur, on any failure, and if it ever stops having the cursor (a watch).
+  let handing = false;
   const nativeFieldEntry = async (text, { tabId = null, submit = false } = {}) => {
-    const field = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField #urlFieldInput");
     const browser = document.querySelector("#browser");
-    if (!field || !browser) { toast("Vivaldi's address field is not available in this window"); return false; }
-    let tab = tabId != null ? await chrome.tabs.get(tabId).catch(() => null) : null;
-    if (!tab) tab = await chrome.tabs.create({ active: true });
-    else if (!tab.active) await chrome.tabs.update(tab.id, { active: true });
-    await wait(250); // Vivaldi's field follows the active tab
-    nativeOpen = true;
-    browser.classList.add("vm-native-field");
-    window.__vm.notify?.place?.();
+    if (!browser || handing) return false;
+    handing = true;
+    let field = null;
+    let watch = 0;
     const end = () => {
+      clearInterval(watch);
+      handing = false;
+      if (field) field.removeEventListener("blur", onBlur);
       if (!nativeOpen) return;
       nativeOpen = false;
       document.querySelector("#browser")?.classList.remove("vm-native-field");
-      field.removeEventListener("blur", onBlur);
     };
     const onBlur = () => setTimeout(() => { if (document.activeElement !== field) end(); }, 150);
-    field.addEventListener("blur", onBlur);
-    focusOf(field);
-    // React owns the field's value: written through the input's own setter, then told with an input event.
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(field, text);
-    field.dispatchEvent(new Event("input", { bubbles: true }));
-    field.setSelectionRange?.(text.length, text.length);
-    if (submit) {
-      for (const type of ["keydown", "keypress", "keyup"]) {
-        field.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+    try {
+      let tab = tabId != null ? await chrome.tabs.get(tabId).catch(() => null) : null;
+      if (!tab) tab = await chrome.tabs.create({ active: true });
+      else if (!tab.active) await chrome.tabs.update(tab.id, { active: true });
+      await wait(250); // Vivaldi's field follows the active tab
+      const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+      field = document.querySelector("#tabs-tabbar-container .UrlBar-AddressField #urlFieldInput");
+      if (active?.id !== tab.id || !field) { toast("Vivaldi's address field is not available here"); end(); return false; }
+      nativeOpen = true;
+      document.querySelector("#browser")?.classList.add("vm-native-field");
+      window.__vm.notify?.place?.();
+      field.addEventListener("blur", onBlur);
+      focusOf(field);
+      if (document.activeElement !== field) { end(); toast("Vivaldi's address field did not take the cursor"); return false; }
+      watch = setInterval(() => { if (document.activeElement !== field) end(); }, 1000);
+      // React owns the field's value: written through the input's own setter, then told with an input event.
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set.call(field, text);
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.setSelectionRange?.(text.length, text.length);
+      if (submit) {
+        for (const type of ["keydown", "keypress", "keyup"]) {
+          field.dispatchEvent(new KeyboardEvent(type, { key: "Enter", code: "Enter", keyCode: 13, which: 13, bubbles: true, cancelable: true }));
+        }
+        setTimeout(end, 600);
       }
-      setTimeout(end, 600);
+      return true;
+    } catch (error) {
+      end();
+      throw error;
     }
-    return true;
   };
   // Replaceable (search.test.cjs records the hand-overs instead of driving a field).
   const nativeEntry = (text, options) => Promise.resolve()
@@ -781,7 +800,7 @@
     try {
       // The bar's tab: the page it edits, its own blank tab, or (Ctrl+T's bar, which has no tab) the page behind it. The
       // page's rows show whenever that is a page: not over a blank tab or a private window's introduction.
-      window.__vm.notify?.barOpened({ fly, close: () => close(true), tab: () => (editing !== null ? targetTab : targetTab ?? null), // null: the active tab
+      window.__vm.notify?.barOpened({ fly, close: () => close(true), tab: () => targetTab ?? null, // null (Ctrl+T's bar): the active tab
         rows: () => editing !== null || targetTab == null });
     } catch (error) { console.warn("[vivarc] fly-up:", error); }
     window.dispatchEvent(new CustomEvent("vm-command-bar", { detail: { open: true } }));
@@ -881,6 +900,7 @@
 
   chrome.tabs.onCreated.addListener(async (tab) => {
     lastUrl.set(tab.id, tab.pendingUrl || tab.url || ""); // the start page mark's memory (below)
+    if (handing) return; // a tab made to hand an entry to Vivaldi's own field (nativeFieldEntry)
     if ((creating && window.__vm.workspaces.startTyped(tab.pendingUrl || tab.url)) || Date.now() - startedAt < 5000 || !isBlank(tab) || tab.active === false) return;
     const previous = activeHistory.filter((id) => id !== tab.id).pop();
     // Creating/switching to an empty workspace creates its first blank tab.
@@ -973,7 +993,7 @@
   //   (above) decides.
   const focusOf = (node) => (origFocus ? origFocus.call(node) : node.focus());
   const popupUp = () => !!document.querySelector("#tabs-tabbar-container .UrlBar-AddressField :is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))");
-  const takesField = (node) => !nativeOpen && ownsField && !!window.__vm.cssLoaded && node?.id === "urlFieldInput" &&
+  const takesField = (node) => !nativeOpen && !handing && ownsField && !!window.__vm.cssLoaded && node?.id === "urlFieldInput" &&
     !!node.closest?.("#tabs-tabbar-container .UrlBar-AddressField") && !!document.querySelector("#browser.vm-on");
   let barAt = 0;
   const route = async (field) => {

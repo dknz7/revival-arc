@@ -222,7 +222,13 @@
     }
     if (request.closeDenies) card.append(el("div", "vm-site-note", "Vivaldi denies this if it closes: closing it, a click elsewhere or another tab."));
     card.addEventListener("pointerup", () => setTimeout(releaseFocus, 0)); // a press that never became a click leaves the cursor on the button too
-    card.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dismiss(popup); } });
+    card.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      e.preventDefault(); e.stopPropagation();
+      const inBar = !!card.closest("#vm-cmd");
+      dismiss(popup);
+      if (inBar) document.querySelector("#vm-cmd input")?.focus(); // the cursor stays in the bar, not on the page's body
+    });
     return card;
   };
 
@@ -252,11 +258,11 @@
     // card goes to whichever of the two tabs is on the site that asks.
     const prev = previousTab;
     if (prev != null && prev !== activeTab && Date.now() - switchedAt < 1000 && request.site) {
-      const origin = (url) => { try { return new URL(url).origin; } catch (_) { return ""; } };
-      const site = origin(request.site) || request.site;
+      const hostOf = (url) => { try { return new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `https://${url}`).host; } catch (_) { return ""; } };
+      const site = hostOf(request.site);
       Promise.all([chrome.tabs.get(entryNew.tab).catch(() => null), chrome.tabs.get(prev).catch(() => null)]).then(([now, before]) => {
         if (cards.get(popup) !== entryNew || !before) return;
-        if (origin(now?.url || now?.pendingUrl || "") !== site && origin(before.url || before.pendingUrl || "") === site) {
+        if (site && hostOf(now?.url || now?.pendingUrl || "") !== site && hostOf(before.url || before.pendingUrl || "") === site) {
           entryNew.tab = prev;
           notify()?.add({ id, tab: prev, type: "permission", el: card });
         }

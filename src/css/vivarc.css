@@ -72,7 +72,7 @@
    answers clicks). A site question Vivarc shows as a card (vm-site-carded) stays hidden. The Dia layout's Shield places
    the site info under itself instead (later, more specific rules). vm-quiet-pop (17-notify.js) keeps a popup Vivarc drives
    unseen. */
-#browser.vm-on #tabs-tabbar-container .UrlBar-AddressField:has(:is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))) {
+#browser.vm-on:not(.vm-native-field) #tabs-tabbar-container .UrlBar-AddressField:has(:is(.addressfield-popup-container:not(.vm-site-carded), .button-popup:not(.vm-site-carded))) {
   position: static !important; height: 0 !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important;
   border: 0 !important; box-shadow: none !important; overflow: hidden !important; opacity: 1 !important;
   visibility: hidden; pointer-events: none;

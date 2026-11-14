@@ -65,19 +65,29 @@
   const IPV4 = '(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}';
   const HOST = `(?:localhost|${IPV4}|\\[[0-9a-f:.]+\\]|${LABEL}(?:\\.${LABEL})*)`;
   const TAIL = '(?:[/?#]\\S*)?';
-  const HOST_PORT = new RegExp(`^${HOST}:\\d{1,5}${TAIL}$`, 'iu');
+  const HOST_PORT = new RegExp(`^(${HOST}):(\\d{1,5})${TAIL}$`, 'iu');
   const LOCAL = new RegExp(`^(?:localhost|${IPV4}|\\[[0-9a-f:.]+\\])${TAIL}$`, 'iu');
-  const BARE_IPV6 = /^(?=.*:.*:)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}$/i;
+  // Bare IPv6: "::" somewhere, or all eight groups (so a time like 12:00:00 is not one).
+  const BARE_IPV6 = /^(?:(?=.*::)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}|[0-9a-f]{1,4}(?::[0-9a-f]{1,4}){7})$/i;
+  const DRIVE_PATH = /^[a-z]:[\\/]/i; // C:\Users\x or C:/Users/x: a file on this computer, as Vivaldi's field reads it
+  const hostPort = (text) => {
+    const m = HOST_PORT.exec(text);
+    if (!m) return false;
+    const host = m[1].replace(/^\[|\]$/g, '');
+    return Number(m[2]) <= 65535 && !/^\d+$/.test(host); // 10:30 is a time, not host 10 on port 30
+  };
   const DOMAIN = new RegExp(`^${LABEL}(?:\\.${LABEL})*\\.(?:[a-z]{2,63}|xn--[a-z0-9-]+|[\\u00a1-\\uffff]{2,})\\.?${TAIL}$`, 'iu');
   const LABEL_PATH = new RegExp(`^${LABEL}/\\S*$`, 'iu');
   const BARE_LABEL = new RegExp(`^${LABEL}$`, 'iu');
   const resolve = (raw, { editing = null } = {}) => {
     const text = String(raw ?? '').trim();
     if (!text) return null;
+    if (DRIVE_PATH.test(text)) return { kind: 'url', url: `file:///${text.replace(/\\/g, '/')}` };
     const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(text)?.[1].toLowerCase() || null;
     if (/\s/.test(text) && !(scheme && SPACED.has(scheme))) return { kind: 'search' };
     if (BARE_IPV6.test(text)) return { kind: 'url', url: `http://[${text}]/` };
-    if (HOST_PORT.test(text)) return { kind: 'url', url: `http://${text}` };
+    // A known scheme wins over host:port ("tel:123", "mailto:x"); otherwise host:port comes first ("localhost:3000").
+    if (!(scheme && (SCHEMES.has(scheme) || NATIVE_SCHEMES.has(scheme))) && hostPort(text)) return { kind: 'url', url: `http://${text}` };
     if (scheme) {
       const rest = text.slice(scheme.length + 1);
       if (editing) {
