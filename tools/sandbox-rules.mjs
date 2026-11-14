@@ -3875,6 +3875,11 @@ const SET_UD = async ({ other = false } = {}) => {
   for (const l of ys) await tab(holder, l, sp("Y"), { active: l === "DY1" });
   await show(holder, sp("Y")); await activate(ctx.tabs.DY1);
   await h.ev(`(window.__sbx.mgr.setEmoji(${sp("Y")}, "🎯"), 1)`, ctx.H);
+  await h.ev(`chrome.tabs.update(${ctx.tabs.DY2}, { muted: true }).then(() => 1)`, ctx.H);
+  const folder = await h.ev(`(async () => { const byTab = await window.__vm.native.movesByTab();
+    const r = await (async () => vivaldi.tabsPrivate.move({ tabIds: [${ctx.tabs.DY3}, ${ctx.tabs.DY4}], target: ${ctx.tabs.DY3}, debug: "sbx", tweaks: byTab ? ["do-not-reparent", "create-new-group"] : ["do-not-reparent", "create-new-group", "target-is-tab"] }))();
+    return r?.group ?? null; })()`, holder);
+  if (!folder) throw new Error("setup: no folder for DY3 and DY4");
   await addRule("CONTAINS", "ud-shop", sp("Y"));
   await h.ev(`window.__vm.store.set("theme:space:${sp("Y")}", { on: true, hue: 123, sat: 40, light: 30, grain: 10 }).then(() => 1)`, ctx.H);
   await titled(ys);
@@ -3891,13 +3896,19 @@ const SET_UD = async ({ other = false } = {}) => {
 };
 // What undelete must give back: the tile, its name and emoji, its place, its rule and theme, the 4 tabs in order in
 // `win`, shown there, the entry gone.
-const undeleted = async (s, win, { shownIn = win } = {}) => {
+const extIn = (label) => h.ev(`chrome.tabs.query({ windowType: "normal" }).then((ts) => { const t = ts.find((x) => (x.title || "") === ${J(label)}); return t ? { ...JSON.parse(t.vivExtData || "{}"), muted: !!t.mutedInfo?.muted } : null; })`, ctx.H);
+const undeleted = async (s, win, { shownIn = win, history = false } = {}) => {
   const list = await prefList(), y = list.find((w) => w.id === sp("Y"));
   const before = ctx.before.list.find((w) => w.id === sp("Y"));
   const rules = (await prefRules()).filter((r) => r.workspaceId === sp("Y")).map((r) => [r.type, r.expression]);
   const theme = await themeOf(sp("Y"));
   const left = await h.ev(DELETED, ctx.H);
-  return [y ? null : "Y is not back in Vivaldi's list (same id)", y && y.name !== "Y" ? `named ${J(y.name)}` : null,
+  const [e2, e3, e4] = [await extIn("DY2"), await extIn("DY3"), await extIn("DY4")];
+  // with its history: restored from Recently Closed, so its entries are gone from there (a tab opened anew leaves them)
+  const stillClosed = history ? await h.ev(`chrome.sessions.getRecentlyClosed({ maxResults: 25 }).then((l) => l.filter((x) => /<title>DY[0-9]</.test(decodeURIComponent(x.tab?.url || ""))).map((x) => x.tab.title))`, ctx.H) : [];
+  return [y ? null : "Y is not back in Vivaldi's list (same id)", e2?.muted ? null : "DY2 is not muted again",
+    e3?.group && e3.group === e4?.group ? null : `DY3 and DY4 are not in one folder (${J([e3?.group, e4?.group])})`,
+    stillClosed.length ? `Recently Closed still lists ${J(stillClosed)}: opened anew, without their history` : null, y && y.name !== "Y" ? `named ${J(y.name)}` : null,
     y && y.emoji !== before.emoji ? `emoji ${J(y.emoji)}, want ${J(before.emoji)}` : null, y && y.icon !== before.icon ? "its icon changed" : null,
     J(orderOf(list)) === J(orderOf(ctx.before.list)) ? null : `order ${J(orderOf(list))}, want ${J(orderOf(ctx.before.list))}`,
     J(rules) === J(ctx.before.rules) ? null : `rules ${J(rules)}, want ${J(ctx.before.rules)}`,
@@ -3919,7 +3930,7 @@ def("UD.undelete", {
     await shot(ctx.W, "9c-restored-space");
     return { done: "ok", rows, note };
   },
-  expect: async (s, b, r) => [r.error ?? null, J(r.note) === J([["Y", "4 tabs · today", "🎯"]]) ? null : `flyout row ${J(r.note)}`, await recordStayedLive(), ...(await undeleted(s, ctx.W))],
+  expect: async (s, b, r) => [r.error ?? null, J(r.note) === J([["Y", "4 tabs · today", "🎯"]]) ? null : `flyout row ${J(r.note)}`, await recordStayedLive(), ...(await undeleted(s, ctx.W, { history: true }))],
 });
 // After a restart the Recently Closed entries have new ids: found again by address and title, else opened anew.
 def("UD.after-restart", {
@@ -3964,6 +3975,15 @@ def("UD.held-then-heals", {
     r.healed ? null : "the expired entry's tabs did not heal", noDead(s), r.lines?.length === 2 ? null : `${r.lines?.length} heal lines, want 2`, tabIs(s, "X1", { win: ctx.W, space: sp("X") })],
 });
 
+// The real user path the hold exists for: Vivaldi's own Reopen Closed Tab brings two of Y's tabs back under its id
+// (hidden: no tile shows Y), then Y is undeleted: those two are Y's again, the other two come from Recently Closed, and
+// nothing is open twice.
+def("UD.reopened-then-undelete", {
+  gesture: true, setup: async () => { await SET_UD(); await rawRestore(2); await sleep(800); await busy(); },
+  act: () => pickFrom(ctx.W, "Recently Deleted Spaces", "Y"),
+  expect: async (s) => [...(await undeleted(s, ctx.W))],
+});
+
 // Edit a space (upstream #126): from the tile's right-click menu.
 const SET_ED = async () => {
   await mkWin("W", { width: 900 }); await tab(ctx.W, "X1", sp("X"), { active: true }); await tab(ctx.W, "Y1", sp("Y"));
@@ -3979,6 +3999,7 @@ const typeAndEnter = async (win, text) => {
 // The pins follow: X's Pinned folder (with a pin in it) is renamed first, so the renamed space keeps it, and no
 // empty folder is made for either name.
 def("ED.rename", {
+  gesture: true,
   setup: async () => {
     await SET_ED();
     const folder = await waitFor(async () => (await folders()).X ?? null, 8000);
@@ -4008,7 +4029,7 @@ def("ED.rename", {
   },
 });
 def("ED.icon", {
-  setup: SET_ED,
+  gesture: true, setup: SET_ED,
   act: async () => {
     if (!(await tileMenu(ctx.W, "Y", "Change Icon…"))) return { error: "no Change Icon row" };
     if (!(await waitFor(() => hasEl(ctx.W, ".vm-icon-picker .vm-icon-choice"), 4000))) return { error: "no icon picker" };
@@ -4049,7 +4070,7 @@ def("ED.reorder", {
 });
 // + makes a space at once (named, Vivaldi's default icon), not shown, and opens its rename.
 def("ED.plus", {
-  setup: SET_ED,
+  gesture: true, setup: SET_ED,
   act: async () => {
     const before = (await prefList()).map((w) => w.id);
     if (!(await h.ev(`(() => { const p = document.querySelector("#vm-panel .vm-space-plus"); if (!p) return false; p.click(); return true; })()`, ctx.W))) return { error: "no + tile" };

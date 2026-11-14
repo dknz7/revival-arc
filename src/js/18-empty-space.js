@@ -73,13 +73,22 @@
           if (ws().of(await chrome.tabs.get(tabId)) !== (closed.space || 0)) await native.setSpace(tabId, closed.space || 0, { windowId: me });
         } else if (plan.kind === "switch") {
           await native.switchTo(me, plan.space);
-          const own = (await chrome.tabs.query({ windowId: me })).filter((t) => ws().of(t) === plan.space);
-          tabId = own.find((t) => t.active)?.id ?? null;
+          // Vivaldi makes the empty space's start page just after its switch resolves: looked for up to 1.5 s
+          for (let look = 0; look < 15 && tabId == null; look++) {
+            if (look) await new Promise((resolve) => setTimeout(resolve, 100));
+            tabId = (await chrome.tabs.query({ windowId: me })).find((t) => t.active && ws().of(t) === plan.space)?.id ?? null;
+          }
         } else if (plan.kind === "bar") {
           tabId = plan.tab;
           if (plan.switch) await native.switchTo(me, closed.space || 0);
           if (!(await chrome.tabs.get(tabId)).active) await chrome.tabs.update(tabId, { active: true });
         } else return;
+        // Vivaldi's own delete holds no Vivarc mark: a space deleted meanwhile must not keep the new tab (task 8y's dead id)
+        const known = await native.spaceIds?.();
+        if (closed.space && tabId != null && Array.isArray(known) && !known.includes(closed.space)) {
+          await native.setSpace(tabId, 0, { windowId: me }).catch(() => {});
+          return;
+        }
         console.log(`[vivarc] empty space: window ${me} stays in ${closed.space ? `space ${closed.space}` : "its default space"} (${plan.kind})`);
         if (tabId != null) await window.__vm.openEmptySpace?.(tabId, me);
       } catch (error) {

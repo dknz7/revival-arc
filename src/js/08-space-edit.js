@@ -66,12 +66,16 @@
 
   // Each remembered tab's Recently Closed entry (chrome.sessions.getRecentlyClosed, newest first): the same address, the
   // same title first, closed no earlier than `since` (ms) less a few seconds; each entry is used once. -> the tabs, with
-  // sessionId where one was found (a tab already holding a listed id keeps it).
+  // sessionId where one was found. A stored id is kept only while it is listed for the same address: Chromium numbers the
+  // entries afresh each run, so after a restart an old id can name another closed tab.
   const matchSessions = (tabs, sessions, since) => {
     const pool = (sessions || []).filter((s) => s?.tab?.sessionId && (!Number.isFinite(since) || !Number.isFinite(s.lastModified) || s.lastModified >= since / 1000 - MATCH_SLACK_S));
     const used = new Set();
     const out = (tabs || []).map((t) => ({ ...t }));
-    for (const t of out) if (t.sessionId && pool.some((s) => s.tab.sessionId === t.sessionId)) used.add(t.sessionId);
+    for (const t of out) {
+      if (t.sessionId && !used.has(t.sessionId) && pool.some((s) => s.tab.sessionId === t.sessionId && s.tab.url === t.url)) used.add(t.sessionId);
+      else t.sessionId = null;
+    }
     for (const strict of [true, false]) {
       for (const t of out) {
         if (t.sessionId && used.has(t.sessionId)) continue;
@@ -95,16 +99,27 @@
     const next = [...rest.slice(0, at), entry.id, ...rest.slice(at)];
     return JSON.stringify(next) === JSON.stringify(ids || []) ? null : next;
   };
-  // How the entry comes back. windows: the normal windows' ids; here: the window asking; sessions: Recently Closed now.
-  // -> { window: its old window while it is open, else here; tabs: in their old order, each { how: "session", sessionId }
-  // (still listed, by its id or, after a restart gave the entries new ids, by address and title) or { how: "create" } }
-  const restorePlan = ({ entry, windows, here, sessions }) => {
-    const window = (windows || []).includes(entry.window) ? entry.window : here;
+  // How the entry comes back. windows: the normal windows' ids; here: the window asking; sessions: Recently Closed now;
+  // live: the tabs that carry the space's id right now (one Vivaldi brought back with it, or one an earlier, unfinished
+  // undelete restored); sameRun: whether this browser run is the one that deleted it (window ids start afresh too).
+  // -> { window: its old window while it is open in the same run, else here; tabs: in their old order, each
+  // { how: "live", tab } (already back: never opened twice), { how: "session", sessionId } (still listed, by its id or,
+  // after a restart, by address and title) or { how: "create" } }
+  const restorePlan = ({ entry, windows, here, sessions, live = [], sameRun = true }) => {
+    const window = sameRun && (windows || []).includes(entry.window) ? entry.window : here;
     const ordered = [...(entry.tabs || [])].sort((a, b) => a.windowId - b.windowId || a.index - b.index);
     // the tabs of the target window keep their order; tabs that lived elsewhere (a split, 8.2) follow it
     const sorted = [...ordered.filter((t) => t.windowId === window), ...ordered.filter((t) => t.windowId !== window)];
-    const matched = matchSessions(sorted, sessions, entry.deletedAt);
-    return { window, tabs: matched.map((t) => (t.sessionId ? { ...t, how: "session" } : { ...t, how: "create", sessionId: null })) };
+    const left = [...(live || [])];
+    const back = sorted.map((t) => { const i = left.findIndex((x) => (x.pendingUrl || x.url) === t.url); return i < 0 ? null : left.splice(i, 1)[0]; });
+    // only the tabs not already back are matched to Recently Closed
+    const matched = matchSessions(sorted.filter((t, i) => !back[i]), sessions || [], entry.deletedAt);
+    const plan = sorted.map((t, i) => {
+      if (back[i]) return { ...t, how: "live", tab: back[i].id, sessionId: null };
+      const m = matched.shift();
+      return m.sessionId ? { ...m, how: "session" } : { ...m, how: "create", sessionId: null };
+    });
+    return { window, tabs: plan };
   };
   // The order of a space's tabs is right when, read in window order, they come in the entry's order. got: the restored
   // tabs' ids in window order; want: the same ids in the entry's order. Pinned tabs keep Chromium's pinned area.
@@ -125,8 +140,9 @@
     return next;
   };
   // A name for a space made by +: "New Space", else "New Space 2", 3, ...
-  const newSpaceName = (list, base = "New Space") => {
-    const taken = new Set((list || []).map((w) => String(w.name || "").trim().toLowerCase()));
+  // labels: the Pinned folders' names too, so a new space never takes a leftover folder's pins.
+  const newSpaceName = (list, base = "New Space", labels = []) => {
+    const taken = new Set([...(list || []).map((w) => String(w.name || "")), ...(labels || [])].map((n) => n.trim().toLowerCase()));
     if (!taken.has(base.toLowerCase())) return base;
     for (let n = 2; ; n++) if (!taken.has(`${base} ${n}`.toLowerCase())) return `${base} ${n}`;
   };
@@ -208,6 +224,9 @@
     return mine;
   };
   const store = () => window.__vm.store;
+  // This browser run (window ids start afresh with each): a mark on the background page, which lives as long as Vivaldi.
+  const RUN_KEY = "__vivarcRun";
+  const runId = () => { const p = page(); if (!p[RUN_KEY]) p[RUN_KEY] = `${Date.now()}-${Math.random().toString(36).slice(2)}`; return p[RUN_KEY]; };
   // A failed read rejects (store.read), so a broken store is never overwritten with an empty list.
   const load = async () => {
     const raw = await within(store().read(DELETED_KEY), STORE_MS, "reading the deleted spaces");
@@ -238,7 +257,7 @@
     if (!space) throw new Error("the space is not in Vivaldi's list");
     const [tabs, rules, theme] = await Promise.all([chrome.tabs.query({ windowType: "normal" }), readPref("vivaldi.workspaces.link_routes"),
       store().get(THEME_KEY(id), null)]);
-    const entry = deletedEntry({ space, list: all, tabs, record: window.__vm.native?.record()?.all() ?? null, rules: Array.isArray(rules) ? rules : [], theme, now: Date.now() });
+    const entry = { ...deletedEntry({ space, list: all, tabs, record: window.__vm.native?.record()?.all() ?? null, rules: Array.isArray(rules) ? rules : [], theme, now: Date.now() }), run: runId() };
     await mutate((now) => keepDeleted(now, [entry], Date.now()));
     if (!(await load()).some((e) => sameDeleted(e, entry))) throw new Error("the entry did not reach the store");
     return entry;
@@ -264,15 +283,19 @@
   // folder, split, pin and mute; the order checked; then the space is shown (in its old window while that is open, else
   // here) and the entry goes. Tabs still carrying the id (if any survived) are the space's again at once.
   // -> { window, space, tabs: how many came back }; throws when the space could not be made (the entry then stays).
-  const restoring = new Set(); // a second click while one runs would open its tabs twice
+  // One undelete of a space at a time, in any window (a second click would open its tabs twice): a set on the shared page.
+  const RESTORING = "__vivarcUndeleting";
+  const restoring = () => { const p = page(); if (!(p[RESTORING] instanceof Set)) p[RESTORING] = new Set(); return p[RESTORING]; };
   const undelete = async (entry, here) => {
     const mgr = manager();
     if (!mgr) throw new Error("Vivaldi's workspace manager was not found");
     const id = entry.id;
-    if (restoring.has(id)) throw new Error("that space is already coming back");
-    restoring.add(id);
+    if (restoring().has(id)) throw new Error("that space is already coming back");
+    restoring().add(id);
     const native = window.__vm.native;
-    const end = window.__vm.spaceRepair?.gesture?.() ?? null;
+    // The repair busy mark lasts 10 s at most: a big space takes longer, so it is renewed as each tab comes back.
+    let end = window.__vm.spaceRepair?.gesture?.() ?? null;
+    const renew = () => { const next = window.__vm.spaceRepair?.gesture?.() ?? null; end?.(); end = next; };
     try {
       // 1. the space, with its id
       if (!(await spaceList())?.some((w) => w.id === id)) {
@@ -280,20 +303,29 @@
         if (!entry.emoji && Number.isInteger(entry.iconId)) await mgr.setIcon(id, entry.iconId);
         if (!(await until(async () => (await spaceList())?.some((w) => w.id === id), 3000))) throw new Error("Vivaldi did not list the space again");
       }
-      // 2. its place, rules and theme
-      const order = orderAfter(((await spaceList()) || []).map((w) => w.id), entry);
-      if (order) await mgr.setOrder(order);
+      // 2. its place, rules and theme (each on its own: one that fails does not keep the tabs from coming back)
+      try { const order = orderAfter(((await spaceList()) || []).map((w) => w.id), entry); if (order) await mgr.setOrder(order); }
+      catch (error) { console.warn("[vivarc] undelete: its place:", error); }
       const router = routes();
-      for (const r of entry.rules || []) await router?.addLinkRoutingRule(r.type, r.expression, id);
+      const have = ((await readPref("vivaldi.workspaces.link_routes")) || []).filter((r) => r?.workspaceId === id);
+      for (const r of entry.rules || []) {
+        if (have.some((x) => x.type === r.type && x.expression === r.expression)) continue; // an earlier, unfinished undelete put it back
+        await Promise.resolve(router?.addLinkRoutingRule(r.type, r.expression, id)).catch((error) => console.warn("[vivarc] undelete: a rule:", error));
+      }
       if (entry.theme && (await store().get(THEME_KEY(id), null)) == null) await store().set(THEME_KEY(id), entry.theme);
-      // 3. its tabs
+      // 3. its tabs. Those already back with the id (Vivaldi's own Reopen Closed Tab, an earlier unfinished undelete) are
+      // used as they are, never opened twice.
+      const all = await chrome.tabs.query({ windowType: "normal" });
       const windows = (await chrome.windows.getAll()).filter((w) => w.type === "normal").map((w) => w.id);
-      const plan = restorePlan({ entry, windows, here, sessions: await chrome.sessions.getRecentlyClosed({ maxResults: 25 }).catch(() => []) });
+      const plan = restorePlan({ entry, windows, here, live: all.filter((t) => ws().of(t) === id), sameRun: entry.run === runId(),
+        sessions: await chrome.sessions.getRecentlyClosed({ maxResults: 25 }).catch(() => []) });
       const target = plan.window;
       const made = [];
       const splits = new Map();
       for (const t of plan.tabs) {
+        renew();
         let tab = null;
+        if (t.how === "live") tab = await chrome.tabs.get(t.tab).catch(() => null);
         if (t.how === "session") {
           try { tab = (await chrome.sessions.restore(t.sessionId))?.tab ?? null; } catch (_) { tab = null; }
           if (tab) tab = await chrome.tabs.get(tab.id).catch(() => null);
@@ -303,16 +335,17 @@
         if (!tab) continue;
         try { if (ws().of(tab) !== id || tab.windowId !== target) await native.setSpace(tab.id, id, { windowId: target }); }
         catch (error) { console.warn("[vivarc] undelete: a tab did not go back into its space:", error); }
-        if (fresh) {
-          const patch = {};
-          if (t.group) { patch.group = t.group; if (t.fixedGroupTitle) patch.fixedGroupTitle = t.fixedGroupTitle; }
-          if (t.vivarcPin) patch.vivarcPin = t.vivarcPin;
-          if (t.tiling?.id) { if (!splits.has(t.tiling.id)) splits.set(t.tiling.id, crypto.randomUUID?.() || `vm-${Date.now()}-${splits.size}`); patch.tiling = { ...t.tiling, id: splits.get(t.tiling.id) }; }
-          if (Object.keys(patch).length) await window.__vm.setExtData(tab, patch).catch(() => {});
-          if (t.muted) await chrome.tabs.update(tab.id, { muted: true }).catch(() => {});
-        }
+        // what the tab was: a new tab gets it all; a restored one keeps what Vivaldi brought back and gets what it lacks
+        const has = fresh ? {} : extOf(tab);
+        const patch = {};
+        if (t.group && !has.group) { patch.group = t.group; if (t.fixedGroupTitle) patch.fixedGroupTitle = t.fixedGroupTitle; }
+        if (t.vivarcPin && !has.vivarcPin) patch.vivarcPin = t.vivarcPin;
+        if (t.tiling?.id && fresh) { if (!splits.has(t.tiling.id)) splits.set(t.tiling.id, crypto.randomUUID?.() || `vm-${Date.now()}-${splits.size}`); patch.tiling = { ...t.tiling, id: splits.get(t.tiling.id) }; }
+        if (Object.keys(patch).length) await window.__vm.setExtData(tab, patch).catch(() => {});
+        if (t.muted && !tab.mutedInfo?.muted) await chrome.tabs.update(tab.id, { muted: true }).catch(() => {});
         made.push({ id: tab.id, pinned: !!t.pinned });
       }
+      renew();
       // the order: read in the window, the space's tabs must come as they were; else each unpinned one goes last, in order
       const inWindow = (await chrome.tabs.query({ windowId: target })).filter((t) => made.some((m) => m.id === t.id)).sort((a, b) => a.index - b.index).map((t) => t.id);
       const want = made.map((m) => m.id).filter((x) => inWindow.includes(x));
@@ -324,7 +357,7 @@
       if (target !== here) await native.focus(target).catch(() => {});
       await forget(entry).catch((error) => console.warn("[vivarc] undelete: forget the entry:", error));
       return { window: target, space: id, tabs: made.length };
-    } finally { restoring.delete(id); end?.(); }
+    } finally { restoring().delete(id); end?.(); }
   };
 
   // ---- editing (the space tile's right-click menu, and +) ----
@@ -336,12 +369,22 @@
   const rename = async (id, name, folder) => {
     const mgr = manager();
     if (!mgr) throw new Error("Vivaldi's workspace manager was not found");
-    page()[RENAME_MARK] = { id, until: Date.now() + 5000 };
+    const mark = { id, until: Date.now() + 8000 };
+    page()[RENAME_MARK] = mark;
+    let renamed = false;
     try {
-      if (folder) await chrome.bookmarks.update(folder.id, { title: folderTitle(folder.title, name) });
+      if (folder) { await chrome.bookmarks.update(folder.id, { title: folderTitle(folder.title, name) }); renamed = true; }
       await mgr.setName(id, name);
-      await until(async () => (await spaceList())?.find((w) => w.id === id)?.name === name, 3000);
-    } finally { delete page()[RENAME_MARK]; }
+      if (!(await until(async () => (await spaceList())?.find((w) => w.id === id)?.name === name, 3000))) throw new Error("Vivaldi did not take the new name");
+    } catch (error) {
+      // the folder goes back to its name, so the space and its pins stay together
+      if (renamed) await chrome.bookmarks.update(folder.id, { title: folder.title }).catch(() => {});
+      throw error;
+    } finally {
+      // kept a moment longer: a window's refresh that read the old name before the change may still be running
+      mark.until = Date.now() + 1500;
+      setTimeout(() => { if (page()[RENAME_MARK] === mark) delete page()[RENAME_MARK]; }, 1500);
+    }
   };
   const setOrder = async (ids) => { const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setOrder(ids); };
   const setIcon = async (id, index) => { const mgr = manager(); if (!mgr) throw new Error("Vivaldi's workspace manager was not found"); await mgr.setIcon(id, index); };

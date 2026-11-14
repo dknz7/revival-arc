@@ -1441,7 +1441,7 @@
     const edit = editOf();
     if (!edit?.manager()) return openCreateSpaceDialog();
     try {
-      const id = await edit.create(edit.newSpaceName(state.workspaces));
+      const id = await edit.create(edit.newSpaceName(state.workspaces, "New Space", state.folders.map((f) => spacesOf.label(f))));
       state.renameSpace = id;
       refresh(true);
     } catch (error) { editFailed("create a space")(error); }
