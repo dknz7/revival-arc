@@ -1,5 +1,7 @@
 """Back closes a tab a link opened (17-back-closes.js): when, and only when, Back on it would do nothing today."""
 import json
+import os
+import re
 import shutil
 import unittest
 
@@ -95,6 +97,36 @@ class ButtonClick(unittest.TestCase):
     def test_a_back_with_history_or_the_option_off_does_not(self):
         self.assertFalse(self.click(on=True, trusted=True, onSlot=True, disabled=False))
         self.assertFalse(self.click(on=False, trusted=True, onSlot=True, disabled=True))
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the Back behaviour's JavaScript")
+class Openers(unittest.TestCase):
+    def test_an_opener_that_is_peeks_preview_is_not_gone_back_to(self):
+        self.assertFalse(run_js("17-back-closes.js", "window.__vm.back.shouldClose({ on: true, tab, opener, canGoBack: false, shown: 11, kept: false, openerKept: true })",
+                                tab=TAB, opener=OPENER))
+        self.assertTrue(run_js("17-back-closes.js", "window.__vm.back.shouldClose({ on: true, tab, opener, canGoBack: false, shown: 11, kept: false })",
+                               tab=TAB, opener=OPENER))
+
+
+class BackSlotStyle(unittest.TestCase):
+    """While the option is on, the greyed-out Back button lets clicks through to its slot, and the slot takes them: hit-testable
+    and out of any window-drag region (the Dia top row with Vivaldi's frame off, the Arc sidebar's header)."""
+
+    def rule(self, selector_part):
+        css = open(os.path.join(os.path.dirname(__file__), "..", "src", "css", "vivarc.css"), encoding="utf-8").read()
+        m = re.search(r"([^{}]*" + re.escape(selector_part) + r"[^{}]*)\{([^}]*)\}", css)
+        return (m.group(1), m.group(2)) if m else (None, "")
+
+    def test_the_button_lets_the_click_through(self):
+        sel, body = self.rule('[data-name="Back"]:disabled')
+        self.assertIn("vm-back-closes", sel)
+        self.assertIn("pointer-events: none", body)
+
+    def test_the_slot_takes_it_out_of_the_drag_region(self):
+        sel, body = self.rule('.button-toolbar:has(> [data-name="Back"]')
+        self.assertIn("vm-back-closes", sel or "")
+        for prop in ("pointer-events: auto", "-webkit-app-region: no-drag", "app-region: no-drag"):
+            self.assertIn(prop, body)
 
 
 if __name__ == "__main__":

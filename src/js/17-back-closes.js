@@ -14,7 +14,8 @@
   const of = (tab) => {
     try { return Number(JSON.parse(tab?.vivExtData || "{}").workspaceId) || 0; } catch (_) { return 0; }
   };
-  const shouldClose = ({ on, tab, opener, canGoBack, shown, kept }) => !!on && !!tab && !!opener && canGoBack === false && !kept &&
+  // openerKept: the opener is Peek's preview tab, not a page the user was on.
+  const shouldClose = ({ on, tab, opener, canGoBack, shown, kept, openerKept = false }) => !!on && !!tab && !!opener && canGoBack === false && !kept && !openerKept &&
     !!tab.active && !tab.pinned && opener.id !== tab.id && opener.windowId === tab.windowId &&
     of(tab) === (shown || 0) && of(opener) === (shown || 0);
 
@@ -80,7 +81,7 @@
       const opener = openerId != null ? await chrome.tabs.get(openerId).catch(() => null) : null;
       const shown = window.__vm.native?.record()?.activeIn(windowId) ?? of(tab);
       const at = history.has(tab.id) ? history.get(tab.id) : null;
-      if (!shouldClose({ on: true, tab, opener, canGoBack: at, shown, kept: kept(tab) })) {
+      if (!shouldClose({ on: true, tab, opener, canGoBack: at, shown, kept: kept(tab), openerKept: !!opener && !!window.__vm.peek?.isPeekTab?.(opener) })) {
         last.why = !opener ? "not opened by a link here" : at !== false ? "it has history" : "not eligible";
         return;
       }
@@ -130,7 +131,7 @@
     if (Array.isArray(shortcuts)) keys = backKeys(shortcuts, window.__vm.windows);
   }).catch(() => {});
   readKeys();
-  try { vivaldi.prefs.onChanged?.addListener((path) => { if (path === "vivaldi.actions") readKeys(); }); } catch (_) {}
+  try { vivaldi.prefs.onChanged?.addListener((change) => { if ((typeof change === "string" ? change : change?.path) === "vivaldi.actions") readKeys(); }); } catch (_) {}
   const here = (pressedIn, focused) => {
     const shared = window.__vm.sidebarHide?.pressedHere;
     const own = window.vivaldiWindowId;

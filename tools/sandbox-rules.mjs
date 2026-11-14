@@ -3830,10 +3830,11 @@ def("X.fav-gap-drop", {
     const favs = await favoritesFolder();
     // only three tiles in the grid, so the gaps are known: the profile's own favorites (the starter ones) wait in a folder
     // beside Favorites and go back, in their order, at the next reset, whatever this case did
-    const hold = await h.ev(`chrome.bookmarks.get(${J(favs)}).then(async ([f]) => { const box = await chrome.bookmarks.create({ parentId: f.parentId, title: "9d-held-favorites" });
-      const cs = (await chrome.bookmarks.getChildren(f.id)).filter((c) => c.url); for (const c of cs) await chrome.bookmarks.move(c.id, { parentId: box.id }); return box.id; })`, ctx.H);
+    // the folder first and its clean-up registered at once, then the moves: a move that fails half way still gets undone
+    const hold = await h.ev(`chrome.bookmarks.get(${J(favs)}).then(([f]) => chrome.bookmarks.create({ parentId: f.parentId, title: "9d-held-favorites" })).then((box) => box.id)`, ctx.H);
     (ctx.cleanups ||= []).push(() => h.ev(`(async () => { const kids = await chrome.bookmarks.getChildren(${J(hold)}).catch(() => []);
       for (const [i, c] of kids.entries()) await chrome.bookmarks.move(c.id, { parentId: ${J(favs)}, index: i }); await chrome.bookmarks.remove(${J(hold)}).catch(() => {}); return kids.length; })()`, ctx.H));
+    await h.ev(`chrome.bookmarks.getChildren(${J(favs)}).then(async (cs) => { for (const c of cs.filter((c) => c.url)) await chrome.bookmarks.move(c.id, { parentId: ${J(hold)} }); return 1; })`, ctx.H);
     for (const n of ["GAP1", "GAP2", "GAP3"]) await bookmark(favs, n, `${origin}/${n.toLowerCase()}`);
     await focus(ctx.W);
   },

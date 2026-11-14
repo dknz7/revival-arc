@@ -840,6 +840,11 @@
    click on the greyed-out Back falls through to what is behind it, where the script finds it by position. */
 #browser.vm-on.vm-back-closes [data-name="Back"]:disabled,
 #browser.vm-on.vm-back-closes [data-name="Back"] button:disabled { pointer-events: none; }
+/* ...and its slot takes the click: hit-testable and out of the window-drag region the row around it may be (the Dia top
+   row with Vivaldi's frame off, the Arc sidebar's header), or the system would take a real click as a window drag. */
+#browser.vm-on.vm-back-closes .button-toolbar:has(> [data-name="Back"], > * > [data-name="Back"]) {
+  pointer-events: auto; -webkit-app-region: no-drag; app-region: no-drag;
+}
 
 /* The theme's wallpaper behind the sidebar (setting "sidebarWallpaper"; KASOGIT/vivarc issue #62). Vivaldi 8.3 already
    paints a heavily blurred copy of the theme's image (--browserBlurredImage) behind the whole window; this puts the image

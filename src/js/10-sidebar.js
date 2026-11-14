@@ -1047,6 +1047,7 @@
   };
   // As Close All Tabs in a folder: closing every tab of the space would leave it empty, so a new tab stays.
   const closePicked = async (tabs) => {
+    if (!tabs.length) return;
     if (tabs.length === state.tabs.length) await chrome.tabs.create({});
     await chrome.tabs.remove(tabs.map((t) => t.id));
   };
@@ -1054,13 +1055,13 @@
   const pickedMenu = () => {
     const tabs = pickedTabs();
     const label = selecting.labels(tabs.length);
-    const done = (run, failed) => folderAction(async () => { const now = pickedTabs(); clearPicked(); await run(now); }, failed);
+    const done = (run, failed) => folderAction(async () => { const now = pickedTabs(); clearPicked(); if (now.length) await run(now); }, failed);
     const inFolders = selecting.byFolder(tabs, stacksOf.stackOf, shownStacks).length > 0;
     return [
       [label.stack, done((now) => stackPicked(now), "Could not stack the tabs")],
       ...(inFolders ? [["Remove from Folder", done((now) => leavePicked(now), "Could not take the tabs out of their folder")]] : []),
       [],
-      ...moveTargets().map((target) => [label.move(target.name), () => { const now = pickedTabs(); clearPicked(); movePicked(now, target); }]),
+      ...moveTargets().map((target) => [label.move(target.name), () => { const now = pickedTabs(); clearPicked(); if (now.length) movePicked(now, target); }]),
       ...(moveTargets().length ? [[]] : []),
       ["Clear Selection", clearPicked],
       [label.close, done((now) => closePicked(now), "Could not close the tabs")],
