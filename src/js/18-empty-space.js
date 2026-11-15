@@ -9,11 +9,16 @@
 // space has no tab; after it the window is recorded on the space and shows its blank tab, which no repair changes.
 // Not for: a window that is closing, a deleted space (rule 1 takes the window to default), a tab moved out of the window
 // (tear-off, a drop into another window, chrome.tabs.move: onDetached, still repair 1), a blank tab closing (the bar's own
-// Escape), and anything under another gesture's busy mark (deleting a space, moving one).
+// Escape), and anything under another gesture's busy mark (deleting a space, moving one). A newer gesture of the user's
+// in this window while it waits (a click, a key, one of Vivaldi's shortcuts pressed here: picking another space or tab)
+// cancels it, and so does Vivaldi's record naming a third space after the wait; it is looked at again before the switch
+// and before the bar opens, so it never undoes what the user picked (final review, Codex Important 4).
 (() => {
   const ws = () => window.__vm.workspaces;
   const NONE = { kind: "none" };
   const SETTLE_MS = 150; // Vivaldi's own close (Ctrl+W) may make the space's start page itself: looked at again after this
+  const GRACE_MS = 60; // input this soon after the close is the close's own (its Ctrl+W reaching the shortcut hook late)
+  const MODIFIERS = new Set(["Control", "Shift", "Alt", "Meta", "AltGraph", "OS"]);
 
   // Pure. closed: { space, page } of this window's tab that was on screen (page: not a blank tab); now: the space Vivaldi's
   // record names for the window now (null: unreadable); known: the ids of the spaces that exist (null: unreadable); tabs:
@@ -67,13 +72,33 @@
       return { now: record ? record.activeIn(me) : null, known: await native?.spaceIds?.() ?? null, tabs: await chrome.tabs.query({ windowId: me }) };
     };
     const busy = () => !!window.__vm.spaceRepair?.busy?.();
+    // The user's own gestures in this window, newest last: a recovery started before one stands down.
+    let lastGesture = 0;
+    const gestured = () => { lastGesture = Date.now(); };
+    document.addEventListener?.("pointerdown", (e) => { if (e.isTrusted) gestured(); }, true);
+    document.addEventListener?.("keydown", (e) => { if (e.isTrusted && !e.repeat && !MODIFIERS.has(e.key)) gestured(); }, true);
+    // a key Vivaldi takes as a shortcut while the page has the cursor never reaches this document: its shortcut hook does,
+    // naming the window it was pressed in (12-sidebar-hide.js pressedHere)
+    window.__vm.onShortcut?.((_key, _combo, pressedIn) => {
+      if (window.__vm.sidebarHide?.pressedHere ? window.__vm.sidebarHide.pressedHere(pressedIn, window.vivaldiWindowId, document.hasFocus?.()) : pressedIn === window.vivaldiWindowId) gestured();
+    });
     const react = async (closed) => {
       if (busy()) return;
-      if (decide({ closed, ...(await snapshot()) }).kind === "none") return;
+      const startedAt = Date.now();
+      const first = await snapshot();
+      if (decide({ closed, ...first }).kind === "none") return;
       const end = window.__vm.spaceRepair?.gesture?.() ?? null;
+      // still this recovery's moment: no gesture of the user's since it started (past the close's own grace)
+      const ours = () => !(lastGesture > startedAt + GRACE_MS);
       try {
         await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
-        const plan = decide({ closed, ...(await snapshot()) });
+        const second = await snapshot();
+        // the record naming a third space now (neither the closed one nor the one it named before): someone switched
+        if (!ours() || (second.now != null && second.now !== (closed.space || 0) && second.now !== first.now)) {
+          console.log(`[vivarc] empty space: window ${me} stands down (a newer gesture)`);
+          return;
+        }
+        const plan = decide({ closed, ...second });
         const native = window.__vm.native;
         let tabId = null;
         if (plan.kind === "create") {
@@ -82,6 +107,7 @@
           // Vivaldi files it in the recorded space (B1); should it not, it is put there (it is on screen: a switch, G4)
           if (ws().of(await chrome.tabs.get(tabId)) !== (closed.space || 0)) await native.setSpace(tabId, closed.space || 0, { windowId: me });
         } else if (plan.kind === "switch") {
+          if (!ours()) return;
           await native.switchTo(me, plan.space);
           // Vivaldi makes the empty space's start page just after its switch resolves: looked for up to 1.5 s
           for (let look = 0; look < 15 && tabId == null; look++) {
@@ -90,6 +116,7 @@
           }
         } else if (plan.kind === "bar") {
           tabId = plan.tab;
+          if (!ours()) return;
           if (plan.switch) await native.switchTo(me, closed.space || 0);
           if (!(await chrome.tabs.get(tabId)).active) await chrome.tabs.update(tabId, { active: true });
         } else return;
@@ -99,6 +126,7 @@
           await native.setSpace(tabId, 0, { windowId: me }).catch(() => {});
           return;
         }
+        if (!ours()) { console.log(`[vivarc] empty space: window ${me} opens no bar (a newer gesture)`); return; }
         console.log(`[vivarc] empty space: window ${me} stays in ${closed.space ? `space ${closed.space}` : "its default space"} (${plan.kind})`);
         if (tabId != null) await window.__vm.openEmptySpace?.(tabId, me);
       } catch (error) {

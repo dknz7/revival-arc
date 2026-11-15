@@ -617,14 +617,24 @@ globalThis.chrome = {
     onUpdated: ev("onUpdated"), onMoved: ev("onMoved"), onRemoved: ev("onRemoved"),
   },
 };
-globalThis.window = { __vm: { ready: Promise.resolve(true), openEmptySpace: async (id, w) => calls.push(["bar", id, w]),
+// the window's own input (press: a trusted pointerdown or keydown in window.html) and Vivaldi's shortcuts (shortcut: one
+// pressed in window `w`), for the final review's "a newer gesture cancels the recovery" (Codex Important 4)
+const docListeners = {};
+globalThis.document = { addEventListener: (name, fn) => { (docListeners[name] ||= []).push(fn); } };
+const press = (type = "pointerdown", over = {}) => (docListeners[type] || []).forEach((fn) => fn({ type, isTrusted: true, repeat: false, key: "a", ...over }));
+const shortcuts = [];
+const shortcut = (w = 7, key = "ctrl+1") => shortcuts.forEach((fn) => fn(key, key, w));
+globalThis.window = { vivaldiWindowId: 7, __vm: { ready: Promise.resolve(true), openEmptySpace: async (id, w) => calls.push(["bar", id, w]),
+  onShortcut: (fn) => shortcuts.push(fn),
   spaceRepair: { busy: () => false, gesture: () => () => {} },
-  native: { hasSwitch: () => true, record: () => ({ activeIn: () => S.rec ?? 0 }), spaceIds: async () => S.known, setSpace: async () => {}, switchTo: async () => {} } } };
+  native: { hasSwitch: () => true, record: () => ({ activeIn: () => S.rec ?? 0 }), spaceIds: async () => S.known, setSpace: async () => {}, switchTo: async (w, sp) => { calls.push(["switch", w, sp]);
+    // S.switchMakesTab: Vivaldi makes the empty space's start page a moment after its switch (A7)
+    if (S.switchMakesTab) setTimeout(() => { for (const t of tabs) t.active = false; tabs.push({ id: 901, windowId: w, active: true, url: "chrome://vivaldi-webui/startpage", vivExtData: JSON.stringify({ workspaceId: sp }) }); }, 100); } } } };
 for (const f of ["07-workspaces.js", "18-empty-space.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], f), "utf8"));
 (async () => {
   await later(20);
   eval(input.script);
-  await later(400);
+  await later(S.tailMs || 400);
   process.stdout.write(JSON.stringify(calls));
 })();
 """
@@ -665,6 +675,51 @@ class EmptySpaceRuntime(unittest.TestCase):
         self.assertEqual([c for c in keeper("""fire("onRemoved", 2, { windowId: 8, isWindowClosing: false });""", **self.state()) if c[0] != "log"], [])
         self.assertEqual(keeper("""fire("onRemoved", 2, { windowId: 7, isWindowClosing: true });""", **self.state()), [])
 
+
+    # Final review, Codex Important 4: a newer explicit gesture during the 150 ms wait cancels the recovery, and the plan is
+    # checked again before the switch and before the bar opens.
+    def stayed(self, calls):
+        return [c for c in calls if c[0] in ("create", "switch", "bar", "update")]
+
+    def test_a_space_picked_during_the_wait_is_not_undone(self):
+        # X's last page closes; 60 ms later the user clicks Y's tile and Vivaldi records the window on Y
+        script = self.CLOSE_X1 + """setTimeout(() => { press("pointerdown"); S.rec = 103; }, 80);"""
+        self.assertEqual(self.stayed(keeper(script, **self.state(known=[X, Y, Z]))), [], "no switch back to X, no bar over Y")
+
+    def test_a_key_or_vivaldis_shortcut_in_this_window_during_the_wait_cancels_too(self):
+        for later in ['press("keydown", { key: "1", ctrlKey: true });', "shortcut(7);"]:
+            script = self.CLOSE_X1 + "setTimeout(() => { " + later + " }, 80);"
+            self.assertEqual(self.stayed(keeper(script, **self.state())), [], later)
+
+    def test_the_record_moving_to_a_third_space_during_the_wait_cancels(self):
+        # a switch the window saw no input for (another window's gesture, a command): the record names another space now
+        script = self.CLOSE_X1 + "setTimeout(() => { S.rec = 103; }, 80);"
+        self.assertEqual(self.stayed(keeper(script, **self.state(known=[X, Y, Z]))), [])
+
+    def test_the_close_itself_and_other_windows_or_held_keys_do_not_cancel(self):
+        # the close's own Ctrl+W shortcut arriving just after onRemoved; another window's shortcut; a held key repeating; a
+        # bare modifier; an untrusted (scripted) press
+        for later, at in [("shortcut(7, 'ctrl+w');", 5), ("shortcut(8);", 80), ('press("keydown", { repeat: true });', 80),
+                          ('press("keydown", { key: "Control" });', 80), ('press("pointerdown", { isTrusted: false });', 80)]:
+            script = self.CLOSE_X1 + "setTimeout(() => { " + later + " }, " + str(at) + ");"
+            calls = keeper(script, **self.state())
+            self.assertIn(["create", {"windowId": 7, "active": True}], calls, later)
+            self.assertIn(["bar", 900, 7], calls, later)
+
+    def test_a_gesture_after_the_switch_starts_still_keeps_the_bar_shut(self):
+        # the record moved off X before the close was seen: a switch back is planned; the user clicks while it looks for
+        # the start page, so the bar does not open over what the user picked
+        script = """
+          const i = tabs.findIndex((t) => t.id === 2); tabs.splice(i, 1); tabs[0].active = true; S.rec = 0;
+          fire("onActivated", { tabId: 1, windowId: 7 }); fire("onRemoved", 2, { windowId: 7, isWindowClosing: false });
+          setTimeout(() => press("pointerdown"), 230);
+        """
+        calls = keeper(script, **self.state(switchMakesTab=True, tailMs=900))
+        self.assertIn(["switch", 7, X], calls)
+        self.assertNotIn("bar", [c[0] for c in calls])
+        # the probe sees a bar at all: without the click it opens on the start page Vivaldi made
+        calls = keeper(script.replace('setTimeout(() => press("pointerdown"), 230);', ""), **self.state(switchMakesTab=True, tailMs=900))
+        self.assertIn(["bar", 901, 7], calls)
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
 class Bundled(unittest.TestCase):
