@@ -411,9 +411,15 @@
           // (backAlready), and its Recently Closed entry is used up.
           console.warn(`[vivarc] undelete: tab ${tab.id} (${t.url}) is not in the space; kept for a retry`);
           if (fresh) await chrome.tabs.remove(tab.id).catch((error) => console.warn("[vivarc] undelete: a new tab outside the space stays open:", error));
-          else {
-            const now = await chrome.tabs.get(tab.id).catch(() => null);
-            if (restored && now && ws().of(now) === 0 && healedFrom(now) !== id) await window.__vm.setExtData(now, { [HEALED_FROM]: id }).catch(() => {});
+          else if (restored) {
+            let now = await chrome.tabs.get(tab.id).catch(() => null);
+            // left in another named space (Vivaldi restored it there): it is ours, just restored, so it goes to its window's
+            // default space first, where a retry can take it; still on this space's id in another window, backAlready has it
+            if (now && ws().of(now) !== 0 && ws().of(now) !== id) {
+              await native.setSpace(now.id, 0, { windowId: now.windowId }).catch((error) => console.warn("[vivarc] undelete: a restored tab outside the space:", error));
+              now = await chrome.tabs.get(tab.id).catch(() => null);
+            }
+            if (now && ws().of(now) === 0 && healedFrom(now) !== id) await window.__vm.setExtData(now, { [HEALED_FROM]: id }).catch(() => {});
           }
           keep(t, { sessionId: fresh ? t.sessionId ?? null : null });
           continue;

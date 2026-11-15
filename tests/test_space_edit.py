@@ -575,6 +575,14 @@ class FinalFixRound(unittest.TestCase):
         self.assertEqual(self.kept(r), [["u1", None]], "its Recently Closed entry is used up")
         self.assertNotIn(["tabs.remove", 500], r["calls"], "a restored tab is never closed")
 
+    def test_a_restored_tab_left_in_another_named_space_goes_to_its_default_space_tagged(self):
+        # review of the final fix round, minor 2: Vivaldi restored u1 into space Z and the move into Y did nothing; a tab
+        # left in Z would be neither taken back nor reopened by a retry without opening it twice
+        r = self.undelete(restoredSpace=Z, placeFails=["u1"])
+        self.assertIn(["setSpace", 500, 0, 7, None], r["calls"], "out of Z, into its window's default space")
+        self.assertIn(["ext", 500, {"healedFrom": Y}], r["calls"])
+        self.assertEqual(self.kept(r), [["u1", None]])
+
     def test_a_retry_after_a_partial_failure_brings_the_rest_back(self):
         first = self.undelete(placeFails=["u2"])
         retry = self.undelete(entry=first["store"]["deletedSpaces"][0], store=first["store"], list=[LIST[0], LIST[1], LIST[2]])
