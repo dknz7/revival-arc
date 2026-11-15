@@ -6,7 +6,7 @@ Vivaldi's UI is a web page (`window.html`). Vivarc adds one script and one style
 |---|---|---|
 | CSS | Embedded in `vivarc.js` and added to the UI as a `<style>` element (source: `src/css/vivarc.css`) | Styles. Every rule is scoped to `#browser.vm-on`, a class the JS adds. No CSS-mods folder or browser flag is needed, and it never conflicts with your own CSS mods. |
 | JS | `<Vivaldi.app>/.../vivaldi/vivarc.js`, referenced from `window.html` by one marked block | The sidebar, command bar, toast and theme editor. Rebuilt from `src/js/` by `vivarc.py apply`. |
-| Data | A bookmarks folder with `Favorites` and `Pinned` subfolders (created on first run) | Your favorites and pinned folders. Plain bookmarks: they sync, export and back up like any others. |
+| Data | A bookmarks folder with `Favorites` and `Pinned` subfolders (created on first run, from a normal window; a space's own folder with its `Pinned` the first time it is shown there, never from a private window) | Your favorites and pinned folders. Plain bookmarks: they sync, export and back up like any others. |
 | Settings | `~/.vivarc/config.json` | See below. |
 | State | `~/.vivarc/state.json`, `~/.vivarc/backup/` | What the installer changed and the original values, used by `uninstall`. |
 

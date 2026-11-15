@@ -1975,6 +1975,10 @@
     saveOpen();
   };
 
+  // Automatic bookmark provisioning (the first run's structure below, a space's own folder and Pinned folder in applySpace)
+  // only from a normal window: a private window shares the profile's bookmarks, and the rename mark that holds a space's
+  // folder back lives on its own background page there (final review, Codex Important 5). A pin the user asks for is theirs.
+  const provisions = () => { try { return !chrome.extension?.inIncognitoContext; } catch (_) { return false; } };
   let triedFirstRun = false;
   const createSpace = async (tree) => {
     const bar = tree[0]?.children?.[0];
@@ -1988,7 +1992,7 @@
 
   const loadBookmarks = async () => {
     let tree = await chrome.bookmarks.getTree();
-    if (!findSpaces(tree).length && !triedFirstRun) {
+    if (!findSpaces(tree).length && !triedFirstRun && provisions()) {
       triedFirstRun = true;
       await createSpace(tree);
       tree = await chrome.bookmarks.getTree();
@@ -2007,7 +2011,7 @@
     let picked = pick();
     const workspace = state.workspaces.find((w) => w.id === state.active);
     // not while the space is being renamed (folder first, then the space): its folder has its new name already
-    if (!picked.space && workspace && picked.base && !madeFolderFor.has(workspace.id) && !window.__vm.spaceEdit?.renaming(workspace.id)) {
+    if (!picked.space && workspace && picked.base && !madeFolderFor.has(workspace.id) && provisions() && !window.__vm.spaceEdit?.renaming(workspace.id)) {
       madeFolderFor.add(workspace.id);
       const folder = await chrome.bookmarks.create({ parentId: picked.base.parentId, title: workspace.name });
       await chrome.bookmarks.create({ parentId: folder.id, title: "Pinned" });
