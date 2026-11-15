@@ -5703,6 +5703,42 @@ for (const layout of ["dia", "arc"]) {
       r.second.native && r.second.value === "second entry" && r.second.fieldFocused ? null : `the second hand-over was torn down by the first's timer: ${J(r.second)}`,
       !r.switched.native ? null : `a tab switch left Vivaldi's field shown: ${J(r.switched)}`],
   });
+  // Final review, Codex Important 1: a UNC path typed into the bar (spaces and all) is never sent for suggestions while it
+  // is typed, and Enter hands it to Vivaldi's own field unsubmitted. The window's fetch is watched; plain words typed first
+  // prove the watch sees a suggestion request at all.
+  def(`9B.a-unc-path-is-never-sent-for-suggestions-and-goes-to-vivaldis-field-${layout}`, {
+    layout, setup: nbSetup, ready: nbReady,
+    act: async () => {
+      await h.ev(`(() => { if (!window.__ffrFetch) { const o = window.fetch; window.__ffrFetch = []; window.fetch = function (u, ...a) { window.__ffrFetch.push(String(u?.url ?? u)); return o.call(this, u, ...a); }; } window.__ffrFetch.length = 0; return 1; })()`, ctx.W);
+      const typeIn = async (text) => {
+        await ctrlL(ctx.W);
+        await waitFor(() => h.ev(`!!document.querySelector("#vm-cmd input") && document.activeElement === document.querySelector("#vm-cmd input")`, ctx.W), 4000);
+        await h.ev(`(() => { const i = document.querySelector("#vm-cmd input"); i.value = ""; return 1; })()`, ctx.W);
+        await h.cdp(ctx.W).send("Input.insertText", { text }); await sleep(900);
+      };
+      await typeIn("plain words ffr");
+      const control = await h.ev(`window.__ffrFetch.slice()`, ctx.W);
+      await escBar(ctx.W);
+      await h.ev(`(window.__ffrFetch.length = 0, 1)`, ctx.W);
+      const before = (await activeUrl(ctx.W)).url;
+      const unc = String.raw`\\fileserver\share\private plan.xlsx`;
+      await typeIn(unc);
+      const lead = await h.ev(`document.querySelector("#vm-cmd .vm-cmd-row.sel")?.textContent ?? null`, ctx.W);
+      const sent = await h.ev(`window.__ffrFetch.slice()`, ctx.W);
+      await keyEnter(ctx.W);
+      await sleep(1500);
+      const shown = await FIELD_STATE9(ctx.W);
+      const after = (await activeUrl(ctx.W)).url;
+      await h.ev(`(document.activeElement?.blur?.(), 1)`, ctx.W); await sleep(600);
+      return { control, lead, sent, shown: { native: shown.native, value: shown.value, focused: shown.fieldFocused }, before, after, unc };
+    },
+    expect: (s, b, r) => [
+      r.control.some((u) => /plain/.test(decodeURIComponent(u))) ? null : `the watch saw no suggestion request for plain words (${J(r.control)}): it cannot prove the UNC case`,
+      r.sent.length ? `the UNC path was sent: ${J(r.sent)}` : null,
+      /Vivaldi's address field/.test(r.lead || "") ? null : `the lead row is ${J(r.lead)}, want Vivaldi's address field`,
+      r.shown.native && r.shown.value === r.unc ? null : `Enter did not show it in Vivaldi's field: ${J(r.shown)}`,
+      r.after === r.before ? null : `it was submitted: the tab went to ${J(r.after)}`],
+  });
   // Review round 2, I4: a second focus request right after the bar closed opens it again (the old 400 ms debounce swallowed it).
   def(`9B.a-focus-request-right-after-the-bar-closed-opens-it-again-${layout}`, {
     layout, setup: nbSetup, ready: nbReady,
