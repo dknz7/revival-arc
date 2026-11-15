@@ -738,14 +738,13 @@ class Repairs(unittest.TestCase):
         self.assertEqual(self.plan(snap), [])
         self.assertEqual([p["kind"] for p in self.heal_plan(snap, [9])], ["rehome"] * 3)
 
-    def gate(self, first, second, tabs, skip=()):
-        return js("workspaces.healGate({ first, second, tabs, skip })", first=first, second=second, tabs=tabs, skip=None if skip is None else list(skip))
+    def gate(self, first, second, tabs):
+        return js("workspaces.healGate({ first, second, tabs })", first=first, second=second, tabs=tabs)
 
     def test_the_heal_gate_lets_through_the_dead_ids_of_a_list_it_trusts(self):
         ok = {"pref": [X, Y], "store": [Y, X]}
         tabs = [tab(1, 1, X), tab(2, 1, 9), tab(3, 2, 8), tab(4, 2, 0)]
         self.assertEqual(self.gate(ok, ok, tabs), {"ids": [8, 9], "list": [X, Y], "why": None})
-        self.assertEqual(self.gate(ok, ok, tabs, skip=[9, 8])["ids"], [], "undelete can still bring them back")
         self.assertEqual(self.gate(ok, ok, [tab(1, 1, X)])["ids"], [])
 
     def test_the_heal_gate_refuses_a_list_it_cannot_trust(self):
@@ -766,11 +765,6 @@ class Repairs(unittest.TestCase):
             ({"pref": [X, 1.5], "store": [X, 1.5]}, {"pref": [X, 1.5], "store": [X, 1.5]}, "a workspace list could not be read"),
         ]:
             self.assertEqual(self.gate(first, second, tabs), {"ids": [], "list": None, "why": why}, why)
-        self.assertEqual(self.gate(ok, ok, tabs, skip=None), {"ids": [], "list": None, "why": "the recently deleted spaces could not be read"})
-
-    def test_the_deleted_spaces_store_is_read_strictly(self):
-        out = js("[undefined, [], [9, 8], [{ id: 9, name: 'Y' }, 8], [{ name: 'no id' }], ['9'], {}, null, 'x'].map((r) => workspaces.deletedIds(r))")
-        self.assertEqual(out, [[], [], [9, 8], [9, 8], None, None, None, None, None], "missing key: none; a bad shape or a failed read: unreadable")
 
     def test_space_list_takes_only_lists_of_unique_ids(self):
         out = js("[[5, 6], [6, 5], [], [5, 5], [5, null], [5, '6'], null, 'x', [0], [-1]].map((r) => workspaces.spaceList(r))")
@@ -781,10 +775,10 @@ class Repairs(unittest.TestCase):
         for spaces in (None, [None], [X, X]):
             self.assertEqual([p for p in self.heal_plan({**self.ORPHANS, "spaces": spaces}, [8, 9]) if p["kind"] == "rehome"], [], spaces)
 
-    def step_ok(self, tab_now, pref=(X,), store=(X,), skip=(), step=None):
+    def step_ok(self, tab_now, pref=(X,), store=(X,), step=None):
         step = step or {"kind": "rehome", "tab": 11, "window": 1, "from": 9}
-        return js("workspaces.healStepOk({ step, tab, pref, store, list, skip })", step=step, tab=tab_now, pref=list(pref) if pref is not None else None,
-                  store=list(store) if store is not None else None, list=[X], skip=None if skip is None else list(skip))
+        return js("workspaces.healStepOk({ step, tab, pref, store, list })", step=step, tab=tab_now, pref=list(pref) if pref is not None else None,
+                  store=list(store) if store is not None else None, list=[X])
 
     def test_each_heal_step_is_checked_again_as_it_runs(self):
         self.assertIsNone(self.step_ok(tab(11, 1, 9)))
@@ -795,8 +789,6 @@ class Repairs(unittest.TestCase):
         self.assertEqual(self.step_ok(tab(11, 1, 9), pref=(X, 9), store=(X, 9)), "the workspace list changed", "its space was re-created (undelete)")
         self.assertEqual(self.step_ok(tab(11, 1, 9), pref=None), "the workspace list changed")
         self.assertEqual(self.step_ok(tab(11, 1, 9), store=(None,)), "the workspace list changed")
-        self.assertEqual(self.step_ok(tab(11, 1, 9), skip=(9,)), "its space can be brought back")
-        self.assertEqual(self.step_ok(tab(11, 1, 9), skip=None), "the recently deleted spaces could not be read")
 
     def test_strays_says_whether_the_heal_needs_to_look(self):
         self.assertEqual(js("[workspaces.strays(a, [5]), workspaces.strays(b, [5]), workspaces.strays(a, null)]",
@@ -869,7 +861,12 @@ class RepairRuntime(unittest.TestCase):
       window.__vm.native.movesByTab = async () => true;
       window.__vm.native.setSpace = async (id) => { call(["setSpace", id]); };
       window.__vm.store = { read: async () => (typeof DELETED === "function" ? DELETED() : undefined) };
-      chrome.tabs.update = async (id, props) => { call(props.vivExtData ? ["write", id] : ["activate", id]); };
+      chrome.tabs.update = async (id, props) => {
+        if (!props.vivExtData) return call(["activate", id]);
+        const data = JSON.parse(props.vivExtData);
+        if ("healedFrom" in data) { call(["tag", id, data.healedFrom]); if (typeof TAG_FAILS === "function" && TAG_FAILS(id)) throw new Error("no"); return; }
+        call(["write", id]);
+      };
       vivaldi.tabsPrivate = { move: async (a) => {
         const id = a.tabIds[0], how = typeof MOVE === "function" ? MOVE(id) : null;
         call(["heal", id, a.workspaceId, a.windowId]);
@@ -898,14 +895,26 @@ class RepairRuntime(unittest.TestCase):
             self.assertEqual(out["calls"], [], why)
             self.assertIn(f"WARN [vivarc] repair: tabs of a deleted space left as they are: {why}", out["log"], why)
 
-    def test_the_heal_leaves_alone_what_undelete_can_still_bring_back(self):
-        script = "const STORE = () => s.spaces; const DELETED = () => [9, { id: 8, name: 'Z' }];" + self.HEAL_STUBS
-        self.assertEqual(runtime(Repairs.ORPHANS, me=1, script=script)["calls"], [])
-
-    def test_a_deleted_spaces_store_that_cannot_be_read_heals_nothing(self):
-        for deleted in ("() => { throw new Error('IDB down'); }", "() => ({ not: 'a list' })", "() => [{ name: 'no id' }]"):
+    # Heal policy B (Byron, 2026-11-15): undelete's store no longer holds anything back; each healed tab is tagged.
+    def test_the_heal_heals_even_what_undelete_can_still_bring_back(self):
+        for deleted in ("() => [9, { id: 8, name: 'Z' }]", "() => { throw new Error('IDB down'); }", "() => ({ not: 'a list' })"):
             out = runtime(Repairs.ORPHANS, me=1, script=f"const STORE = () => s.spaces; const DELETED = {deleted};" + self.HEAL_STUBS)
-            self.assertEqual(out["calls"], [], deleted)
+            self.assertEqual(self.healed(out), [11, 12, 21], deleted)
+
+    def test_each_healed_tab_is_tagged_with_the_space_it_came_from_after_its_move(self):
+        out = runtime(Repairs.ORPHANS, me=1, script="const STORE = () => s.spaces;" + self.HEAL_STUBS)
+        seq = [c for c in out["calls"] if c[0] in ("heal", "tag")]
+        self.assertEqual(seq, [["heal", 11, 0, 1], ["tag", 11, 9], ["heal", 12, 0, 1], ["tag", 12, 9], ["heal", 21, 0, 2], ["tag", 21, 8]],
+                         "the tag comes after the verified move, never in its place")
+
+    def test_a_move_that_does_not_land_is_not_tagged(self):
+        out = runtime(Repairs.ORPHANS, me=1, script="""const STORE = () => s.spaces; const MOVE = (id) => (id === 11 ? "stay" : null);""" + self.HEAL_STUBS)
+        self.assertNotIn(["tag", 11, 9], out["calls"])
+
+    def test_a_tag_that_fails_to_write_leaves_the_move_and_the_batch_going(self):
+        out = runtime(Repairs.ORPHANS, me=1, script="""const STORE = () => s.spaces; const TAG_FAILS = (id) => id === 11;""" + self.HEAL_STUBS)
+        self.assertEqual(self.healed(out), [11, 12, 21])
+        self.assertTrue(any("healedFrom tag was not written" in line for line in out["log"]))
 
     # The coordinator's cases (fix rounds 1 and 2): a batch of orphans; the user acts on the next one between two steps,
     # or WHILE that step's own reads are pending (round 2's gap): that tab is NOT moved, and the batch stops there.
@@ -921,7 +930,9 @@ class RepairRuntime(unittest.TestCase):
     def test_a_tab_moved_into_a_live_space_while_its_steps_reads_are_pending_is_not_moved(self):
         # the move happens inside the step's own reads: in the undelete-store read of tab 12's step (the 3rd read: the
         # confirmation, tab 11's step, tab 12's step), and separately in the hook's place after those reads
-        for how in ["""let reads = 0; const DELETED = () => { if (++reads === 3) s.tabs.find((t) => t.id === 12).vivExtData = JSON.stringify({ workspaceId: 5 }); return undefined; };""",
+        # the move happens inside the step's own pref read (the 4th: start-up's, the snapshot's, the two confirmation
+        # reads... counted from the first heal step's), and separately at the hook point after the reads
+        for how in ["""let pr = 0; const p0 = vivaldi.prefs.get; vivaldi.prefs.get = async (...a) => { const r = await p0(...a); if (++pr === 7) s.tabs.find((t) => t.id === 12).vivExtData = JSON.stringify({ workspaceId: 5 }); return r; };""",
                     """const DURING = (step) => { if (step.tab === 12) s.tabs.find((t) => t.id === 12).vivExtData = JSON.stringify({ workspaceId: 5 }); };"""]:
             out = runtime(Repairs.ORPHANS, me=1, script="const STORE = () => s.spaces;" + how + self.HEAL_STUBS)
             self.assertNotIn(12, self.healed(out), how)

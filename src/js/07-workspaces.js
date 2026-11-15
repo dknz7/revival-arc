@@ -338,46 +338,34 @@
     return ids.length === raw.length ? ids.sort((a, b) => a - b) : null;
   };
   const sameList = (a, b) => !!a && !!b && a.length === b.length && a.every((id, i) => id === b[i]);
-  // What the "recently deleted spaces" store (key deletedSpaces, written by undelete, Task 9c) says may still come back,
-  // as store.read gave it: undefined (no key yet) -> []; an array of plain ids or of records with at least a numeric `id`
-  // -> those ids; anything else -> null (unreadable: the heal must not act).
-  const deletedIds = (raw) => {
-    if (raw === undefined) return [];
-    if (!Array.isArray(raw)) return null;
-    const ids = raw.map((r) => (r && typeof r === "object" ? r.id : r));
-    return ids.every((id) => Number.isSafeInteger(id) && id > 0) ? [...new Set(ids)] : null;
-  };
   // Which deleted spaces' tabs the heal (repair rule 0) may move: a wrong list would move every tab of a live space, so
   // it acts only on a list it can trust. first, second: two reads about 1 s apart, each { pref, store }: the ids in the
   // pref vivaldi.workspaces.list and in Vivaldi's own store (null when unreadable or not found). Trusted only when every
   // read is a valid id list (spaceList) and non-empty, the pref and the store agree, and nothing changed between the two
   // reads (at start-up Vivaldi's store is empty until its list is loaded, so it disagrees with the pref and nothing
-  // moves). tabs: every normal window's tabs; skip: what deletedIds read (null: unreadable, so nothing moves).
+  // moves). tabs: every normal window's tabs. Heal policy B (Byron, 2026-11-15): a deleted space's tabs heal at once,
+  // whether or not undelete holds the space (undelete takes them back by their healedFrom tag).
   // -> { ids: the dead space ids on tabs, sorted, or [], list: the trusted list (or null), why: null or the reason }
-  const healGate = ({ first, second, tabs, skip } = {}) => {
+  const healGate = ({ first, second, tabs } = {}) => {
     const reads = [first?.pref, first?.store, second?.pref, second?.store].map(spaceList);
     if (!reads.every(Boolean)) return { ids: [], list: null, why: "a workspace list could not be read" };
     if (!reads.every((r) => r.length)) return { ids: [], list: null, why: "a workspace list is empty" };
     if (!reads.every((r) => sameList(r, reads[0]))) return { ids: [], list: null, why: "the workspace lists disagree or changed" };
-    if (!Array.isArray(skip)) return { ids: [], list: null, why: "the recently deleted spaces could not be read" };
     const known = new Set(reads[0]);
-    const keep = new Set(skip);
-    const ids = [...new Set((tabs || []).map(of))].filter((id) => id && !known.has(id) && !keep.has(id)).sort((a, b) => a - b);
+    const ids = [...new Set((tabs || []).map(of))].filter((id) => id && !known.has(id)).sort((a, b) => a - b);
     return { ids, list: reads[0], why: null };
   };
   // Just before one heal step: the tab as it is now, the lists as they are now, the deleted-spaces store as it is now.
   // The step goes ahead only if the tab is still where it was planned (same window), still on the planned dead id, the
   // fresh pref and store lists are valid and equal to the list the heal was approved on (so the id is still absent:
   // nobody re-created it), and the id is not in the deleted-spaces store. -> null (go ahead) or why not.
-  const healStepOk = ({ step, tab, pref, store, list, skip } = {}) => {
+  const healStepOk = ({ step, tab, pref, store, list } = {}) => {
     if (!tab) return "the tab is gone";
     if (tab.windowId !== step?.window) return "the tab moved to another window";
     if (of(tab) !== step.from) return "the tab is in another space now";
     const a = spaceList(pref), b = spaceList(store);
     if (!a || !b || !sameList(a, list) || !sameList(b, list)) return "the workspace list changed";
     if (list.includes(step.from)) return "its space exists again";
-    if (!Array.isArray(skip)) return "the recently deleted spaces could not be read";
-    if (skip.includes(step.from)) return "its space can be brought back";
     return null;
   };
   // Whether any tab carries a named space that is not in `known` (cheap: the heal then confirms with healGate).
@@ -903,5 +891,5 @@
     return request;
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, deletedIds, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins, privateIntro, focusIntent, addressKeys };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins, privateIntro, focusIntent, addressKeys };
 })();

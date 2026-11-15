@@ -61,8 +61,6 @@
     const seen = new Set();
     return all.filter((e) => (seen.has(e.id) ? false : (seen.add(e.id), true))).slice(0, KEEP_MAX);
   };
-  // What the heal may not touch: the entries undelete can still bring back (an expired one's tabs heal again).
-  const held = (list, now) => keepDeleted(Array.isArray(list) ? list : [], [], now);
 
   // Each remembered tab's Recently Closed entry (chrome.sessions.getRecentlyClosed, newest first): the same address, the
   // same title first, closed no earlier than `since` (ms) less a few seconds; each entry is used once. -> the tabs, with
@@ -121,6 +119,15 @@
     });
     return { window, tabs: plan };
   };
+  // Heal policy B (Byron, 2026-11-15): the repairs heal a deleted space's tabs at once into their window's default space
+  // and tag each with healedFrom: <its id> (11-space-repair.js). Undelete counts as already back: the tabs that still
+  // carry the space's id, and the healed tabs tagged with this id that are still in the default space (restorePlan then
+  // takes only those matching one of the entry's tabs, by address). A default-space tab without the tag is never taken,
+  // nor a tagged tab the user has since moved into another space.
+  const HEALED_FROM = "healedFrom";
+  const healedFrom = (tab) => { const v = extOf(tab)?.[HEALED_FROM]; return Number.isSafeInteger(v) ? v : null; };
+  const backAlready = (tabs, id) => (tabs || []).filter((t) => ws().of(t) === id || (ws().of(t) === 0 && healedFrom(t) === id));
+
   // The order of a space's tabs is right when, read in window order, they come in the entry's order. got: the restored
   // tabs' ids in window order; want: the same ids in the entry's order. Pinned tabs keep Chromium's pinned area.
   const inOrder = (got, want) => JSON.stringify(got) === JSON.stringify(want);
@@ -329,7 +336,7 @@
       // used as they are, never opened twice.
       const all = await chrome.tabs.query({ windowType: "normal" });
       const windows = (await chrome.windows.getAll()).filter((w) => w.type === "normal").map((w) => w.id);
-      const plan = restorePlan({ entry, windows, here, live: all.filter((t) => ws().of(t) === id), sameRun: entry.run === runId(),
+      const plan = restorePlan({ entry, windows, here, live: backAlready(all, id), sameRun: entry.run === runId(),
         sessions: await chrome.sessions.getRecentlyClosed({ maxResults: 25 }).catch(() => []) });
       const target = plan.window;
       const made = [];
@@ -355,11 +362,11 @@
         const now = await chrome.tabs.get(tab.id);
         if (ws().of(now) !== id || now.windowId !== target) await native.setSpace(tab.id, id, { windowId: target });
       };
-      // Before any tab goes in: every tab of the space already back in ANOTHER window leaves it there first, so the space
-      // never has tabs in two windows when one is moved into it (8.3 refuses that: "ambiguous windowId"; review 9c,
-      // important 2: after a restart a reopened tab of the space can sit in another window than the one asking).
-      for (const t of plan.tabs.filter((x) => x.how === "live")) {
-        const tab = await chrome.tabs.get(t.tab).catch(() => null);
+      // Before any tab goes in: EVERY tab still carrying the space's id in ANOTHER window leaves it there first, whether
+      // or not it matches one of the entry's tabs (one navigated since, review-9c-agy-r2), so the space never has tabs in
+      // two windows when one is moved into it (8.3 refuses that: "ambiguous windowId").
+      for (const t of all.filter((x) => ws().of(x) === id && x.windowId !== target)) {
+        const tab = await chrome.tabs.get(t.id).catch(() => null);
         if (tab && tab.windowId !== target && ws().of(tab) === id) {
           await outOfSpace(tab).catch((error) => console.warn("[vivarc] undelete: a tab of the space in another window:", error));
         }
@@ -381,10 +388,12 @@
         const fresh = !tab;
         if (fresh) tab = await chrome.tabs.create({ windowId: target, url: t.url, active: false, pinned: !!t.pinned }).catch(() => null);
         if (!tab) continue;
+        const wasHealed = !fresh && healedFrom(tab) === id; // read before the move into the space
         try { await into(tab); } catch (error) { console.warn("[vivarc] undelete: a tab did not go back into its space:", error); }
         // what the tab was: a new tab gets it all; a restored one keeps what Vivaldi brought back and gets what it lacks
         const has = fresh ? {} : extOf(tab);
         const patch = {};
+        if (wasHealed || has[HEALED_FROM] != null) patch[HEALED_FROM] = null; // back in its space: no longer a healed tab
         if (t.vivarcPin && !has.vivarcPin) patch.vivarcPin = t.vivarcPin;
         if (t.tiling?.id && fresh) { if (!splits.has(t.tiling.id)) splits.set(t.tiling.id, crypto.randomUUID?.() || `vm-${Date.now()}-${splits.size}`); patch.tiling = { ...t.tiling, id: splits.get(t.tiling.id) }; }
         if (Object.keys(patch).length) await window.__vm.setExtData(tab, patch).catch(() => {});
@@ -503,7 +512,7 @@
   };
 
   window.__vm.spaceEdit = {
-    DELETED_KEY, KEEP_MS, KEEP_MAX, PRIVATE, isPrivate, deletedEntry, keepDeleted, held, sameDeleted, matchSessions, orderAfter, restorePlan, inOrder, deletedNote,
+    DELETED_KEY, KEEP_MS, KEEP_MAX, PRIVATE, isPrivate, deletedEntry, keepDeleted, HEALED_FROM, healedFrom, backAlready, sameDeleted, matchSessions, orderAfter, restorePlan, inOrder, deletedNote,
     moved, newSpaceName, renameCheck, folderTitle, findManager, findRoutes, findIcons,
     manager, icons, list, remember, noteClosed, undelete, forget, rename, renaming, setOrder, setIcon, setEmoji, create,
   };

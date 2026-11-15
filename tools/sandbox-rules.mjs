@@ -3688,7 +3688,7 @@ const rawRestore = (n = 1) => h.ev(`(async () => { for (let i = 0; i < ${n}; i++
 // W: X1 (X) and DY1..DYn (Y), W shows Y with DY1 on screen; O (unless oShows is false): Z1, Z2, O shows Z. Then Y is
 // deleted from W's tile (Vivaldi switches W to default and closes DY1..DYn, which go to Recently Closed). The busy mark
 // stands throughout, so no repair runs before the act.
-const SET_DEL = async ({ oShows = true, n = 4, x = true, forget = false } = {}) => {
+const SET_DEL = async ({ oShows = true, n = 4, x = true } = {}) => {
   await mkWin("W", { width: 900 });
   if (x) await tab(ctx.W, "X1", sp("X"));
   const ys = Array.from({ length: n }, (_, i) => `DY${i + 1}`);
@@ -3700,7 +3700,6 @@ const SET_DEL = async ({ oShows = true, n = 4, x = true, forget = false } = {}) 
   const r = await deleteSpace(ctx.W, "Y");
   if (r !== "ok") throw new Error(`setup: delete Y: ${r}`);
   await sleep(1200); await busy();
-  if (forget) await forgetDeleted(); // Task 9c: as after the undelete entry expires, so the heal is what is tested
 };
 // One Recently Closed row, picked from a window's New Tab dropdown (the user's way back to a tab of a deleted space).
 def("DEL.restore-one", {
@@ -3717,7 +3716,7 @@ def("DEL.restore-from-other-window", {
 });
 // Two picked from the dropdown, two with Vivaldi's own Reopen Closed Tab (which no Vivarc pick sees): none stays dead.
 def("DEL.restore-all", {
-  gesture: true, setup: () => SET_DEL({ forget: true }),
+  gesture: true, setup: () => SET_DEL(),
   act: async () => {
     watchRecord();
     for (const l of ["DY1", "DY2"]) { const r = await pickFrom(ctx.W, "Recently Closed", l); if (r !== "ok") return `${l}: ${r}`; }
@@ -3730,7 +3729,7 @@ def("DEL.restore-all", {
 // into its space (8y 3b). The repairs are held until the act is done.
 def("DEL.no-default-tab", {
   busyThroughAct: true,
-  setup: async () => { await SET_DEL({ oShows: false, n: 2, x: false, forget: true }); await rawRestore(2); await sleep(800); await busy(); },
+  setup: async () => { await SET_DEL({ oShows: false, n: 2, x: false }); await rawRestore(2); await sleep(800); await busy(); },
   act: async () => {
     watchRecord();
     const s = await h.snap(ctx.H);
@@ -3755,7 +3754,7 @@ def("DEL.bar-switch-to-dead", {
     await waitFor(() => h.ev(`chrome.tabs.get(${id}).then((t) => t.status === "complete" && !!t.title)`, ctx.H), 8000);
     await busy();
     if ((await deleteSpace(ctx.W, "Y")) !== "ok") throw new Error("setup: delete Y");
-    await sleep(1200); await forgetDeleted(); // Task 9c: the heal is what is tested (see UD.held-then-heals)
+    await sleep(1200);
     await rawRestore(1); await sleep(800);
     await show(ctx.W, sp("X")); await activate(ctx.tabs.X1); await focus(ctx.W); await busy();
     const back = tabsOf(await h.snap(ctx.H)).find((t) => t.url.startsWith(ctx.deadUrl));
@@ -3883,7 +3882,7 @@ async function restartSandbox() {
 def("DEL.restart", {
   busyThroughAct: true,
   setup: async () => {
-    await SET_DEL({ oShows: false, n: 2, forget: true }); await rawRestore(2); await sleep(800);
+    await SET_DEL({ oShows: false, n: 2 }); await rawRestore(2); await sleep(800);
     const s = await h.snap(ctx.H);
     const dy1 = tabsOf(s).find((t) => labelOf(t) === "DY1");
     if (!dy1 || !dy1.ws) throw new Error("setup: DY1 is not on the deleted space");
@@ -3902,12 +3901,10 @@ def("DEL.restart", {
     labelIs(s, "DY1", { win: ctx.W, space: 0 }), labelIs(s, "DY2", { win: ctx.W, space: 0 }), labelIs(s, "X1", { win: ctx.W, space: sp("X") })],
 });
 // ---------- Task 9c: undelete a space, edit a space (upstream #126), and staying in an empty space ----------
-// Vivarc's delete now keeps the space under `deletedSpaces` (08-space-edit.js), and while it is there the heal leaves
-// its tabs alone, for undelete to bring them back with the space. The 9a cases above whose subject is the heal itself
-// (DEL.restore-all, DEL.no-default-tab, DEL.bar-switch-to-dead, DEL.restart) forget the entry first, which is the state
-// after it expires (or a space deleted outside Vivarc); UD.held-then-heals checks the hold and then the expiry.
+// Vivarc's delete keeps the space under `deletedSpaces` (08-space-edit.js). Heal policy B (Byron, 2026-11-15): the heal
+// does not wait for that entry: a deleted space's tabs heal at once, tagged healedFrom, and undelete takes the tagged
+// ones back (UD.reopened-heals-then-undelete).
 const DELETED = `window.__vm.store.get("deletedSpaces", [])`;
-const forgetDeleted = () => h.ev(`window.__vm.store.set("deletedSpaces", []).then(() => 1)`, ctx.H);
 const prefList = () => h.ev(`vivaldi.prefs.get("vivaldi.workspaces.list").then((r) => (r?.value ?? r ?? []).map((w) => ({ id: w.id, name: w.name, emoji: w.emoji ?? "", icon: w.icon ?? "", iconId: w.iconId ?? null })))`, ctx.H);
 const prefRules = () => h.ev(`vivaldi.prefs.get("vivaldi.workspaces.link_routes").then((r) => r?.value ?? r ?? [])`, ctx.H);
 // Vivaldi's own link-route manager and its 20 workspace icons, found as Vivarc finds them (08-space-edit.js).
@@ -4022,22 +4019,33 @@ def("UD.old-window-gone", {
   act: () => pickFrom(ctx.W, "Recently Deleted Spaces", "Y"),
   expect: async (s) => [normal(s).some((w) => w.id === ctx.O) ? "O is still open" : null, ...(await undeleted(s, ctx.W))],
 });
-// While Y's entry is held, two of its tabs brought back by Vivaldi's own Reopen Closed Tab stay on Y's id (undelete
-// would revive them), and no window's record ever names it; once the entry is past its 30 days, they heal.
-def("UD.held-then-heals", {
+// Heal policy B: two of Y's tabs brought back by Vivaldi's own Reopen Closed Tab (Ctrl+Shift+T) right after Y is deleted
+// show up in W's default space within the heal's timing (no hidden tab, no window ever on Y's id), each tagged
+// healedFrom Y. Then Y is undeleted: those two are taken back (not opened twice), the other two come from Recently
+// Closed, all four in Y in order, and the tags are cleared.
+const tagOf = (label) => h.ev(`chrome.tabs.query({ windowType: "normal" }).then((ts) => { const t = ts.find((x) => (x.title || "") === ${J(label)}); return t ? (JSON.parse(t.vivExtData || "{}").healedFrom ?? null) : "gone"; })`, ctx.H);
+def("UD.reopened-heals-then-undelete", {
   busyThroughAct: true, setup: async () => { await SET_UD(); await rawRestore(2); await sleep(800); await busy(); },
   act: async () => {
     await h.ev(LOGS, ctx.H);
     watchRecord();
-    await unbusy(); await sleep(4500);
-    const heldDead = deadIn(await h.snap(ctx.H)).map(labelOf).sort();
-    // the entry ages past 30 days (its deletedAt moved back): the next pass heals its tabs
-    await h.ev(`(async () => { const all = await ${DELETED}; await window.__vm.store.set("deletedSpaces", all.map((e) => ({ ...e, deletedAt: Date.now() - 31 * 24 * 3600 * 1000 }))); window.__vm.spaceRepair.schedule(); return 1; })()`, ctx.H);
-    const healed = await waitFor(async () => (deadIn(await h.snap(ctx.H)).length ? null : "yes"), 10000, 250);
-    return { done: "ok", heldDead, healed: healed === "yes", lines: await healLines() };
+    const t0 = Date.now();
+    await unbusy();
+    const healed = await waitFor(async () => (deadIn(await h.snap(ctx.H)).length ? null : "yes"), 12000, 250);
+    const ms = Date.now() - t0;
+    const s1 = await h.snap(ctx.H);
+    const back = tabsOf(s1).filter((t) => /^DY[34]$/.test(labelOf(t))).map((t) => `${labelOf(t)}@${roleOf(t.win)}/${spaceName(t.space)}`).sort();
+    const tags = [await tagOf("DY3"), await tagOf("DY4")];
+    const r = await pickFrom(ctx.W, "Recently Deleted Spaces", "Y");
+    if (r !== "ok") return { error: r };
+    await sleep(2500);
+    return { done: "ok", healed: healed === "yes", ms, back, tags, after: [await tagOf("DY3"), await tagOf("DY4")] };
   },
-  expect: async (s, b, r) => [await recordStayedLive(), r.heldDead?.length === 2 ? null : `while held, dead tabs ${J(r.heldDead)}, want 2 (DY4, DY3)`,
-    r.healed ? null : "the expired entry's tabs did not heal", noDead(s), r.lines?.length === 2 ? null : `${r.lines?.length} heal lines, want 2`, tabIs(s, "X1", { win: ctx.W, space: sp("X") })],
+  expect: async (s, b, r) => [r.error ?? null, await recordStayedLive(), r.healed ? null : "the reopened tabs were not healed within 12 s",
+    J(r.back) === J(["DY3@W/default", "DY4@W/default"]) ? null : `healed tabs ${J(r.back)}, want DY3 and DY4 in W's default space`,
+    J(r.tags) === J([sp("Y"), sp("Y")]) ? null : `healedFrom tags ${J(r.tags)}, want Y on both`,
+    J(r.after) === J([null, null]) ? null : `after the undelete the tags are ${J(r.after)}, want none`,
+    ...(await undeleted(s, ctx.W))],
 });
 
 // The real user path the hold exists for: Vivaldi's own Reopen Closed Tab brings two of Y's tabs back under its id
@@ -4061,7 +4069,10 @@ def("UD.live-elsewhere-after-restart", {
     const w = tabsOf(s0).find((t) => labelOf(t) === "X1")?.win;
     if (w == null || w === ctx.H) return { error: `X1 came back in ${w}` };
     ctx.W = w; ctx.roles.W = w;
-    const live = tabsOf(s0).filter((t) => /^DY[0-9]$/.test(labelOf(t)) && t.ws === sp("Y")).map((t) => `${labelOf(t)}@${roleOf(t.win)}`);
+    // after the restart the two reopened tabs are on Y's id, or (heal policy B, once the heal has run) healed into W's
+    // default space and tagged healedFrom Y: either way they are Y's to take back
+    const live = await h.ev(`chrome.tabs.query({ windowType: "normal" }).then((ts) => ts.filter((t) => /^DY[0-9]$/.test(t.title || "") && t.windowId === ${w}
+      && ((JSON.parse(t.vivExtData || "{}").workspaceId === ${sp("Y")}) || JSON.parse(t.vivExtData || "{}").healedFrom === ${sp("Y")})).map((t) => t.title + "@W"))`, ctx.H);
     await focus(ctx.H);
     if (!(await waitFor(() => hasEl(ctx.H, "#vm-panel .vm-newtab-chev"), 15000))) return { error: "no sidebar in H after the restart" };
     await h.ev(`(() => { window.__ud = []; for (const k of ["log", "warn"]) { const o = console[k]; console[k] = (...a) => { if (String(a[0]).includes("[vivarc]")) window.__ud.push(a.map((x) => x && x.stack ? x.message : String(x)).join(" ")); return o.apply(console, a); }; } return 1; })()`, ctx.H);

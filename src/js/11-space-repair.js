@@ -6,8 +6,9 @@
 // leader's window closes. Repairs never write a tab's space (a gather moves tabs, which keep their space, C1), with one
 // exception: a tab whose space no longer exists moves to its window's default space (rule 0, the heal; Vivaldi 8.3
 // restores a deleted space's closed tabs with the dead id, task 8y). The heal acts only on a workspace list it can trust
-// (workspaces.healGate: two reads about 1 s apart, the pref and Vivaldi's store agreeing and non-empty), skips ids a
-// "recently deleted spaces" store can still bring back, moves at most HEAL_MAX tabs a pass and logs each one.
+// (workspaces.healGate: two reads about 1 s apart, the pref and Vivaldi's store agreeing and non-empty), moves at most
+// HEAL_MAX tabs a pass, logs each one, and tags each healed tab healedFrom: <the deleted id> (heal policy B, Byron,
+// 2026-11-15: a deleted space's tabs heal at once, and undelete takes the tagged ones back).
 // Without Vivaldi's record (or its switch) every rule would be guessing, so repairs then do nothing.
 (() => {
   const SETTLE_MS = 400;
@@ -17,7 +18,7 @@
   const BUSY_CHECK_MS = 500;
   const COOL_MS = 10000;
   const HEAL_CONFIRM_MS = 1000;
-  const DELETED_KEY = "deletedSpaces"; // undelete's store (08-space-edit.js, Task 9c): ids it can still revive are not healed
+  const HEALED_FROM = "healedFrom"; // heal policy B: on a healed tab, the deleted space it came from (undelete reads it)
   const spacesOf = window.__vm.workspaces;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -91,20 +92,10 @@
     if (typeof test?.lists === "function") return test.lists();
     return { pref: await readSpaces(), store: window.__vm.native?.record()?.spaces?.() ?? null };
   };
-  // The ids the undelete store (deletedSpaces, Task 9c) can still bring back, read with the store's rejecting read:
-  // [] when the key is missing, null when the read fails or holds something that is not a list of ids or of records with
-  // a numeric id (the heal then does nothing). spaceRepair.test.deleted replaces it (sandbox cases).
-  const readDeleted = async () => {
-    const test = window.__vm.spaceRepair?.test;
-    try {
-      const raw = typeof test?.deleted === "function" ? await test.deleted() : await window.__vm.store.read(DELETED_KEY);
-      return spacesOf.deletedIds(raw);
-    } catch (_) { return null; }
-  };
   // -> { waited, evidence }: evidence is the heal's go-ahead for this pass ({ ids, list }) or null (nothing may move);
   // waited says the check slept (the caller then takes a fresh snapshot). Asked only when a tab carries an id the snapshot's
-  // list does not have, so a pass without such a tab waits for nothing. Never in a private window: its store is not the
-  // profile's (05-bootstrap.js), so its undelete list says nothing.
+  // list does not have, so a pass without such a tab waits for nothing. Never from a private window's copy of Vivarc: it
+  // does not act on the profile's own windows (05-bootstrap.js).
   let lastWhy = null;
   const confirmHeal = async (snap) => {
     if (!spacesOf.strays(snap.tabs, snap.spaces)) return { waited: false, evidence: null, why: null };
@@ -112,9 +103,8 @@
     const first = await readLists();
     await sleep(HEAL_CONFIRM_MS);
     const second = await readLists();
-    const skip = await readDeleted();
     const tabs = await chrome.tabs.query({ windowType: "normal" });
-    const { ids, list, why } = spacesOf.healGate({ first, second, tabs, skip });
+    const { ids, list, why } = spacesOf.healGate({ first, second, tabs });
     if (why && why !== lastWhy) console.warn(`[vivarc] repair: tabs of a deleted space left as they are: ${why}`);
     lastWhy = why;
     return { waited: true, evidence: ids.length ? { ids, list } : null, why };
@@ -151,7 +141,6 @@
     const native = window.__vm.native;
     const modern = await native.movesByTab(); // cached after its first answer
     const { pref, store: testStore } = await readLists();
-    const skip = await readDeleted();
     // spaceRepair.test.beforeStep(step, n): the sandbox's way to act while a step's reads are pending (R.heal-step-*)
     await Promise.resolve(window.__vm.spaceRepair?.test?.beforeStep?.(step, nth)).catch(() => {});
     const [windows, tab] = await Promise.all([chrome.windows.getAll(), chrome.tabs.get(step.tab).catch(() => null)]);
@@ -159,7 +148,7 @@
     if (busyFor()) return "a gesture started";
     if (ownWindow == null || spacesOf.leaderOf(windows) !== ownWindow) return "this window no longer leads";
     const store = typeof window.__vm.spaceRepair?.test?.lists === "function" ? testStore : (native.record()?.spaces?.() ?? null);
-    const why = spacesOf.healStepOk({ step, tab, pref, store, list: evidence.list, skip });
+    const why = spacesOf.healStepOk({ step, tab, pref, store, list: evidence.list });
     if (why) return why;
     const index = tab.index;
     let moving;
@@ -177,6 +166,11 @@
       return now.index === index ? null : "the tab changed place";
     });
     if (verdict) return verdict;
+    // Heal policy B: the healed tab is tagged with the space it came from (a merge write: on 8.3 every vivExtData key but
+    // workspaceId is kept), so undelete can take it back (08-space-edit.js). Only after the verified move, never in its
+    // place; a tag that does not take is warned and the move stands.
+    try { await chrome.tabs.update(step.tab, { vivExtData: JSON.stringify({ [HEALED_FROM]: step.from }) }); }
+    catch (error) { console.warn(`[vivarc] repair: tab ${step.tab} healed, but its healedFrom tag was not written:`, error); }
     if (busyFor()) return "a gesture started during the move (moved; the rest is planned again)";
     return null;
   };
@@ -243,8 +237,7 @@
   // changing, the undelete store unreadable), which brings the run back with a growing delay. healLeft: the last plan
   // still held a heal step, so a stuck run comes back after its rest.
   let healLeft = false;
-  const TEMPORARY = new Set(["a workspace list could not be read", "a workspace list is empty", "the workspace lists disagree or changed",
-    "the recently deleted spaces could not be read"]);
+  const TEMPORARY = new Set(["a workspace list could not be read", "a workspace list is empty", "the workspace lists disagree or changed"]);
   const passes = async () => {
     for (let pass = 1; ; pass++) {
       if (busyFor()) return "wait";

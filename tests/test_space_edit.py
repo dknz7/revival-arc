@@ -2,8 +2,8 @@
 
 The pure parts of src/js/08-space-edit.js (what a deleted space's entry holds, its caps, how it comes back, the order
 maths, the rename check) and of src/js/18-empty-space.js (what closing the tab on screen does), then the parts that talk
-to Vivaldi, against fakes: the store-before-delete with its read-back, undelete through Vivaldi's own manager, the heal
-leaving a held space alone until its entry expires.
+to Vivaldi, against fakes: the store-before-delete with its read-back, undelete through Vivaldi's own manager, and (heal
+policy B) undelete taking back the tabs the heal tagged healedFrom.
 """
 import json
 import os
@@ -100,16 +100,6 @@ class Caps(unittest.TestCase):
 
     def test_malformed_entries_are_dropped(self):
         self.assertEqual(run("return edit.keepDeleted([null, 5, { id: 'x', deletedAt: 1, tabs: [] }, { id: 4, tabs: [] }, { id: 4, deletedAt: 9, tabs: {} }, { id: 6, deletedAt: 9, tabs: [] }], [], 10).map((e) => e.id)"), [6])
-
-    def test_held_is_what_the_heal_skips_and_an_expired_entry_is_not(self):
-        out = run("""
-          const list = [{ id: 8, deletedAt: NOW - 30 * DAY - 1, tabs: [] }, { id: 9, deletedAt: NOW - 30 * DAY, tabs: [] }];
-          const ids = edit.held(list, NOW).map((e) => e.id);
-          const tabs = [{ id: 1, windowId: 1, vivExtData: '{"workspaceId":8}' }, { id: 2, windowId: 1, vivExtData: '{"workspaceId":9}' }];
-          const read = { pref: [5], store: [5] };
-          return [ids, workspaces.healGate({ first: read, second: read, tabs, skip: edit.held(list, NOW) }).ids, edit.held("junk", NOW)];
-        """, NOW=10 * 365 * DAY, DAY=DAY)
-        self.assertEqual(out, [[9], [8], []], "the expired entry's tabs heal, the held one's do not")
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
@@ -427,27 +417,62 @@ class DeleteAndUndelete(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
-class HealAndExpiry(unittest.TestCase):
-    """The real heal (11-space-repair.js, through test_space_rules' runner) with 08-space-edit.js loaded: a held entry's
-    tabs stay, an expired one's heal, and a store that cannot be read heals nothing."""
+class HealPolicyB(unittest.TestCase):
+    """Heal policy B (Byron, 2026-11-15): the heal moves a deleted space's tabs to their window's default space at once and
+    tags them healedFrom; undelete takes back the tagged tabs that are still in the default space and match a stored tab,
+    clears the tag, and leaves every other tab alone. ENTRY: space Y (102) with tabs u1 (listed in Recently Closed) and
+    u2; undelete asked from window 8, the old window 7 open."""
+    ENTRY = DeleteAndUndelete.ENTRY
 
-    def heal(self, store):
-        from test_space_rules import Repairs, RepairRuntime, runtime
-        script = ('vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], "08-space-edit.js"), "utf8"));'
-                  "const STORE = () => s.spaces;" + store + RepairRuntime.HEAL_STUBS)
-        # the stub moves nothing, so each pass plans the same: the distinct calls are what the heal would move
-        out = []
-        for c in runtime(Repairs.ORPHANS, me=1, script=script)["calls"]:
-            if c[0] == "setSpace" and c not in out: out.append(c)
-        return out
+    def undelete(self, extra, **over):
+        state = {"list": [LIST[0], LIST[2]], "tabs": [tab(1, 7, 0, 0), tab(9, 8, 0, 0)] + extra, "windows": [7, 8], "restoredSpace": Y,
+                 "sessions": [{"lastModified": 10**10, "tab": {"sessionId": "s1", "url": "u1", "title": "A"}}], "store": {"deletedSpaces": [self.ENTRY]}}
+        state.update(over)
+        entry = over.pop("entry", None) or self.ENTRY
+        return runtime("return edit.undelete(" + json.dumps(entry) + ", 8);", **state)
 
-    def test_held_stays_expired_heals(self):
-        now = "Date.now()"
-        calls = self.heal("window.__vm.store = { read: async () => [{ id: 9, deletedAt: " + now + " - 31 * 864e5, tabs: [] }, { id: 8, deletedAt: " + now + ", tabs: [] }] };")
-        self.assertEqual(calls, [["setSpace", 11, 0, 1], ["setSpace", 12, 0, 1]], "space 9's entry expired: its tabs heal; space 8's is held")
+    def healed(self, id, url, window=7, space=0, frm=Y):
+        return {"id": id, "windowId": window, "index": 5, "url": url, "vivExtData": json.dumps({**({"workspaceId": space} if space else {}), "healedFrom": frm})}
 
-    def test_an_unreadable_store_heals_nothing(self):
-        self.assertEqual(self.heal("window.__vm.store = { read: async () => { throw new Error('no'); } };"), [])
+    def test_the_heal_tagged_tab_is_taken_back_and_its_tag_cleared(self):
+        r = self.undelete([self.healed(77, "u2")])
+        self.assertNotIn("u2", [c[1] for c in r["calls"] if c[0] == "tabs.create"], "not opened twice")
+        self.assertIn(["setSpace", 77, Y, 7, None], r["calls"], "back into its space")
+        self.assertTrue(any(c[0] == "ext" and c[1] == 77 and c[2].get("healedFrom", "absent") is None for c in r["calls"]), "the tag is cleared")
+        self.assertEqual(r["out"]["tabs"], 2)
+
+    def test_after_a_restart_too(self):
+        old = {**self.ENTRY, "run": "earlier"}
+        r = self.undelete([self.healed(77, "u2", window=8)], entry=old, store={"deletedSpaces": [old]}, restoreInto=8)
+        self.assertIn(["setSpace", 77, Y, 8, None], r["calls"])
+        self.assertNotIn("u2", [c[1] for c in r["calls"] if c[0] == "tabs.create"])
+
+    def test_an_untagged_default_tab_at_the_same_address_is_left_alone(self):
+        plain = {"id": 78, "windowId": 7, "index": 5, "url": "u2", "vivExtData": "{}"}
+        r = self.undelete([plain])
+        self.assertIn(["tabs.create", "u2", 7, False], r["calls"], "u2 is opened anew")
+        self.assertFalse(any(c[0] in ("setSpace", "ext") and c[1] == 78 for c in r["calls"]), "the user's own tab is never taken")
+
+    def test_a_tagged_tab_the_user_moved_into_another_space_is_left_alone(self):
+        r = self.undelete([self.healed(79, "u2", space=Z)])
+        self.assertIn(["tabs.create", "u2", 7, False], r["calls"])
+        self.assertFalse(any(c[0] in ("setSpace", "ext") and c[1] == 79 for c in r["calls"]))
+
+    def test_a_tag_from_another_space_is_not_this_one(self):
+        r = self.undelete([self.healed(80, "u2", frm=X)])
+        self.assertFalse(any(c[0] in ("setSpace", "ext") and c[1] == 80 for c in r["calls"]))
+
+    def test_back_already_is_dead_id_tabs_and_tagged_default_tabs(self):
+        tabs = [tab(1, 7, Y), self.healed(2, "a"), self.healed(3, "b", space=Z), {"id": 4, "windowId": 7, "url": "c", "vivExtData": "{}"},
+                self.healed(5, "d", frm=X), {"id": 6, "windowId": 7, "url": "e", "vivExtData": json.dumps({"healedFrom": "102"})}]
+        self.assertEqual(run("return edit.backAlready(t, 102).map((x) => x.id);", t=tabs), [1, 2])
+
+    def test_the_pre_pass_takes_every_tab_of_the_space_in_another_window_out_matched_or_not(self):
+        # tab 81 carries Y in window 8 and matches no stored tab (navigated since): it leaves the space there first
+        unmatched = {"id": 81, "windowId": 8, "index": 3, "url": "navigated-away", "vivExtData": json.dumps({"workspaceId": Y})}
+        r = self.undelete([unmatched])
+        moves = [c for c in r["calls"] if c[0] == "setSpace"]
+        self.assertEqual(moves[0], ["setSpace", 81, 0, 8, None], "out of the space in its own window, before any tab goes in")
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
@@ -570,7 +595,7 @@ class Bundled(unittest.TestCase):
     def test_new_files_are_in_the_bundle_order(self):
         names = sorted(os.listdir(JS_DIR))
         self.assertLess(names.index("07-workspaces.js"), names.index("08-space-edit.js"))
-        self.assertLess(names.index("08-space-edit.js"), names.index("11-space-repair.js"), "the heal asks spaceEdit.held at run time")
+        self.assertLess(names.index("07-workspaces.js"), names.index("11-space-repair.js"))
         self.assertLess(names.index("17-peek.js") if "17-peek.js" in names else 0, names.index("18-empty-space.js"))
 
 
