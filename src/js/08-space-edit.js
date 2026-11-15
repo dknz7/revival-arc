@@ -11,10 +11,10 @@
 // - the 20 icons: an array exported by the module that defines the workspace store's getRandomIcon.
 // Vivarc still never writes a workspace pref: every change goes through Vivaldi's own store, which writes the pref.
 //
-// Undelete: Vivarc's delete (10-sidebar.js deleteSpace) first stores what the space was under `deletedSpaces` (the key
-// the heal skips, 11-space-repair.js), reads it back, and only then lets Vivaldi delete; right after, it notes each
-// tab's Recently Closed entry. The New Tab menu's Recently Deleted Spaces brings an entry back. Pure parts first (tested,
-// tests/test_space_edit.py), then the parts that talk to Vivaldi.
+// Undelete: Vivarc's delete (10-sidebar.js deleteSpace) first stores what the space was under `deletedSpaces`, reads it
+// back, and only then lets Vivaldi delete; right after, it notes each tab's Recently Closed entry. The New Tab menu's
+// Recently Deleted Spaces brings an entry back (heal policy B: the tabs the heal moved out meanwhile are tagged healedFrom
+// and taken back). Pure parts first (tested, tests/test_space_edit.py), then the parts that talk to Vivaldi.
 (() => {
   const ws = () => window.__vm.workspaces;
   const DELETED_KEY = "deletedSpaces";
@@ -132,6 +132,8 @@
   // tabs' ids in window order; want: the same ids in the entry's order. Pinned tabs keep Chromium's pinned area.
   const inOrder = (got, want) => JSON.stringify(got) === JSON.stringify(want);
   // "4 tabs · 2 days ago"
+  // The message when a space came back without some of its tabs (they stay in its Recently Deleted Spaces entry).
+  const partialNote = (entry, failed) => `\u201c${entry?.name || "Space"}\u201d is back, but ${failed} ${failed === 1 ? "tab" : "tabs"} did not come back: Recently Deleted Spaces can try again`;
   const deletedNote = (entry, now) => {
     const n = (entry?.tabs || []).length;
     return `${n} tab${n === 1 ? "" : "s"} · ${ws().cleanedAgo(entry.deletedAt, now)}`;
@@ -300,7 +302,8 @@
   // back with its history and its old id, now live again; else a new tab put into the space with native.setSpace), its
   // folder, split, pin and mute; the order checked; then the space is shown (in its old window while that is open, else
   // here) and the entry goes. Tabs still carrying the id (if any survived) are the space's again at once.
-  // -> { window, space, tabs: how many came back }; throws when the space could not be made (the entry then stays).
+  // -> { window, space, tabs: how many came back, failed: how many did not (kept in the entry for a retry) }; throws when
+  // the space could not be made (the entry then stays).
   // One undelete of a space at a time, in any window (a second click would open its tabs twice): a set on the shared page.
   const RESTORING = "__vivarcUndeleting";
   const restoring = () => { const p = page(); if (!(p[RESTORING] instanceof Set)) p[RESTORING] = new Set(); return p[RESTORING]; };
@@ -371,29 +374,54 @@
           await outOfSpace(tab).catch((error) => console.warn("[vivarc] undelete: a tab of the space in another window:", error));
         }
       }
-      // the windows a Recently Closed restore makes (Vivaldi restores a folder's tabs into a new window when their own is
-      // gone): only those may be closed afterwards, never a window the user opened meanwhile
+      // The windows a Recently Closed restore makes (Vivaldi restores a folder's tabs into a new window when their own is
+      // gone): only those may be closed afterwards. A window is the restore's only when the restore's own result shows it
+      // (the window it returns, or the window its own restored tab is in) and it did not exist before; a window that merely
+      // appeared meanwhile (the user's) is never one (final review, Codex Important 3).
       const restoreMade = new Set();
       const normalIds = async () => (await chrome.windows.getAll().catch(() => [])).filter((w) => w.type === "normal").map((w) => w.id);
+      // What did not come back: the entry's tabs, kept for a retry (final review, Codex Important 2).
+      const failed = [];
+      const keep = (t, over = {}) => { const { how, tab: _live, ...rest } = t; failed.push({ ...rest, ...over }); };
+      // In the space, in the target window: read again, never assumed from a move that returned.
+      const placed = async (tabId) => { const now = await chrome.tabs.get(tabId).catch(() => null); return !!now && ws().of(now) === id && now.windowId === target; };
       for (const t of plan.tabs) {
         renew();
         let tab = null;
+        let restored = false;
         if (t.how === "live") tab = await chrome.tabs.get(t.tab).catch(() => null);
         if (t.how === "session") {
           const before = new Set(await normalIds());
-          try { tab = (await chrome.sessions.restore(t.sessionId))?.tab ?? null; } catch (_) { tab = null; }
-          for (const w of await normalIds()) if (!before.has(w)) restoreMade.add(w);
+          let result = null;
+          try { result = await chrome.sessions.restore(t.sessionId); } catch (_) { result = null; }
+          tab = result?.tab ?? null;
+          if (result?.window?.id != null && !before.has(result.window.id)) restoreMade.add(result.window.id);
           if (tab) tab = await chrome.tabs.get(tab.id).catch(() => null);
+          if (tab && !before.has(tab.windowId)) restoreMade.add(tab.windowId);
+          restored = !!tab;
         }
         const fresh = !tab;
         if (fresh) tab = await chrome.tabs.create({ windowId: target, url: t.url, active: false, pinned: !!t.pinned }).catch(() => null);
-        if (!tab) continue;
+        if (!tab) { keep(t); continue; } // neither restored nor made: kept, with its Recently Closed id (it may still be listed)
         const wasHealed = !fresh && healedFrom(tab) === id; // read before the move into the space
         try { await into(tab); } catch (error) { console.warn("[vivarc] undelete: a tab did not go back into its space:", error); }
+        if (!(await placed(tab.id))) {
+          // not in the space: not counted and its tag left as it is. A new tab of ours closes again (a retry opens it
+          // anew); a tab Vivaldi brought back stays open, tagged when it sits in a default space so a retry takes it
+          // (backAlready), and its Recently Closed entry is used up.
+          console.warn(`[vivarc] undelete: tab ${tab.id} (${t.url}) is not in the space; kept for a retry`);
+          if (fresh) await chrome.tabs.remove(tab.id).catch((error) => console.warn("[vivarc] undelete: a new tab outside the space stays open:", error));
+          else {
+            const now = await chrome.tabs.get(tab.id).catch(() => null);
+            if (restored && now && ws().of(now) === 0 && healedFrom(now) !== id) await window.__vm.setExtData(now, { [HEALED_FROM]: id }).catch(() => {});
+          }
+          keep(t, { sessionId: fresh ? t.sessionId ?? null : null });
+          continue;
+        }
         // what the tab was: a new tab gets it all; a restored one keeps what Vivaldi brought back and gets what it lacks
         const has = fresh ? {} : extOf(tab);
         const patch = {};
-        if (wasHealed || has[HEALED_FROM] != null) patch[HEALED_FROM] = null; // back in its space: no longer a healed tab
+        if (wasHealed || has[HEALED_FROM] != null) patch[HEALED_FROM] = null; // verified back in its space: no longer a healed tab
         if (t.vivarcPin && !has.vivarcPin) patch.vivarcPin = t.vivarcPin;
         if (t.tiling?.id && fresh) { if (!splits.has(t.tiling.id)) splits.set(t.tiling.id, crypto.randomUUID?.() || `vm-${Date.now()}-${splits.size}`); patch.tiling = { ...t.tiling, id: splits.get(t.tiling.id) }; }
         if (Object.keys(patch).length) await window.__vm.setExtData(tab, patch).catch(() => {});
@@ -462,8 +490,12 @@
       // shown at the end: the switch above did not hold in one path (fix round 1, after a restart with tabs of the space
       // gathered from another window: the window was left recorded on default, showing a tab of the space)
       if (native.record()?.activeIn(target) !== id) await native.switchTo(target, id).catch((error) => console.warn("[vivarc] undelete: show the space again:", error));
-      await forget(entry).catch((error) => console.warn("[vivarc] undelete: forget the entry:", error));
-      return { window: target, space: id, tabs: made.length };
+      // the entry goes only when every tab came back; else it stays, holding what did not, for Recently Deleted Spaces to
+      // try again (the space itself is back, so a retry only brings the rest)
+      if (!failed.length) await forget(entry).catch((error) => console.warn("[vivarc] undelete: forget the entry:", error));
+      else await mutate((all) => keepDeleted(all.filter((e) => !sameDeleted(e, entry)), [{ ...entry, tabs: failed }], Date.now()))
+        .catch((error) => console.warn("[vivarc] undelete: keep what did not come back:", error));
+      return { window: target, space: id, tabs: made.length, failed: failed.length };
     } finally { restoring().delete(id); end?.(); }
   };
 
@@ -512,7 +544,7 @@
   };
 
   window.__vm.spaceEdit = {
-    DELETED_KEY, KEEP_MS, KEEP_MAX, PRIVATE, isPrivate, deletedEntry, keepDeleted, HEALED_FROM, healedFrom, backAlready, sameDeleted, matchSessions, orderAfter, restorePlan, inOrder, deletedNote,
+    DELETED_KEY, KEEP_MS, KEEP_MAX, PRIVATE, isPrivate, deletedEntry, keepDeleted, HEALED_FROM, healedFrom, backAlready, sameDeleted, matchSessions, orderAfter, restorePlan, inOrder, deletedNote, partialNote,
     moved, newSpaceName, renameCheck, folderTitle, findManager, findRoutes, findIcons,
     manager, icons, list, remember, noteClosed, undelete, forget, rename, renaming, setOrder, setIcon, setEmoji, create,
   };

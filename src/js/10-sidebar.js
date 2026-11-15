@@ -1611,7 +1611,8 @@
   };
   const undeleteSpace = async (entry) => {
     try {
-      await editOf().undelete(entry, myWindow() ?? (await chrome.windows.getCurrent()).id);
+      const r = await editOf().undelete(entry, myWindow() ?? (await chrome.windows.getCurrent()).id);
+      if (r?.failed > 0) say(editOf().partialNote(entry, r.failed)); // the rest stays in Recently Deleted Spaces
     } catch (error) { console.warn("[vivarc] undelete space:", error); say(`Could not bring back \u201c${entry.name}\u201d`); }
     finally { refresh(true); }
   };

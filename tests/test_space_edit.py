@@ -266,6 +266,9 @@ globalThis.chrome = {
   sessions: {
     getRecentlyClosed: async () => S.sessions || [],
     restore: async (sid) => { calls.push(["restore", sid]); const s = (S.sessions || []).find((x) => x.tab?.sessionId === sid);
+      if (S.restoreFails) throw new Error("restore failed");
+      // S.userWindowDuringRestore: the user opens a blank window while the restore runs (between its two window reads)
+      if (S.userWindowDuringRestore) { madeWindows.add(61); tabs.push({ id: 62, windowId: 61, index: 0, url: "chrome://vivaldi-webui/startpage", vivExtData: "{}" }); }
       let win = S.restoreInto ?? 7;
       if (S.restoreMakesWindow) { win = 50; madeWindows.add(50); tabs.push({ id: 49, windowId: 50, index: 0, url: "chrome://vivaldi-webui/startpage", vivExtData: "{}" }); }
       const t = { id: nextTab++, windowId: win, index: tabs.length, url: s.tab.url, pinned: false, vivExtData: JSON.stringify({ workspaceId: S.restoredSpace ?? 0 }) }; tabs.push(t); return { tab: t }; },
@@ -274,7 +277,9 @@ globalThis.chrome = {
     query: async ({ windowId } = {}) => tabs.filter((t) => windowId == null || t.windowId === windowId),
     get: async (id) => tabs.find((t) => t.id === id),
     create: async (p) => { calls.push(["tabs.create", p.url, p.windowId, !!p.pinned]);
+      if ((S.createFails || []).includes(p.url)) throw new Error("create failed");
       if (S.userWindowAt && calls.filter((c) => c[0] === "tabs.create").length === S.userWindowAt) { madeWindows.add(60); tabs.push({ id: 59, windowId: 60, index: 0, url: "chrome://vivaldi-webui/startpage", vivExtData: "{}" }); } const t = { id: nextTab++, windowId: p.windowId, index: tabs.length, url: p.url, pinned: !!p.pinned, vivExtData: "{}" }; tabs.push(t); return t; },
+    remove: async (id) => { calls.push(["tabs.remove", id]); const i = tabs.findIndex((x) => x.id === id); if (i >= 0) tabs.splice(i, 1); },
     update: async (id, p) => { calls.push(["tabs.update", id, p]); const t = tabs.find((x) => x.id === id); if (t && p.active) { for (const o of tabs) if (o.windowId === t.windowId) o.active = o.id === id; } },
   },
 };
@@ -292,7 +297,12 @@ globalThis.window = { __vm: {
   spaceRepair: { gesture: () => { calls.push(["busy"]); return () => calls.push(["unbusy"]); } },
   native: {
     record: () => ({ all: () => new Map(S.record || []), activeIn: (w) => [...(S.record || [])].find(([, x]) => x === w)?.[0] ?? 0 }),
-    setSpace: async (id, space, o) => { calls.push(["setSpace", id, space, o.windowId, o.index ?? null]); const t = tabs.find((x) => x.id === id); if (t) { t.windowId = o.windowId; t.vivExtData = JSON.stringify(space ? { workspaceId: space } : {}); } },
+    // S.placeFails: the addresses whose move into a named space does nothing (the call returns, the tab stays where it is);
+    // S.placeThrows: the same, but the call throws
+    setSpace: async (id, space, o) => { calls.push(["setSpace", id, space, o.windowId, o.index ?? null]); const t = tabs.find((x) => x.id === id);
+      if (t && space && (S.placeThrows || []).includes(t.url)) throw new Error("move refused");
+      if (t && space && (S.placeFails || []).includes(t.url)) return;
+      if (t) { t.windowId = o.windowId; t.vivExtData = JSON.stringify(space ? { workspaceId: space } : {}); } },
     switchTo: async (w, s) => calls.push(["switch", w, s]),
     focus: async (w) => calls.push(["focus", w]),
     movesByTab: async () => true,
@@ -364,7 +374,7 @@ class DeleteAndUndelete(unittest.TestCase):
         self.assertIn(["focus", 7], c, "asked from window 8: its old window comes forward")
         self.assertEqual(c[-1], ["unbusy"])
         self.assertEqual(r["store"]["deletedSpaces"], [], "restoring removes the entry")
-        self.assertEqual(r["out"], {"window": 7, "space": Y, "tabs": 2})
+        self.assertEqual(r["out"], {"window": 7, "space": Y, "tabs": 2, "failed": 0})
 
     def test_a_tab_already_back_with_the_id_is_not_opened_twice(self):
         r = self.undelete(tabs=[tab(1, 7, 0, 0), tab(9, 8, 0, 0), {"id": 77, "windowId": 7, "index": 5, "url": "u2", "vivExtData": json.dumps({"workspaceId": Y}), "mutedInfo": {"muted": True}}])
@@ -517,6 +527,72 @@ class FixRound1(unittest.TestCase):
         self.assertEqual(r["out"], "Vivaldi did not take the new name")
         self.assertTrue(any(c[0] == "warn" and "keeps the name" in c[1] for c in r["calls"]), r["calls"])
 
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the sidebar's JavaScript")
+class FinalFixRound(unittest.TestCase):
+    """Final review (Codex Important 2 and 3, AGY minor 2): a tab is counted back, and its healedFrom tag cleared, only once
+    it is verified in the space in the target window; what did not come back stays in a retryable entry; a window is closed
+    only when the restore's own result shows it made it."""
+    ENTRY = DeleteAndUndelete.ENTRY
+
+    def undelete(self, entry=None, **over):
+        return DeleteAndUndelete.undelete(self, entry, **over)
+
+    def healed(self, id, url, window=7):
+        return {"id": id, "windowId": window, "index": 5, "url": url, "vivExtData": json.dumps({"healedFrom": Y})}
+
+    def kept(self, r):
+        return [[t["url"], t["sessionId"]] for t in r["store"]["deletedSpaces"][0]["tabs"]] if r["store"]["deletedSpaces"] else None
+
+    def test_a_healed_tab_that_does_not_go_back_keeps_its_tag_and_is_not_counted(self):
+        for knob in ("placeFails", "placeThrows"):
+            r = self.undelete(tabs=[tab(1, 7, 0, 0), tab(9, 8, 0, 0), self.healed(77, "u2")], **{knob: ["u2"]})
+            self.assertFalse(any(c[0] == "ext" and c[1] == 77 and "healedFrom" in c[2] for c in r["calls"]), f"{knob}: the tag stays")
+            self.assertEqual(r["out"]["tabs"], 1, knob)
+            self.assertEqual(r["out"]["failed"], 1, knob)
+            self.assertEqual(self.kept(r), [["u2", None]], f"{knob}: u2 stays in the entry, to try again")
+
+    def test_a_tab_that_cannot_be_made_stays_in_the_entry(self):
+        # u1's Recently Closed restore fails and so does its new tab; u2 comes back
+        r = self.undelete(restoreFails=True, createFails=["u1"])
+        self.assertEqual(r["out"]["tabs"], 1)
+        self.assertEqual(r["out"]["failed"], 1)
+        self.assertEqual(self.kept(r), [["u1", "s1"]], "u1 stays, with its Recently Closed id (it may still be listed)")
+        self.assertEqual(r["store"]["deletedSpaces"][0]["deletedAt"], self.ENTRY["deletedAt"], "the same entry, retryable")
+
+    def test_a_new_tab_that_does_not_go_into_the_space_is_closed_again_and_kept(self):
+        r = self.undelete(placeFails=["u2"])
+        made = [c for c in r["calls"] if c[0] == "tabs.create" and c[1] == "u2"]
+        self.assertEqual(len(made), 1)
+        self.assertIn(["tabs.remove", 501], r["calls"], "the new tab that stayed out of the space is closed: a retry opens it again")
+        self.assertEqual(self.kept(r), [["u2", None]])
+
+    def test_a_restored_tab_that_does_not_go_in_is_tagged_so_a_retry_takes_it(self):
+        # u1 is restored from Recently Closed into window 7's default space, and its move into Y does nothing
+        r = self.undelete(restoredSpace=0, placeFails=["u1"])
+        self.assertIn(["ext", 500, {"healedFrom": Y}], r["calls"], "tagged: a retry finds it with backAlready, never opens it twice")
+        self.assertEqual(self.kept(r), [["u1", None]], "its Recently Closed entry is used up")
+        self.assertNotIn(["tabs.remove", 500], r["calls"], "a restored tab is never closed")
+
+    def test_a_retry_after_a_partial_failure_brings_the_rest_back(self):
+        first = self.undelete(placeFails=["u2"])
+        retry = self.undelete(entry=first["store"]["deletedSpaces"][0], store=first["store"], list=[LIST[0], LIST[1], LIST[2]])
+        self.assertIn(["tabs.create", "u2", 7, False], retry["calls"])
+        self.assertEqual(retry["out"]["failed"], 0)
+        self.assertEqual(retry["store"]["deletedSpaces"], [], "all back: the entry goes")
+
+    def test_the_partial_note(self):
+        self.assertEqual(run("return edit.partialNote({ name: 'Y' }, 1);"), "\u201cY\u201d is back, but 1 tab did not come back: Recently Deleted Spaces can try again")
+        self.assertEqual(run("return edit.partialNote({ name: 'Y' }, 3);"), "\u201cY\u201d is back, but 3 tabs did not come back: Recently Deleted Spaces can try again")
+
+    def test_a_blank_window_the_user_opens_during_the_restore_is_left_alone(self):
+        r = self.undelete(userWindowDuringRestore=True)
+        self.assertNotIn(["windows.remove", 61], r["calls"], "opened between the two window reads, but not the restore's")
+
+    def test_a_window_the_restore_made_still_closes(self):
+        r = self.undelete(restoreMakesWindow=True)
+        self.assertIn(["windows.remove", 50], r["calls"])
 
 # 18-empty-space.js's runtime against fake tab events: the window's tabs (S.tabs), Vivaldi's record (S.rec: the space window
 # 7 shows), S.getDelay: how long chrome.tabs.get takes (ms). The script fires events through `fire`.
