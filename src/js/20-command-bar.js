@@ -598,6 +598,28 @@
   const allTabs = async () =>
     (window.__vm.peek?.without ?? ((tabs) => tabs))(await chrome.tabs.query({ currentWindow: true })).filter((t) => !isBlank(t) && t.id !== targetTab);
 
+  // The list with nothing typed (Byron, 2026-11-15; workspaces.barTabs): this window's ordinary tabs of the space on
+  // screen here, most recently used first (lastAccessed), up to 50, the list scrolling past what fits. Left out: other
+  // windows and spaces, favorites' and pins' tabs (the vivarcPin mark, or the sidebar's binding not yet written there),
+  // Vivaldi-pinned tabs, blank tabs, the bar's own tab and the active one (switching to the tab you are on does nothing).
+  // The space on screen is Vivaldi's record for this window, as the sidebar reads it, else the active tab's. Only a
+  // space known to exist lists anything (Task 9a: the first row is what Enter picks). Typing still searches every tab.
+  const recentTabs = async () => {
+    const spaces = window.__vm.workspaces;
+    const [win, tabs, [active], ids] = await Promise.all([chrome.windows.getCurrent().catch(() => null),
+      chrome.tabs.query({ currentWindow: true }).catch(() => []), chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []),
+      Promise.resolve(window.__vm.native?.spaceIds?.()).catch(() => null)]);
+    const here = win?.id ?? active?.windowId;
+    let shown = null;
+    try { shown = here != null ? window.__vm.native?.record?.()?.activeIn(here) ?? null : null; } catch (_) {}
+    if (shown == null) shown = active && active.windowId === here ? spaces.of(active) : null;
+    if (shown == null) return [];
+    const boundIds = (() => { try { return window.__vm.boundTabIds?.() || new Set(); } catch (_) { return new Set(); } })();
+    const bound = (t) => boundIds.has(t.id) || window.__vm.pins?.pinOf?.(t) !== undefined;
+    const mine = (window.__vm.peek?.without ?? ((t) => t))(tabs).filter((t) => !isBlank(t));
+    return spaces.barTabs({ tabs: mine, here, shown, known: spaces.spaceList(ids), bound, skip: [targetTab, active?.id] });
+  };
+
   const pageBehindBar = async () => {
     if (editing !== null) return chrome.tabs.get(targetTab).catch(() => null);
     if (keepTarget) return null; // an empty space: nothing behind the bar, and the last page is in another space
@@ -655,10 +677,7 @@
     } else if (mode) {
       out.push({ type: "search", engine: mode, query: text, label: text || "%s", lead: true });
     } else if (!text) {
-      // Only tabs whose space is known to exist are offered with nothing typed: the first row is picked by Enter, and a
-      // tab of a deleted (or unverifiable) space must never be that row, even when it is the only one. Typing finds it.
-      const known = window.__vm.workspaces.spaceList(await window.__vm.native?.spaceIds?.());
-      (await allTabs()).filter((t) => window.__vm.workspaces.liveSpace(t, known)).slice(0, 7).forEach((tab) =>
+      (await recentTabs()).forEach((tab) =>
         out.push({ type: "tab", tab, url: tab.url, favicon: tab.favIconUrl, label: window.__vm.workspaces.startTitle(tab) || tab.title || tab.url }));
     } else {
       const needle = text.toLowerCase();

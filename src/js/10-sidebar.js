@@ -154,6 +154,8 @@
     state.bound = bound;
     for (const { tabId, patch } of writes) writeExt(tabId, patch);
   };
+  // The tabs shown as this window's favorites and pins: the command bar's list with nothing typed leaves them out.
+  window.__vm.boundTabIds = () => new Set([...state.bound.values()].map((t) => t.id));
 
   // Favorites are shared by every space (like Arc's); Pinned belongs to the space on screen.
   const ensureFolder = async (name) => {

@@ -5758,6 +5758,106 @@ for (const layout of ["dia", "arc"]) {
   });
 }
 
+// ---------- the command bar's empty list (Byron, 2026-11-15, after wave 2) ----------
+// W shows X: Xa..Xl ordinary tabs, Xp pinned by Vivaldi, a favorite's tab (CLFAV) and a pin's tab (CLPIN) opened from W's
+// sidebar (so they carry vivarcPin), Y1 and Y2 in the parked space Y. O shows Z (Z1). Every X tab but Xa is activated
+// once in a shuffled order (ctx.order), then the pinned, favorite and pin tabs (they would top a most-recent list), and Xa
+// last: the bar opened with nothing typed must list exactly ctx.order, most recent first.
+const CL_TABS = ["Xa", "Xb", "Xc", "Xd", "Xe", "Xf", "Xg", "Xh", "Xi", "Xj", "Xk", "Xl"];
+const SET_CL = async () => {
+  await mkWin("W", { width: 1000 });
+  for (const l of CL_TABS) await tab(ctx.W, l, sp("X"));
+  await tab(ctx.W, "Xp", sp("X")); await tab(ctx.W, "Y1", sp("Y")); await tab(ctx.W, "Y2", sp("Y"));
+  await mkWin("O", { width: 700 }); await tab(ctx.O, "Z1", sp("Z"), { active: true }); await show(ctx.O, sp("Z")); await activate(ctx.tabs.Z1);
+  await show(ctx.W, sp("X")); await activate(ctx.tabs.Xa); await focus(ctx.W);
+  await h.ev(`chrome.tabs.update(${ctx.tabs.Xp}, { pinned: true }).then(() => 1)`, ctx.H);
+  const stamp = Date.now();
+  ctx.favUrl = `${origin}/clfav-${stamp}`; ctx.pinUrl = `${origin}/clpin-${stamp}`;
+  await bookmark(await favoritesFolder(), "CLFAV", ctx.favUrl);
+  const f = await waitFor(async () => { const all = await folders(); return all.X?.pinned ? all : null; });
+  if (!f) throw new Error("setup: no Pinned folder for X");
+  await bookmark(f.X.pinned, "CLPIN", ctx.pinUrl);
+  if (!(await clickFav(ctx.W, "CLFAV"))) throw new Error("setup: the favorite is not in W's sidebar");
+  const fav = await waitFor(async () => tabsFor(await h.snap(ctx.H), ctx.favUrl)[0], 8000);
+  if (!fav) throw new Error("setup: opening the favorite made no tab");
+  if (!(await clickPin(ctx.W, ctx.pinUrl, "CLPIN"))) throw new Error("setup: the pin is not in W's sidebar");
+  const pin = await waitFor(async () => tabsFor(await h.snap(ctx.H), ctx.pinUrl)[0], 8000);
+  if (!pin) throw new Error("setup: opening the pin made no tab");
+  ctx.tabs.CLFAV = fav.id; ctx.tabs.CLPIN = pin.id;
+  await sleep(800);
+  ctx.order = ["Xg", "Xc", "Xk", "Xb", "Xi", "Xe", "Xl", "Xd", "Xj", "Xf", "Xh"];
+  for (const l of ctx.order) { await activate(ctx.tabs[l]); await sleep(150); }
+  for (const l of ["Xp", "CLFAV", "CLPIN"]) { await activate(ctx.tabs[l]); await sleep(150); }
+  await activate(ctx.tabs.Xa); await sleep(800); await focus(ctx.W);
+};
+const clReady = () => waitFor(() => h.ev(`!!document.querySelector("#vm-panel") && [...document.querySelectorAll("#vm-panel .vm-tab")].some((r) => r.textContent.includes("Xl"))`, ctx.W), 8000);
+// The bar's rows as shown: title, hint, and the list's geometry (rows fully inside the list's box, scroll sizes).
+const CL_ROWS = `(() => { const list = document.querySelector("#vm-cmd .vm-cmd-list"), i = document.querySelector("#vm-cmd input"); if (!list) return null;
+  const box = list.getBoundingClientRect(), rows = [...list.querySelectorAll(".vm-cmd-row")];
+  return { value: i?.value ?? null, rows: rows.map((r) => ({ title: r.querySelector(".vm-cmd-title")?.textContent ?? "", says: r.querySelector(".vm-cmd-hint")?.textContent ?? "" })),
+    visible: rows.filter((r) => { const q = r.getBoundingClientRect(); return q.top >= box.top - 1 && q.bottom <= box.bottom + 1; }).length,
+    clientH: Math.round(list.clientHeight), scrollH: Math.round(list.scrollHeight), scrollTop: Math.round(list.scrollTop), rowH: rows[0] ? Math.round(rows[0].getBoundingClientRect().height) : null,
+    box: [box.left, box.top, box.right, box.bottom].map(Math.round), win: [innerWidth, innerHeight] }; })()`;
+// Rows that have stopped changing (the bar's lookups answer after it opens).
+const clRows = async (win) => { let last = null;
+  for (let i = 0; i < 12; i++) { const x = await h.ev(CL_ROWS, win).catch(() => null); if (x && last && J(x.rows) === J(last.rows)) return x; last = x; await sleep(250); }
+  return last; };
+for (const layout of ["dia", "arc"]) {
+  // Ctrl+T (the real key) over Xa: the empty bar lists X's ordinary tabs in W, most recently used first, and the list scrolls.
+  def(`CL.the-empty-bar-lists-this-spaces-tabs-most-recent-first-${layout}`, {
+    layout, setup: SET_CL, ready: clReady,
+    act: async () => {
+      const r = {};
+      r.lastAccessed = await h.ev(`chrome.tabs.query({ windowId: ${ctx.W} }).then((ts) => ts.map((t) => [t.title, t.lastAccessed ?? null, t.active]))`, ctx.H);
+      await focusPage(ctx.W); await sleep(200);
+      await keyCombo(h.cdp(ctx.W), "t", "KeyT", 84, 2);
+      r.opened = !!(await waitFor(() => hasEl(ctx.W, "#vm-cmd"), 4000));
+      if (!r.opened) return { error: "Ctrl+T opened no bar", ...r };
+      await sleep(600);
+      r.list = await clRows(ctx.W);
+      await shot(ctx.W, "cl-empty-bar");
+      // a real wheel over the list scrolls it
+      const p = r.list ? { x: (r.list.box[0] + r.list.box[2]) / 2, y: (r.list.box[1] + r.list.box[3]) / 2 } : null;
+      if (p) { await h.cdp(ctx.W).send("Input.dispatchMouseEvent", { type: "mouseMoved", x: p.x, y: p.y }); await h.cdp(ctx.W).send("Input.dispatchMouseEvent", { type: "mouseWheel", x: p.x, y: p.y, deltaX: 0, deltaY: 400 }); await sleep(500); }
+      r.scrolled = await h.ev(CL_ROWS, ctx.W).then((x) => x?.scrollTop ?? null).catch(() => null);
+      await pressKey(ctx.W, "Escape", "Escape", 27); await sleep(600);
+      r.closed = !(await hasEl(ctx.W, "#vm-cmd"));
+      return r;
+    },
+    expect: (s, b, r) => {
+      if (r.error) return [r.error];
+      const want = [...ctx.order].reverse();
+      const got = (r.list?.rows || []).map((x) => x.title);
+      return [J(got) === J(want) ? null : `the empty bar lists ${J(got)}, want ${J(want)} (this space's ordinary tabs in W, most recent first)`,
+        (r.list?.rows || []).every((x) => /Switch to Tab/.test(x.says)) ? null : `a row that is not a tab: ${J(r.list?.rows)}`,
+        r.list && r.list.scrollH > r.list.clientH + 4 && r.scrolled > 0 ? null : `the list does not scroll (${J({ clientH: r.list?.clientH, scrollH: r.list?.scrollH, scrolled: r.scrolled })})`,
+        r.closed ? null : "Escape did not close the bar"];
+    },
+  });
+  // Byron saw the tab list on Ctrl+L. Wave 2's design: Ctrl+L on a loaded page opens the bar editing its address, selected.
+  // Measured here with favorites, a pin and a pinned tab around: from the page, right after a sidebar click on a tab, on a
+  // favorite's tab, and from the UI.
+  def(`CL.ctrl-l-on-a-page-edits-its-address-${layout}`, {
+    layout, setup: SET_CL, ready: clReady,
+    act: async () => {
+      const r = {}, c = h.cdp(ctx.W);
+      const read = async () => ({ ...(await BAR_STATE(ctx.W)), list: await clRows(ctx.W), url: (await activeUrl(ctx.W)).url });
+      await focusPage(ctx.W); await sleep(200); await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900);
+      r.page = await read(); await escBar(ctx.W);
+      const p = await waitFor(() => h.ev(`(() => { const r = [...document.querySelectorAll("#vm-panel .vm-tab")].find((x) => x.textContent.includes("Xc")); if (!r) return null; const q = r.getBoundingClientRect(); return { x: q.left + 60, y: q.top + q.height / 2 }; })()`, ctx.W), 6000);
+      if (p) { await tap(ctx.W, p.x, p.y); await sleep(400); await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900); r.afterClick = await read(); await escBar(ctx.W); }
+      if (await clickFav(ctx.W, "CLFAV")) { await sleep(800); await focusPage(ctx.W); await sleep(200); await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900); r.onFavorite = await read(); await escBar(ctx.W); }
+      await focusUi(ctx.W); await sleep(200); await keyCombo(c, "l", "KeyL", 76, 2); await sleep(900); r.fromUi = await read(); await escBar(ctx.W);
+      return r;
+    },
+    expect: (s, b, r) => {
+      const edits = (x, what) => !x ? `${what}: not measured` : !x.bar ? `${what}: no command bar (${J(x)})`
+        : x.value !== x.url || !x.selected ? `${what}: the bar holds ${J(x.value)} (selected ${x.selected}), want the page's address ${J(x.url)} selected; rows ${J(x.list?.rows?.map((y) => y.title))}` : null;
+      return [edits(r.page, "Ctrl+L from the page"), edits(r.afterClick, "Ctrl+L right after a sidebar click on Xc"), edits(r.onFavorite, "Ctrl+L on the favorite's tab"), edits(r.fromUi, "Ctrl+L from the UI")];
+    },
+  });
+}
+
 // ---------- running ----------
 async function setLayout(dia) {
   await h.refresh();

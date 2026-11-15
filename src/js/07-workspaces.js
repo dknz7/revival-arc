@@ -128,6 +128,14 @@
   // Positive evidence that a tab's space exists: the default space always does; a named one only when the list was read
   // and holds it. The command bar promotes (first row, autocomplete) only such tabs.
   const liveSpace = (tab, known) => { const space = of(tab); return !space || (Array.isArray(known) && known.includes(space)); };
+  // The command bar's list with nothing typed (Byron, 2026-11-15): the tabs of window `here` in the space on screen there
+  // (`shown`), most recently used first (Chromium's lastAccessed; on a tie, the window's order), at most `max`. Never a
+  // tab of another window or space, of a space not known to exist (Task 9a: the first row is what Enter picks), a
+  // favorite's or pin's tab (`bound`), a Vivaldi-pinned tab, or one in `skip` (the active tab, the bar's own).
+  const barTabs = ({ tabs, here, shown, known, bound = () => false, skip = [], max = 50 } = {}) => (tabs || [])
+    .filter((t) => t.windowId === here && of(t) === (shown ?? 0) && liveSpace(t, known) && !t.pinned && !bound(t) && !skip.includes(t.id))
+    .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0) || (a.index ?? 0) - (b.index ?? 0))
+    .slice(0, max);
   const liveOr0 = (space, known) => (space && Array.isArray(known) && known.includes(space) ? space : 0);
   const tabPick = (tab, shown, shownIn, { known, here, hereShown } = {}) => {
     const space = of(tab);
@@ -903,5 +911,5 @@
     return request;
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins, privateIntro, focusIntent, addressKeys, closeKeys };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, strays, liveSpace, barTabs, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins, privateIntro, focusIntent, addressKeys, closeKeys };
 })();

@@ -341,7 +341,9 @@ test('switching tab in this window closes an edit bar, keeping its page; a switc
 // are faked; every switch, focus and activation lands in one log, in order.
 // known: the spaces Vivaldi's list holds (Task 9a: a tab in a space not listed was deleted); null: the list can't be read.
 // knownLater: what the list says from its second read on (a space deleted between the listing and the switch).
-async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true, minimised = null, known = [1, 2], knownLater, via = 'pickTab', moveTo, raceAt, closeBefore } = {}) {
+// typed: the text that finds tab 20, whose row is then clicked (the list with nothing typed holds only the space on screen
+// here, Byron 2026-11-15, so a tab of another space or window is reached by typing); '' leaves the field empty and presses Enter.
+async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwitch = true, minimised = null, known = [1, 2], knownLater, via = 'pickTab', moveTo, raceAt, closeBefore, typed = '20.test' } = {}) {
   const space = await editUrl(tabs);
   const log = [];
   space.context.window.__vm.native = {
@@ -372,13 +374,23 @@ async function pickTab(tabs, { shown = 1, all = [[1, 1]], record = true, hasSwit
     await space.context.window.__vm.restoreTab(tabs[20]);
     return { ...space, log };
   }
-  space.inputs[0].value = '';
+  space.inputs[0].value = typed;
   await space.inputs[0].events.input();
+  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+  const row = typed ? tabRows(space.made).find((r) => r.label === 'https://20.test/') : null;
+  if (typed) assert.ok(row, `typing ${typed} lists tab 20: ${JSON.stringify(tabRows(space.made).map((r) => r.label))}`);
   if (moveTo !== undefined) Object.assign(tabs[20], page(20, moveTo)); // the tab changes space after the bar listed it
   if (closeBefore) delete tabs[20]; // the tab closes after the bar listed it
-  await press(space.inputs[0], 'Enter');
+  if (row) { row.node.events.click(); for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve)); }
+  else await press(space.inputs[0], 'Enter');
   return { ...space, log };
 }
+// The bar's rendered rows (the latest list): each row's label, the hint it shows, and its node (its click runs it).
+const tabRows = (made) => {
+  const list = made.filter((node) => node.className === 'vm-cmd-list').at(-1);
+  return (list?.children || []).map((node) => ({ node, label: node.children.find((c) => c.className === 'vm-cmd-title')?.textContent,
+    says: node.children.find((c) => c.className === 'vm-cmd-hint')?.children[0].textContent }));
+};
 test('a tab picked from the bar in a space parked in this window is shown by a switch first, then activated', async () => {
   const { log } = await pickTab({ 10: page(10, 1), 20: page(20, 2) });
   assert.deepEqual(log, [['switch', 1, 2], ['update', 20, { active: true }]]);
@@ -455,9 +467,73 @@ test('a listed tab that closed before the pick runs switches nothing and focuses
   assert.deepEqual(log, []);
 });
 test('with nothing typed, a tab of a deleted space is never offered, even as the only tab', async () => {
-  const { log, inputs } = await pickTab({ 10: page(10, 9), 20: page(20, 9) });
+  const { log, inputs } = await pickTab({ 10: page(10, 9), 20: page(20, 9) }, { typed: '' });
   assert.deepEqual(log, [], 'Enter on the empty list picks nothing');
   assert.ok(inputs.length >= 1);
+});
+// The list with nothing typed (Byron, 2026-11-15): this window's tabs of the space on screen here, most recently used
+// first, without favorites' and pins' tabs, Vivaldi-pinned tabs or the active tab. Window 1 shows space 1 (its active
+// tab, 10, is there) unless `record` says otherwise. bound: the tabs the sidebar has bound to a favorite or pin.
+async function emptyBar(tabs, { known = [1, 2], record = null, bound = [], opener = 'vm-open-command-bar' } = {}) {
+  const space = await spaces(tabs);
+  vm.runInContext(source('08-pins.js'), space.context);
+  space.context.window.__vm.native = { spaceIds: async () => known, hasSwitch: () => false, record: () => record };
+  space.context.window.__vm.boundTabIds = () => new Set(bound);
+  await space.context.events[opener]();
+  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+  return { ...space, rows: () => tabRows(space.made) };
+}
+const listed = (rows) => rows.map((r) => (/^https:\/\/(\d+)\.test\/$/.test(r.label) ? Number(/(\d+)/.exec(r.label)[1]) : r.label));
+const used = (tab, at, extra = {}) => ({ ...tab, lastAccessed: at, ...extra });
+const ext = (space, more) => JSON.stringify({ workspaceId: space, ...more });
+test("with nothing typed the bar lists only this window's tabs of the space on screen, most recently used first", async () => {
+  const { rows } = await emptyBar({
+    10: used(page(10, 1), 900), 11: used(page(11, 1), 100), 12: used(page(12, 1), 300), 13: used(page(13, 1), 200), 14: page(14, 1),
+    15: blank(15, 1), 20: used(page(20, 2), 999), 21: used(page(21, 0), 998), 30: used(page(30, 3, 2), 997), 31: used(page(31, 1, 2), 996),
+  });
+  assert.deepEqual(listed(rows()), [12, 13, 11, 14], 'not 20 or 21 (other spaces), not 30 or 31 (window 2), not the blank 15, not the active 10');
+  assert.ok(rows().every((r) => r.says === 'Switch to Tab'), 'tab rows only: no other section');
+});
+test("with nothing typed, favorites' and pins' tabs and Vivaldi-pinned tabs are left out", async () => {
+  const { rows } = await emptyBar({
+    10: page(10, 1), 11: { ...used(page(11, 1), 500), vivExtData: ext(1, { vivarcPin: '55' }) }, 12: used(page(12, 1), 600, { pinned: true }),
+    13: used(page(13, 1), 700), 14: used(page(14, 1), 100),
+  }, { bound: [13] });
+  assert.deepEqual(listed(rows()), [14], '11 carries a favorite, 12 is pinned, 13 is bound by the sidebar');
+});
+test('with nothing typed the active tab is left out, and the only tab makes an empty list', async () => {
+  assert.deepEqual(listed((await emptyBar({ 10: used(page(10, 1), 900), 11: used(page(11, 1), 100) })).rows()), [11], "Ctrl+T's bar over tab 10");
+  assert.deepEqual(listed((await emptyBar({ 10: page(10, 1) })).rows()), [], 'the space has only the active tab');
+  const edit = await emptyBar({ 10: used(page(10, 1), 900), 11: used(page(11, 1), 100) }, { opener: 'vm-edit-url' });
+  edit.inputs.at(-1).value = '';
+  await edit.inputs.at(-1).events.input();
+  for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(listed(edit.rows()), [11], "Ctrl+L's bar, its address cleared");
+});
+test('with nothing typed every eligible tab is listed (more than ten: the list scrolls), most recent first', async () => {
+  const tabs = { 10: used(page(10, 1), 9999) };
+  for (let id = 11; id <= 40; id++) tabs[id] = used(page(id, 1), id);
+  const { rows } = await emptyBar(tabs);
+  assert.deepEqual(listed(rows()), Array.from({ length: 30 }, (_, i) => 40 - i));
+});
+test('with nothing typed a space not known to exist lists nothing; the default space always can', async () => {
+  assert.deepEqual(listed((await emptyBar({ 10: page(10, 9), 11: used(page(11, 9), 5), 12: used(page(12, 9), 6) })).rows()), [], 'space 9 is not in the list');
+  assert.deepEqual(listed((await emptyBar({ 10: page(10, 1), 11: used(page(11, 1), 5) }, { known: null })).rows()), [], 'the list cannot be read');
+  assert.deepEqual(listed((await emptyBar({ 10: page(10, 0), 11: used(page(11, 0), 5), 12: used(page(12, 1), 6) }, { known: null })).rows()), [11]);
+});
+test("with nothing typed Vivaldi's record says which space is on screen", async () => {
+  const record = { activeIn: (w) => (w === 1 ? 2 : null), all: () => new Map([[2, 1]]) };
+  const { rows } = await emptyBar({ 10: page(10, 1), 11: used(page(11, 1), 9), 20: used(page(20, 2), 1), 21: used(page(21, 2), 2) }, { record });
+  assert.deepEqual(listed(rows()), [21, 20]);
+});
+test('typing still finds the tabs the empty list leaves out', async () => {
+  const bar = await emptyBar({ 10: page(10, 1), 11: { ...page(11, 1), vivExtData: ext(1, { vivarcPin: '55' }) }, 20: page(20, 2) });
+  for (const [text, id] of [['11.test', 11], ['20.test', 20]]) {
+    bar.inputs.at(-1).value = text;
+    await bar.inputs.at(-1).events.input();
+    for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
+    assert.ok(listed(bar.rows().filter((r) => r.says === 'Switch to Tab')).includes(id), `${text}: ${JSON.stringify(listed(bar.rows()))}`);
+  }
 });
 test("without Vivaldi's record or switch a tab picked from the bar is activated as before", async () => {
   assert.deepEqual((await pickTab({ 10: page(10, 1), 20: page(20, 2) }, { record: false })).log, [['update', 20, { active: true }]]);
