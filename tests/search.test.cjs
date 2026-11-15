@@ -839,6 +839,30 @@ test('address-shaped text is never sent to the suggestion service while it is ty
   await settle();
   assert.equal(calls.fetch.length, 1, 'plain words still get suggestions');
 });
+// Final fix round, Codex Important 1: a UNC path (\\server\share\..., spaces and all) is a network address, never a search:
+// it goes to Vivaldi's field unsubmitted, and it is never sent to the suggestion service while it is typed.
+const UNC = [String.raw`\\server\share\private plan.xlsx`, String.raw`\\server\share`, String.raw`\\server`,
+  String.raw`\\nas.local\backups\2026 tax\return.pdf`, String.raw`\\192.168.1.5\c$\Users`, String.raw`\\?\C:\Very long\path`,
+  String.raw`  \\server\share\x y  `, String.raw`\\server/share/mixed slashes`];
+test('a UNC path, with spaces or not, is native and address-shaped, never a search', () => {
+  const { search } = setup();
+  for (const t of UNC) {
+    assert.equal(search.resolve(t).kind, 'native', t);
+    assert.equal(search.addressShaped(t), true, t);
+  }
+  assert.equal(search.resolve(String.raw`a\b words`).kind, 'search', 'a backslash inside words is still words');
+});
+test('a UNC path is never sent to the suggestion service while it is typed', async () => {
+  for (const typed of UNC) {
+    const { context, calls } = setup();
+    const input = await loadBar(context);
+    await settle(5);
+    input.value = typed;
+    await input.events.input();
+    await settle();
+    assert.equal(calls.fetch.length, 0, `${typed} was sent for suggestions: ${JSON.stringify(calls.fetch)}`);
+  }
+});
 test('a bare word is a search first, with its intranet address offered too', () => {
   const { search } = setup();
   assert.deepEqual({ ...search.resolve('intranet') }, { kind: 'search', alt: 'http://intranet/' });
@@ -1208,4 +1232,26 @@ test('in the bar: the live keyboard table decides (f8 rebound to a tab switch is
   assert.equal(context.window.__vm.commandBar.askedNow(), false, 'f8 (a tab switch here) heard after its switch');
   activate(3); shortcut('alt+k');
   assert.equal(context.window.__vm.commandBar.askedNow(), true, "alt+k (the field's command here) after a switch");
+});
+// Final fix round, Codex minor: the wait for the bar after a field request removes its listener on the timeout too, so
+// declined opens never pile up listeners.
+test('the wait for the bar removes its listener whether the bar opens or the wait times out', async () => {
+  const { context } = setup();
+  await loadBar(context);
+  await settle(3);
+  const live = new Map();
+  context.window.addEventListener = (name, fn) => { if (!live.has(name)) live.set(name, new Set()); live.get(name).add(fn); };
+  context.window.removeEventListener = (name, fn) => live.get(name)?.delete(fn);
+  const timers = [];
+  context.setTimeout = (fn) => { timers.push(fn); return timers.length; };
+  context.clearTimeout = () => {};
+  const bar = context.window.__vm.commandBar;
+  for (let i = 0; i < 5; i++) { const p = bar.barOpened(1500); timers.shift()(); await p; }
+  assert.equal(live.get('vm-command-bar')?.size ?? 0, 0, 'listeners left after timed-out waits');
+  const p = bar.barOpened(1500);
+  assert.equal(live.get('vm-command-bar').size, 1);
+  for (const fn of [...live.get('vm-command-bar')]) fn();
+  await p;
+  assert.equal(live.get('vm-command-bar').size, 0, 'listener left after the bar opened');
+  assert.match(source('20-command-bar.js'), /const done = barOpened\(1500\);/, 'the field route waits through barOpened');
 });
