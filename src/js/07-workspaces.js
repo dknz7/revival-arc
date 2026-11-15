@@ -136,6 +136,22 @@
     .filter((t) => t.windowId === here && of(t) === (shown ?? 0) && liveSpace(t, known) && !t.pinned && !bound(t) && !skip.includes(t.id))
     .sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0) || (a.index ?? 0) - (b.index ?? 0))
     .slice(0, max);
+  // The tabs the lists of ordinary tabs leave out (the command bar with nothing typed, the Ctrl+Tab switcher; Byron,
+  // 2026-11-15/16): a Vivaldi-pinned tab, and a favorite's or pin's tab as the sidebar shows them now. That is a tab the
+  // sidebar has bound to one (window.__vm.boundTabIds, 10-sidebar.js), or one whose vivarcPin mark (08-pins.js) names a
+  // favorite or pin the sidebar shows now (window.__vm.pinIds): unpinning the last one leaves its mark on the tab
+  // (08-pins.js clears nothing without pins), and that tab is an ordinary one again. Read when called; what cannot be read
+  // holds nothing. -> (tab) => true for a tab left out.
+  const heldTabs = () => {
+    const read = (fn) => { try { return fn?.() || new Set(); } catch (_) { return new Set(); } };
+    const boundIds = read(window.__vm.boundTabIds), pinIds = read(window.__vm.pinIds), pinOf = window.__vm.pins?.pinOf;
+    return (t) => {
+      if (!t) return false;
+      if (t.pinned || boundIds.has(t.id)) return true;
+      const mark = pinOf?.(t);
+      return mark !== undefined && pinIds.has(mark);
+    };
+  };
   const liveOr0 = (space, known) => (space && Array.isArray(known) && known.includes(space) ? space : 0);
   const tabPick = (tab, shown, shownIn, { known, here, hereShown } = {}) => {
     const space = of(tab);
@@ -911,5 +927,5 @@
     return request;
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, strays, liveSpace, barTabs, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins, privateIntro, focusIntent, addressKeys, closeKeys };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, strays, liveSpace, barTabs, heldTabs, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins, privateIntro, focusIntent, addressKeys, closeKeys };
 })();

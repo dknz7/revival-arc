@@ -511,6 +511,30 @@ test("with nothing typed a tab whose favorite or pin is gone (its mark left behi
   assert.deepEqual(listed((await emptyBar(tabs, { pins: ['56'] })).rows()), [11, 14], 'another pin remains, not 55');
   assert.deepEqual(listed((await emptyBar(tabs, { pins: ['55'] })).rows()), [14], 'while 55 is a pin its tab stays out');
 });
+// The rule for a favorite's or pin's tab lives in one place, workspaces.heldTabs (07-workspaces.js), shared by the empty
+// bar and the Ctrl+Tab switcher (Byron, 2026-11-16): bound by the sidebar, a vivarcPin mark naming a favorite or pin the
+// sidebar shows now, or Vivaldi-pinned. It reads the sidebar when asked, and nothing readable means nothing is held.
+test("a favorite's or pin's tab is told in one place (workspaces.heldTabs), read when asked", () => {
+  const context = vm.createContext({ console: { log() {}, warn() {} }, URL, window: { __vm: {} } });
+  vm.runInContext(source('07-workspaces.js'), context);
+  vm.runInContext(source('08-pins.js'), context);
+  const { heldTabs } = context.window.__vm.workspaces;
+  const tabs = [page(11, 1), { ...page(12, 1), vivExtData: ext(1, { vivarcPin: '55' }) }, { ...page(13, 1), vivExtData: ext(1, { vivarcPin: '56' }) },
+    { ...page(14, 1), pinned: true }, page(15, 1)];
+  const held = () => { const h = heldTabs(); return tabs.filter((t) => h(t)).map((t) => t.id); };
+  assert.deepEqual(held(), [14], 'no sidebar to read: only the Vivaldi-pinned tab');
+  context.window.__vm.boundTabIds = () => new Set([11]);
+  context.window.__vm.pinIds = () => new Set(['55']);
+  assert.deepEqual(held(), [11, 12, 14], '11 bound, 12 marked for pin 55 (shown), not 13 (its pin 56 is gone)');
+  context.window.__vm.boundTabIds = () => { throw new Error('not ready'); };
+  assert.deepEqual(held(), [12, 14], 'an unreadable binding binds nothing');
+});
+test("the empty bar and the switcher have no copy of the favorites' and pins' rule", () => {
+  for (const name of ['20-command-bar.js', '25-tab-switcher.js']) {
+    assert.match(source(name), /workspaces\??\.heldTabs/, name);
+    assert.doesNotMatch(source(name), /boundTabIds|pinIds|pinOf/, name);
+  }
+});
 test('with nothing typed the active tab is left out, and the only tab makes an empty list', async () => {
   assert.deepEqual(listed((await emptyBar({ 10: used(page(10, 1), 900), 11: used(page(11, 1), 100) })).rows()), [11], "Ctrl+T's bar over tab 10");
   assert.deepEqual(listed((await emptyBar({ 10: page(10, 1) })).rows()), [], 'the space has only the active tab');

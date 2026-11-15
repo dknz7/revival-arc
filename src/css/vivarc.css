@@ -855,7 +855,8 @@
   border: 1px solid color-mix(in srgb, var(--vm-text) 10%, transparent);
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.6);
 }
-#browser.vm-on #vm-switch .vm-sw-strip { display: flex; gap: 4px; }
+/* Up to ten cards: wider than the window, the row scrolls sideways (the selected card is kept in view). */
+#browser.vm-on #vm-switch .vm-sw-strip { display: flex; gap: 4px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: thin; }
 #browser.vm-on #vm-switch .vm-sw-card { flex: none; width: 168px; padding: 8px; border-radius: 12px; cursor: pointer; }
 #browser.vm-on #vm-switch .vm-sw-card.sel { background: var(--vm-sel); }
 #browser.vm-on #vm-switch .vm-sw-thumb {

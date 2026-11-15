@@ -45,9 +45,10 @@ class Order(unittest.TestCase):
         self.assertEqual(self.order(tabs, space=0), [1, 3])
         self.assertEqual(self.order(tabs, space=None), [1, 3])
 
-    def test_at_most_five(self):
-        tabs = [tab(i, accessed=i) for i in range(1, 9)]
-        self.assertEqual(self.order(tabs), [8, 7, 6, 5, 4])
+    def test_at_most_ten(self):
+        tabs = [tab(i, accessed=i) for i in range(1, 14)]
+        self.assertEqual(self.order(tabs), [13, 12, 11, 10, 9, 8, 7, 6, 5, 4])
+        self.assertEqual(js("window.__vm.switcher.SHOWN"), 10)
 
     def test_skipped_tabs_are_left_out_but_never_the_one_on_screen(self):
         tabs = [tab(1, accessed=1, active=True), tab(2, accessed=9), tab(3, accessed=5)]
@@ -56,6 +57,71 @@ class Order(unittest.TestCase):
     def test_a_tab_never_used_sorts_last(self):
         tabs = [tab(1, active=True), {**tab(2), "lastAccessed": None}, tab(3, accessed=5)]
         self.assertEqual(self.order(tabs), [1, 3, 2])
+
+
+# The tabs the row lists (Byron, 2026-11-16): the same as the command bar's list with nothing typed (workspaces.heldTabs,
+# 07-workspaces.js, with the sidebar's favorites and pins as 08-pins.js and 10-sidebar.js give them), except the tab on
+# screen, which is always the first card. bound: the tabs the sidebar has bound to a favorite or pin; pins: the ids of the
+# favorites and pins it shows now.
+LISTED = r'''
+const fs = require("fs"), vm = require("vm"), path = require("path");
+const sc = JSON.parse(process.argv[2]);
+global.window = { __vm: {} };
+for (const f of ["07-workspaces.js", "08-pins.js", "25-tab-switcher.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], f), "utf8"));
+window.__vm.boundTabIds = () => new Set(sc.bound);
+window.__vm.pinIds = () => new Set(sc.pins);
+process.stdout.write(JSON.stringify(window.__vm.switcher.listed(sc.tabs, { windowId: sc.windowId, space: sc.space }).map((t) => t.id)) + "\n");
+'''
+
+
+def marked(t, pin):
+    return {**t, "vivExtData": json.dumps({**json.loads(t["vivExtData"]), "vivarcPin": pin})}
+
+
+def listed(tabs, window=1, space=0, bound=(), pins=("55",)):
+    out = subprocess.run(["node", "-e", LISTED, JS, json.dumps({"tabs": tabs, "windowId": window, "space": space, "bound": list(bound), "pins": list(pins)})],
+                         check=True, capture_output=True, text=True)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the tab switcher's JavaScript")
+class Listed(unittest.TestCase):
+    def test_favorites_pins_and_pinned_tabs_are_left_out(self):
+        tabs = [tab(1, accessed=10, active=True), marked(tab(2, accessed=90), "55"), {**tab(3, accessed=80), "pinned": True},
+                tab(4, accessed=70), tab(5, accessed=20), tab(6, accessed=30)]
+        self.assertEqual(listed(tabs, bound=[4]), [1, 6, 5], "2 carries pin 55, 3 is Vivaldi-pinned, 4 is bound by the sidebar")
+
+    def test_the_tab_on_screen_is_the_first_card_even_as_a_favorite(self):
+        tabs = [marked(tab(1, accessed=10, active=True), "55"), tab(2, accessed=50), tab(3, accessed=40)]
+        self.assertEqual(listed(tabs), [1, 2, 3])
+        self.assertEqual(listed([{**tab(1, active=True), "pinned": True}, tab(2, accessed=5)]), [1, 2])
+        self.assertEqual(listed([tab(1, active=True), tab(2, accessed=5)], bound=[1]), [1, 2])
+
+    def test_a_mark_left_by_an_unpinned_pin_is_an_ordinary_tab(self):
+        tabs = [tab(1, active=True), marked(tab(2, accessed=50), "55"), tab(3, accessed=40)]
+        self.assertEqual(listed(tabs, pins=[]), [1, 2, 3])
+        self.assertEqual(listed(tabs, pins=["55"]), [1, 3])
+
+    def test_six_favorites_never_crowd_out_the_ordinary_tabs(self):
+        # Byron's report: the row was five cards, all favorites
+        favs = [marked(tab(i, accessed=100 + i), "55") for i in range(2, 8)]
+        plain = [tab(i, accessed=i) for i in range(10, 25)]
+        self.assertEqual(listed([tab(1, active=True)] + favs + plain), [1] + list(range(24, 15, -1)))
+
+    def test_blank_tabs_other_spaces_and_windows_stay_out(self):
+        tabs = [tab(1, space=11, active=True), tab(2, space=11, accessed=9, url="vivaldi://newtab"), tab(3, space=12, accessed=8),
+                tab(4, window=2, space=11, accessed=7), tab(5, space=11, accessed=6)]
+        self.assertEqual(listed(tabs, space=11), [1, 5])
+
+
+class RowScrolls(unittest.TestCase):
+    """Ten cards can be wider than the window: the row scrolls sideways and keeps the selected card in view."""
+
+    def test_the_selected_card_is_scrolled_into_view_and_the_row_scrolls(self):
+        with open(os.path.join(JS, "25-tab-switcher.js"), encoding="utf-8") as f:
+            self.assertTrue('scrollIntoView({ block: "nearest", inline: "nearest" })' in f.read(), "the selected card is scrolled into view")
+        with open(os.path.join(JS, "..", "css", "vivarc.css"), encoding="utf-8") as f:
+            self.assertRegex(f.read(), r"#vm-switch \.vm-sw-strip \{[^}]*overflow-x: auto")
 
 
 @unittest.skipUnless(shutil.which("node"), "node is needed to test the tab switcher's JavaScript")
