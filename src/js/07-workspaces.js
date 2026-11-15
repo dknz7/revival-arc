@@ -811,6 +811,18 @@
     return (key) => !explicitSwitch.has(key) && (focus.has(key) || !switching.has(key));
   };
 
+  // The keys that close a tab or a window (from Vivaldi's table, else its defaults): such a key is never a choice of
+  // something else to show (18-empty-space.js: the close's own key reaching the shortcut hook after the close).
+  // -> a Set of normalised keys.
+  const closeKeys = (table, normalise = (k) => k) => {
+    const live = table && typeof table === "object" ? table : {};
+    const out = new Set();
+    for (const name of ["COMMAND_CLOSE_TAB", "COMMAND_CLOSE_WINDOW"]) {
+      for (const k of (Array.isArray(live[name]?.shortcuts) ? live[name].shortcuts : DEFAULT_KEYS[name] || [])) out.add(normalise(k));
+    }
+    return out;
+  };
+
   // Whether the address field shows the tab's own address and nothing typed. Vivaldi writes the address without a lone
   // trailing slash and an internal page as vivaldi:settings (measured on 8.2); anything else counts as typed.
   const showsPage = (value, tab) => {
@@ -891,5 +903,5 @@
     return request;
   };
 
-  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins, privateIntro, focusIntent, addressKeys };
+  window.__vm.workspaces = { siteRequest, REQUEST_LABEL, START_URL, START_KEY, startTitle, isBlankUrl, isBlank, startWanted, startTyped, inStartFamily, returnFocus, showsPage, RETURN_FOCUS_MS, of, tabsIn, activeId, scope, items, recentTab, livesIn, shownIn, dotsFor, tileAction, pinAction, tabPick, deadSpace, pickBound, restamp, tornData, DRAG_TYPE, DRAG_PASS, crossDrop, acrossIndex, acrossZone, tearOff, leaderOf, repairPlan, HEAL_MAX, healGate, healStepOk, spaceList, strays, liveSpace, restorePlan, isPeekTab, peekIds, withoutPeekClosed, peekSession, PEEK_MARK, besideSource, wantsNewWindow, tileHint, topIndex, label, assign, findRemover, findCreator, findSwitcher, findRecord, findMover, moveTargets, openTabGroups, muteAllLabel, audioState, muteTabLabel, closedTabs, closedWindows, closedWindowLabel, closeAllLabel, removalScope, removalLabel, eventWindow, CREATE_HINT, CLEAN_IDLE_MS, CLEAN_KEEP_MS, CLEAN_KEEP_MAX, CLEAN_EVERY_MS, cleanupSet, cleanupLeader, confirmedEntries, sameEntry, cleanedEntry, keepCleaned, cleanupDue, cleanedAgo, cleanedHome, leaves, findSpaces, favoriteLinks, sidebarPins, privateIntro, focusIntent, addressKeys, closeKeys };
 })();

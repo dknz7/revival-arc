@@ -691,15 +691,19 @@ class EmptySpaceRuntime(unittest.TestCase):
             script = self.CLOSE_X1 + "setTimeout(() => { " + later + " }, 80);"
             self.assertEqual(self.stayed(keeper(script, **self.state())), [], later)
 
-    def test_the_record_moving_to_a_third_space_during_the_wait_cancels(self):
-        # a switch the window saw no input for (another window's gesture, a command): the record names another space now
-        script = self.CLOSE_X1 + "setTimeout(() => { S.rec = 103; }, 80);"
-        self.assertEqual(self.stayed(keeper(script, **self.state(known=[X, Y, Z]))), [])
+    def test_the_record_moving_with_no_gesture_still_switches_back(self):
+        # Vivaldi moving the window's record during the wait (to the space of the tab Chromium put on screen, or default) is
+        # not the user's choice: the recovery goes on, as the "switch" plan is meant to (final fix round review, I2)
+        for to in (0, 103):
+            script = self.CLOSE_X1 + "setTimeout(() => { S.rec = " + str(to) + "; }, 80);"
+            calls = keeper(script, **self.state(known=[X, Y, Z], switchMakesTab=True, tailMs=900))
+            self.assertIn(["switch", 7, X], calls, f"record to {to}")
+            self.assertIn(["bar", 901, 7], calls, f"record to {to}")
 
     def test_the_close_itself_and_other_windows_or_held_keys_do_not_cancel(self):
         # the close's own Ctrl+W shortcut arriving just after onRemoved; another window's shortcut; a held key repeating; a
         # bare modifier; an untrusted (scripted) press
-        for later, at in [("shortcut(7, 'ctrl+w');", 5), ("shortcut(8);", 80), ('press("keydown", { repeat: true });', 80),
+        for later, at in [("shortcut(7, 'ctrl+w');", 5), ("shortcut(7, 'ctrl+w');", 120), ("shortcut(7, 'ctrl+f4');", 120), ("shortcut(8);", 80), ('press("keydown", { repeat: true });', 80),
                           ('press("keydown", { key: "Control" });', 80), ('press("pointerdown", { isTrusted: false });', 80)]:
             script = self.CLOSE_X1 + "setTimeout(() => { " + later + " }, " + str(at) + ");"
             calls = keeper(script, **self.state())

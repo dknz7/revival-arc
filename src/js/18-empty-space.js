@@ -11,13 +11,14 @@
 // (tear-off, a drop into another window, chrome.tabs.move: onDetached, still repair 1), a blank tab closing (the bar's own
 // Escape), and anything under another gesture's busy mark (deleting a space, moving one). A newer gesture of the user's
 // in this window while it waits (a click, a key, one of Vivaldi's shortcuts pressed here: picking another space or tab)
-// cancels it, and so does Vivaldi's record naming a third space after the wait; it is looked at again before the switch
-// and before the bar opens, so it never undoes what the user picked (final review, Codex Important 4).
+// cancels it; it is looked at again before the switch and before the bar opens, so it never undoes what the user picked
+// (final review, Codex Important 4). Vivaldi moving the window's record by itself meanwhile is no gesture: the recovery
+// goes on, as its "switch" plan is meant to. The close's own key (a close-tab or close-window binding) never counts.
 (() => {
   const ws = () => window.__vm.workspaces;
   const NONE = { kind: "none" };
   const SETTLE_MS = 150; // Vivaldi's own close (Ctrl+W) may make the space's start page itself: looked at again after this
-  const GRACE_MS = 60; // input this soon after the close is the close's own (its Ctrl+W reaching the shortcut hook late)
+  const GRACE_MS = 60; // input this soon after the close is the close's own (a press that closed it, arriving late)
   const MODIFIERS = new Set(["Control", "Shift", "Alt", "Meta", "AltGraph", "OS"]);
 
   // Pure. closed: { space, page } of this window's tab that was on screen (page: not a blank tab); now: the space Vivaldi's
@@ -78,8 +79,16 @@
     document.addEventListener?.("pointerdown", (e) => { if (e.isTrusted) gestured(); }, true);
     document.addEventListener?.("keydown", (e) => { if (e.isTrusted && !e.repeat && !MODIFIERS.has(e.key)) gestured(); }, true);
     // a key Vivaldi takes as a shortcut while the page has the cursor never reaches this document: its shortcut hook does,
-    // naming the window it was pressed in (12-sidebar-hide.js pressedHere)
-    window.__vm.onShortcut?.((_key, _combo, pressedIn) => {
+    // naming the window it was pressed in (12-sidebar-hide.js pressedHere). The keys that close a tab or a window are the
+    // close itself, however late the hook hears them (Vivaldi's table, read live, else its defaults).
+    const normalise = window.__vm.normalise || ((k) => k);
+    let closing = ws().closeKeys?.(null, normalise) ?? new Set();
+    const readClose = () => Promise.resolve(globalThis.vivaldi?.prefs?.get?.("vivaldi.actions"))
+      .then((pref) => { const t = pref?.value; closing = ws().closeKeys?.(Array.isArray(t) ? t[0] : null, normalise) ?? closing; }, () => {});
+    readClose();
+    try { globalThis.vivaldi?.prefs?.onChanged?.addListener((change) => { if ((typeof change === "string" ? change : change?.path) === "vivaldi.actions") readClose(); }); } catch (_) {}
+    window.__vm.onShortcut?.((key, _combo, pressedIn) => {
+      if (closing.has(key)) return;
       if (window.__vm.sidebarHide?.pressedHere ? window.__vm.sidebarHide.pressedHere(pressedIn, window.vivaldiWindowId, document.hasFocus?.()) : pressedIn === window.vivaldiWindowId) gestured();
     });
     const react = async (closed) => {
@@ -93,11 +102,7 @@
       try {
         await new Promise((resolve) => setTimeout(resolve, SETTLE_MS));
         const second = await snapshot();
-        // the record naming a third space now (neither the closed one nor the one it named before): someone switched
-        if (!ours() || (second.now != null && second.now !== (closed.space || 0) && second.now !== first.now)) {
-          console.log(`[vivarc] empty space: window ${me} stands down (a newer gesture)`);
-          return;
-        }
+        if (!ours()) { console.log(`[vivarc] empty space: window ${me} stands down (a newer gesture)`); return; }
         const plan = decide({ closed, ...second });
         const native = window.__vm.native;
         let tabId = null;
