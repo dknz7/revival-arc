@@ -355,10 +355,10 @@
     const ids = [...new Set((tabs || []).map(of))].filter((id) => id && !known.has(id)).sort((a, b) => a - b);
     return { ids, list: reads[0], why: null };
   };
-  // Just before one heal step: the tab as it is now, the lists as they are now, the deleted-spaces store as it is now.
-  // The step goes ahead only if the tab is still where it was planned (same window), still on the planned dead id, the
-  // fresh pref and store lists are valid and equal to the list the heal was approved on (so the id is still absent:
-  // nobody re-created it), and the id is not in the deleted-spaces store. -> null (go ahead) or why not.
+  // Just before one heal step: the tab as it is now and the lists as they are now. The step goes ahead only if the tab is
+  // still where it was planned (same window), still on the planned dead id, and the fresh pref and store lists are valid
+  // and equal to the list the heal was approved on (so the id is still absent: nobody re-created it). Heal policy B: the
+  // undelete store holds nothing back. -> null (go ahead) or why not.
   const healStepOk = ({ step, tab, pref, store, list } = {}) => {
     if (!tab) return "the tab is gone";
     if (tab.windowId !== step?.window) return "the tab moved to another window";

@@ -130,8 +130,8 @@
   };
 
   // One heal step: the one place a repair sets a space (Task 9a fix round 2: "it heals the stranded tabs, and nothing
-  // else ever moves"). Everything that has to wait is done first: the mover's version probe, the pref list, the undelete
-  // store, the sandbox's hook. Then the leader's window list and the tab are read together, and from there to the single
+  // else ever moves"). Everything that has to wait is done first: the mover's version probe, the pref list, the sandbox's
+  // hook. Then the leader's window list and the tab are read together, and from there to the single
   // move call nothing is awaited: the gesture mark, leadership, the tab (same window, still on the planned dead id) and
   // Vivaldi's own store list (read synchronously, still the approved list) are checked, and the move is made. No
   // fallback write: if the move does not land the batch stops and the tab stays as it is. After it, the tab must be in its
@@ -234,7 +234,7 @@
   // One run: up to 3 passes, each planned on a fresh snapshot. -> "done" (nothing left to do, or not the leader), "wait"
   // (a gesture's mark: try again shortly), "stuck" (still drifting after 3 passes), or "unavailable" (Vivaldi's record or
   // switch is not there yet, or the heal was refused for a reason that can pass: a list not loaded, unreadable, empty or
-  // changing, the undelete store unreadable), which brings the run back with a growing delay. healLeft: the last plan
+  // changing), which brings the run back with a growing delay. healLeft: the last plan
   // still held a heal step, so a stuck run comes back after its rest.
   let healLeft = false;
   const TEMPORARY = new Set(["a workspace list could not be read", "a workspace list is empty", "the workspace lists disagree or changed"]);
