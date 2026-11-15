@@ -72,7 +72,7 @@
   const LABEL_RE = /^[a-z0-9\u00a1-\uffff](?:[a-z0-9\u00a1-\uffff-]*[a-z0-9\u00a1-\uffff])?$/iu;
   const TLD_RE = /^(?:[a-z]{2,63}|xn--[a-z0-9-]+|[\u00a1-\uffff]{2,})$/iu;
   const DRIVE_PATH = /^[a-z]:[\\/]/i; // C:\Users\x or C:/Users/x: a file on this computer, as Vivaldi's field reads it
-  const UNC_PATH = /^\\\\[^\\/\s]/; // \\server..., \\?\...: a network (or long) path, whatever follows
+  const UNC_PATH = /^(?:\\\\|\/\/)[^\\/\s]/; // \\server..., \\?\..., //server/...: a network (or long) path, whatever follows
   const isIPv4 = (s) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(s) && s.split('.').every((n) => Number(n) <= 255);
   const isIPv6 = (raw) => {
     const [addr, zone, extra] = String(raw).split('%');
@@ -132,10 +132,12 @@
   const resolve = (raw, { editing = null } = {}) => {
     const text = String(raw ?? '').trim();
     if (!text) return null;
-    if (DRIVE_PATH.test(text)) return { kind: 'url', url: `file:///${text.replace(/\\/g, '/')}` };
-    // A UNC path (\\server\share\..., \\?\C:\..., spaces and all): a network address, never a search and never sent to
-    // the suggestion service. Vivaldi's own field reads it, so it goes there unsubmitted.
-    if (UNC_PATH.test(text)) return NATIVE;
+    // A path in quotes (Explorer's "Copy as path") is read as the path inside them.
+    const path0 = /^"([^"]+)"$/.exec(text)?.[1].trim() ?? text;
+    if (DRIVE_PATH.test(path0)) return { kind: 'url', url: `file:///${path0.replace(/\\/g, '/')}` };
+    // A UNC path (\\server\share\..., \\?\C:\..., //server/share, spaces and all): a network address, never a search and
+    // never sent to the suggestion service. Vivaldi's own field reads it, so it goes there unsubmitted.
+    if (UNC_PATH.test(path0)) return NATIVE;
     const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(text)?.[1].toLowerCase() || null;
     if (scheme && SCRIPT_SCHEMES.has(scheme)) return NATIVE;
     if (scheme && (SCHEMES.has(scheme) || scheme.startsWith('web+') || text.slice(scheme.length + 1).startsWith('//'))) {

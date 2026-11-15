@@ -1255,3 +1255,22 @@ test('the wait for the bar removes its listener whether the bar opens or the wai
   assert.equal(live.get('vm-command-bar').size, 0, 'listener left after the bar opened');
   assert.match(source('20-command-bar.js'), /const done = barOpened\(1500\);/, 'the field route waits through barOpened');
 });
+// Review of the final fix round, minor 1: a path in quotes (Explorer's "Copy as path") and a UNC path written with
+// forward slashes are addresses too; "// note" (a slash pair, then a space) stays words.
+test('a quoted path and a //server path are addresses, never a search, and never sent for suggestions', async () => {
+  const { search } = setup();
+  for (const t of [String.raw`"\\server\share\a b.xlsx"`, '//server/share/a b', '//server', String.raw`"//nas/x y"`])
+    assert.equal(search.resolve(t).kind, 'native', t);
+  const r = search.resolve(String.raw`"C:\Users\x y.txt"`);
+  assert.equal(r.kind === 'url' ? r.url : r.kind, 'file:///C:/Users/x y.txt');
+  for (const t of ['// note to self', '"quoted words"']) assert.equal(search.resolve(t).kind, 'search', t);
+  for (const typed of [String.raw`"\\server\share\a b.xlsx"`, '//server/share/a b']) {
+    const { context, calls } = setup();
+    const input = await loadBar(context);
+    await settle(5);
+    input.value = typed;
+    await input.events.input();
+    await settle();
+    assert.equal(calls.fetch.length, 0, `${typed} was sent for suggestions`);
+  }
+});
