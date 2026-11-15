@@ -84,7 +84,10 @@ const ev = { addListener() {} };
 global.setTimeout = () => 0;
 global.console = { log: (m) => logs.push(m), warn: (m) => logs.push(m) };
 const bg = { ...(sc.bg || {}) }, order = [];
-global.chrome = { extension: { inIncognitoContext: sc.incognito, getBackgroundPage: () => new Proxy(bg, { set: (o, k, v) => { order.push("bg:" + String(k)); o[k] = v; return true; } }) },
+// sc.noBg: no background page; sc.session: a chrome.storage.session (an object of what it holds)
+const session = sc.session ? { ...sc.session } : null;
+global.chrome = { extension: { inIncognitoContext: sc.incognito, getBackgroundPage: () => (sc.noBg ? null : new Proxy(bg, { set: (o, k, v) => { order.push("bg:" + String(k)); o[k] = v; return true; } })) },
+  ...(session ? { storage: { session: { get: async (k) => ({ [k]: session[k] }), set: async (o) => Object.assign(session, o) } } } : {}),
   windows: { getCurrent: async () => ({ id: 1, type: "normal" }), getAll: async () => [{ id: sc.leader ? 1 : 0, type: "normal" }, { id: 1, type: "normal" }] },
   tabs: { query: async () => [], update: async () => ({}), onCreated: ev, onUpdated: ev } };
 global.vivaldi = { prefs: { get: async (path) => ({ value: JSON.parse(JSON.stringify(prefs[path] ?? null)) }), set: async ({ path, value }) => { sets.push(path); order.push("set:" + path); prefs[path] = value; } } };
@@ -97,7 +100,7 @@ vm.runInThisContext(fs.readFileSync(require("path").join(process.argv[1], "05-bo
 (async () => {
   for (let i = 0; i < 80; i++) await new Promise((r) => setImmediate(r));
   const ready = await Promise.race([window.__vm.bootstrap.keysReady.then(() => true), new Promise((r) => setImmediate(() => r(false)))]);
-  process.stdout.write(JSON.stringify({ sets, stored: Object.fromEntries(stored), table: prefs["vivaldi.actions"][0], logs, bg, order, ready,
+  process.stdout.write(JSON.stringify({ sets, stored: Object.fromEntries(stored), table: prefs["vivaldi.actions"][0], logs, bg, order, ready, session,
     freedThisRun: await window.__vm.bootstrap.freedThisRun() }) + "\n");
 })();
 '''
@@ -105,9 +108,9 @@ VIVALDI = {"COMMAND_TAB_SWITCH_FORWARD_SETTING": {"shortcuts": ["ctrl+tab"]}, "C
            "COMMAND_SAVE_PAGE": {"shortcuts": ["meta+s"]}, "COMMAND_PAGE_BACK": {"shortcuts": ["alt+left"]}}
 
 
-def setup_run(table=VIVALDI, incognito=False, leader=True, stored=None, prefs=None, bg=None, dia=None):
+def setup_run(table=VIVALDI, incognito=False, leader=True, stored=None, prefs=None, bg=None, dia=None, noBg=False, session=None):
     out = subprocess.run(["node", "-e", SETUP, JS, json.dumps({"table": table, "incognito": incognito, "leader": leader, "stored": stored or {},
-                                                                 "prefs": prefs or {}, "bg": bg or {}, "dia": dia})],
+                                                                 "prefs": prefs or {}, "bg": bg or {}, "dia": dia, "noBg": noBg, "session": session})],
                          check=True, capture_output=True, text=True)
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -258,6 +261,24 @@ class SetupFlags(unittest.TestCase):
         self.assertNotIn("vivaldi.actions", out["sets"])
         self.assertNotIn("vivaldi.address_bar.visible", out["sets"])
         self.assertTrue(any("gave up" in str(m) for m in out["logs"]), out["logs"])
+
+    def test_without_a_background_page_the_run_lives_in_the_session_store(self):
+        out = setup_run(noBg=True, session={})
+        run = out["session"]["__vivarcSetupRun"]
+        self.assertTrue(run)
+        self.assertEqual(out["stored"]["tabKeysFreed"], {"pending": True, "run": run, "tries": 0})
+        # and a pending flag from that same session is left alone
+        same = setup_run(table=FREED, noBg=True, session={"__vivarcSetupRun": "s1"}, prefs=SHOWN,
+                         stored={k: {**v, "run": "s1"} for k, v in OLD_RUN.items()})
+        self.assertNotIn("vivaldi.actions", same["sets"])
+        self.assertEqual(same["stored"]["tabKeysFreed"], {"pending": True, "run": "s1"})
+
+    def test_with_no_way_to_tell_runs_apart_a_step_is_done_at_once_as_before(self):
+        out = setup_run(noBg=True)
+        self.assertEqual(out["stored"]["tabKeysFreed"], True)
+        self.assertEqual(out["stored"]["sidebarKeyFreed"], True)
+        self.assertEqual(out["stored"]["extensionsDropdown"], True)
+        self.assertEqual(out["stored"]["bootstrap"], 16)
 
     def test_a_private_window_promotes_nothing(self):
         out = setup_run(table=FREED, stored=dict(OLD_RUN), prefs=SHOWN, incognito=True)
