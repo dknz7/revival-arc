@@ -1649,7 +1649,7 @@ ntCase("N.chevron-and-menu", {
     const closed = !(await hasEl(ctx.W, ".vm-menu"));
     return { idle, hovered, geo, open, labels, bar, cleanedFly, closed };
   },
-  expect: (s, b, r) => [!r?.open ? "the menu did not open" : null, r.idle !== 0 ? `the chevron shows without hover (opacity ${r.idle})` : null, r.hovered !== 1 ? `the chevron is not shown on hover (opacity ${r.hovered})` : null,
+  expect: (s, b, r) => [!r?.open ? "the menu did not open" : null, r.idle !== 0.75 ? `the chevron at rest has opacity ${r.idle}, want 0.75 (9c1: always there, brighter on hover)` : null, r.hovered !== 1 ? `the chevron is not shown on hover (opacity ${r.hovered})` : null,
     r.geo.chevRight > r.geo.rowRight || r.geo.chevRight < r.geo.rowRight - 12 ? `the chevron is not at the row's right edge (${J(r.geo)})` : null,
     Math.abs(r.geo.titleMid - r.geo.rowMid) > 2 ? `the + New Tab label is not centred (${J(r.geo)})` : null,
     J(r.labels.map((l) => l.replace(" (disabled)", ""))) === J(NT_LABELS) ? null : `menu rows ${J(r.labels)}`,
@@ -4023,9 +4023,11 @@ def("UD.old-window-gone", {
 // show up in W's default space within the heal's timing (no hidden tab, no window ever on Y's id), each tagged
 // healedFrom Y. Then Y is undeleted: those two are taken back (not opened twice), the other two come from Recently
 // Closed, all four in Y in order, and the tags are cleared.
-const tagOf = (label) => h.ev(`chrome.tabs.query({ windowType: "normal" }).then((ts) => { const t = ts.find((x) => (x.title || "") === ${J(label)}); return t ? (JSON.parse(t.vivExtData || "{}").healedFrom ?? null) : "gone"; })`, ctx.H);
 def("UD.reopened-heals-then-undelete", {
-  busyThroughAct: true, setup: async () => { await SET_UD(); await rawRestore(2); await sleep(800); await busy(); },
+  // which two come back is Recently Closed's order after a 4-tab delete (not fixed): recorded in the setup
+  busyThroughAct: true, setup: async () => { await SET_UD(); await rawRestore(2); await sleep(800); await busy();
+    await waitFor(async () => (deadIn(await h.snap(ctx.H)).length === 2 ? 1 : null), 6000, 300);
+    ctx.reopened = deadIn(await h.snap(ctx.H)).map((t) => t.id); if (ctx.reopened.length !== 2) throw new Error(`setup: ${ctx.reopened.length} reopened tabs on Y, want 2`); },
   act: async () => {
     await h.ev(LOGS, ctx.H);
     watchRecord();
@@ -4034,15 +4036,16 @@ def("UD.reopened-heals-then-undelete", {
     const healed = await waitFor(async () => (deadIn(await h.snap(ctx.H)).length ? null : "yes"), 12000, 250);
     const ms = Date.now() - t0;
     const s1 = await h.snap(ctx.H);
-    const back = tabsOf(s1).filter((t) => /^DY[34]$/.test(labelOf(t))).map((t) => `${labelOf(t)}@${roleOf(t.win)}/${spaceName(t.space)}`).sort();
-    const tags = [await tagOf("DY3"), await tagOf("DY4")];
+    const back = tabsOf(s1).filter((t) => ctx.reopened.includes(t.id)).map((t) => `${roleOf(t.win)}/${spaceName(t.space)}`);
+    const tagById = (id) => h.ev(`chrome.tabs.get(${id}).then((t) => JSON.parse(t.vivExtData || "{}").healedFrom ?? null, () => "gone")`, ctx.H);
+    const tags = [await tagById(ctx.reopened[0]), await tagById(ctx.reopened[1])];
     const r = await pickFrom(ctx.W, "Recently Deleted Spaces", "Y");
     if (r !== "ok") return { error: r };
     await sleep(2500);
-    return { done: "ok", healed: healed === "yes", ms, back, tags, after: [await tagOf("DY3"), await tagOf("DY4")] };
+    return { done: "ok", healed: healed === "yes", ms, back, tags, after: [await tagById(ctx.reopened[0]), await tagById(ctx.reopened[1])] };
   },
   expect: async (s, b, r) => [r.error ?? null, await recordStayedLive(), r.healed ? null : "the reopened tabs were not healed within 12 s",
-    J(r.back) === J(["DY3@W/default", "DY4@W/default"]) ? null : `healed tabs ${J(r.back)}, want DY3 and DY4 in W's default space`,
+    J(r.back) === J(["W/default", "W/default"]) ? null : `the two reopened tabs are ${J(r.back)}, want both in W's default space`,
     J(r.tags) === J([sp("Y"), sp("Y")]) ? null : `healedFrom tags ${J(r.tags)}, want Y on both`,
     J(r.after) === J([null, null]) ? null : `after the undelete the tags are ${J(r.after)}, want none`,
     ...(await undeleted(s, ctx.W))],
@@ -4124,13 +4127,15 @@ def("PRIV.no-space-edits", {
       if (!(await waitTile(pid, "Y"))) return { error: "no Y tile in the private window" };
       const before = (await prefList()).map((w) => w.id);
       await h.ev(`(() => { const p = ${pillOf("Y")}; const b = p.getBoundingClientRect(); p.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: b.left + 4, clientY: b.top + 4 })); return 1; })()`, pid);
-      await sleep(600);
+      // Vivarc's messages are .vm-toast notes since 9b (30-toast.js over 17-notify.js); #vm-copied is gone
+      const toast1 = await toastIn(pid);
       const menu = await h.ev(`[...document.querySelectorAll(".vm-menu .vm-menu-item")].map((m) => m.textContent)`, pid);
-      const toast1 = await h.ev(`document.querySelector("#vm-copied")?.textContent || null`, pid);
+      // the first message must be gone before the + click, so the second read is the click's own
+      await waitFor(async () => ((await h.ev(`document.querySelector(".vm-toast")?.textContent || null`, pid)) ? null : "gone"), 6000, 100);
       await h.ev(`(document.querySelector("#vm-panel .vm-space-plus")?.click(), 1)`, pid);
-      await sleep(1500);
+      const toast2 = await toastIn(pid);
+      await sleep(1200);
       const after = (await prefList()).map((w) => w.id);
-      const toast2 = await h.ev(`document.querySelector("#vm-copied")?.textContent || null`, pid);
       let row = null;
       if (await openDropdown(pid)) row = (await rowsOf(pid, NT_MENU + " > div")).find((l) => l.startsWith("Recently Deleted Spaces")) ?? "missing";
       await escapeAll(pid);
