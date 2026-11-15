@@ -13,7 +13,7 @@
   let icons = {};
   const saveOpen = () => store.set("open", [...openFolders]);
   const state = { space: null, defaultSpace: null, folders: [], favs: null, pinned: null, trash: null, tabs: [], allTabs: [], bound: new Map(),
-    profiles: [], renameId: null, workspaces: [], active: 0 };
+    profiles: [], renameId: null, renameSpace: null, workspaces: [], active: 0 };
   const spacesOf = window.__vm.workspaces;
   let panel = null;
 
@@ -1432,8 +1432,105 @@
       hideSpaceTooltip();
       actOnTile(item, event);
     });
-    if (item.id) pill.addEventListener("contextmenu", (e) => { hideSpaceTooltip(); confirmDeleteSpace(item, e); });
+    if (item.id) pill.addEventListener("contextmenu", (e) => { hideSpaceTooltip(); spaceMenu(item, e); });
+    if (item.id && state.renameSpace === item.id) {
+      state.renameSpace = null;
+      setTimeout(() => renameSpaceTile(pill, item), 0);
+    }
     return pill;
+  };
+
+  // ---- editing a space (Task 9c; upstream KASOGIT/vivarc#126, by gulin-desigenr): the tile's right-click menu ----
+  // Vivaldi's own manager does the work (08-space-edit.js); its store writes the workspace pref, which this sidebar reads.
+  const editOf = () => window.__vm.spaceEdit ?? null;
+  const editFailed = (what) => (error) => { console.warn(`[vivarc] ${what}:`, error); say(`Could not ${what}`); };
+  const spaceIds = () => (state.workspaces || []).map((w) => w.id);
+  // A changed list shows once Vivaldi has written it to the pref: the sidebar then reads it again.
+  const afterEdit = () => setTimeout(() => refresh(true), 150);
+  // A private window shares the profile's spaces but not its store or its tabs (08-space-edit.js normalOnly): no edits,
+  // deletes or undeletes from there, only a short note pointing to a normal window (review 9c, critical 1).
+  const privateHere = () => !!editOf()?.isPrivate?.() || !!chrome.extension?.inIncognitoContext;
+  const notHere = () => say(editOf()?.PRIVATE ?? "Edit, delete and bring back spaces from a normal window");
+  const spaceMenu = (item, event) => {
+    if (privateHere()) { event.preventDefault(); event.stopPropagation(); notHere(); return; }
+    const at = { clientX: event.clientX, clientY: event.clientY, preventDefault() {}, stopPropagation() {} };
+    const edit = editOf();
+    const ids = spaceIds();
+    const left = edit?.moved(ids, item.id, -1), right = edit?.moved(ids, item.id, 1);
+    const reorder = (next) => () => edit.setOrder(next).then(afterEdit, editFailed("move the space"));
+    showMenu(event, [
+      ...(edit?.manager() ? [
+        { label: "Rename\u2026", action: () => { state.renameSpace = item.id; refresh(false); } },
+        { label: "Change Icon\u2026", action: () => iconPicker(item, at) },
+        { label: "Move Left", disabled: !left, action: reorder(left) },
+        { label: "Move Right", disabled: !right, action: reorder(right) },
+        [],
+      ] : []),
+      { label: "Delete Space\u2026", danger: true, action: () => confirmDeleteSpace(item, at) },
+    ]);
+  };
+  // The name is edited in a field floating over the space bar, as a favorite's is over its grid.
+  const renameSpaceTile = (pill, item) => {
+    const bar = pill.closest(".vm-space-bar");
+    if (!bar || !pill.isConnected) return;
+    const box = bar.getBoundingClientRect();
+    const field = el("input", "vm-rename-float vm-space-rename");
+    field.setAttribute("aria-label", "Space name");
+    field.style.left = `${box.left + 6}px`;
+    field.style.width = `${Math.max(120, box.width - 12)}px`;
+    field.style.top = `${Math.max(8, pill.getBoundingClientRect().top - 40)}px`;
+    (document.querySelector("#browser") || document.body).append(field);
+    editTitle(field, { title: item.name }, () => field.remove(), (title) => renameSpace(item, title));
+  };
+  // Folder first, then the space (08-space-edit.js rename), so its pins stay with it; a name that would take another
+  // space's Pinned folder is refused (renameCheck).
+  const renameSpace = async (item, title) => {
+    const edit = editOf();
+    if (!edit) return;
+    const check = edit.renameCheck({ name: title, id: item.id, list: state.workspaces, folders: state.folders });
+    if (check.why) { say(check.why); return; }
+    if (check.same) return;
+    const folder = spacesOf.assign(state.folders, state.workspaces).byId[item.id] ?? null;
+    await edit.rename(item.id, check.name, folder).catch(editFailed("rename the space"));
+    afterEdit();
+  };
+  // Vivaldi's own 20 workspace icons, or an emoji (an emoji shows instead of the icon; choosing an icon clears it).
+  const iconPicker = (item, at) => {
+    const edit = editOf();
+    if (!edit) return;
+    closeMenu();
+    menu = el("div", "vm-menu vm-icon-picker");
+    menu.dataset.owner = "space-icon";
+    const grid = el("div", "vm-icon-grid");
+    (edit.icons() || []).forEach((svg, index) => {
+      const b = el("button", `vm-icon-choice${!item.emoji && item.icon === svg ? " current" : ""}`);
+      b.type = "button";
+      b.setAttribute("aria-label", `Icon ${index + 1}`);
+      const glyph = el("span", "vm-space-glyph");
+      glyph.style.maskImage = `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+      b.append(glyph);
+      b.addEventListener("click", () => { closeMenu(); edit.setIcon(item.id, index).then(afterEdit, editFailed("change the icon")); });
+      grid.append(b);
+    });
+    const field = el("input", "vm-emoji-field");
+    field.placeholder = "Or type an emoji, then Enter";
+    field.setAttribute("aria-label", "Emoji");
+    field.value = item.emoji || "";
+    field.maxLength = 16;
+    field.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") closeMenu();
+      if (e.key !== "Enter") return;
+      const emoji = Array.from(field.value.trim()).slice(0, 8).join("");
+      closeMenu();
+      if (emoji !== (item.emoji || "")) edit.setEmoji(item.id, emoji).then(afterEdit, editFailed("change the icon"));
+    });
+    menu.append(...(grid.childElementCount ? [grid] : []), field);
+    (document.querySelector("#browser") || document.body).append(menu);
+    const { width, height } = menu.getBoundingClientRect();
+    menu.style.left = `${Math.max(8, Math.min(at.clientX, window.innerWidth - width - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(at.clientY, window.innerHeight - height - 8))}px`;
+    setTimeout(() => field.focus(), 0);
   };
 
   const confirmDeleteSpace = async (item, event) => {
@@ -1446,11 +1543,14 @@
     try {
       const { tabCount, windowCount, closesWindow } = spacesOf.removalScope(tabs, item.id);
       const label = spacesOf.removalLabel(item.name, tabCount, windowCount, closesWindow);
-      showMenu(at, [[label, () => deleteSpace(item), true], ["Cancel", () => {}]]);
+      // It opens where the Delete Space row was clicked: a double-click there must not confirm (guardDanger)
+      guardDanger(showMenu(at, [[label, () => deleteSpace(item), true],
+        ...(editOf() ? [{ label: "Undo from New Tab \u203a Recently Deleted Spaces", disabled: true }] : []), ["Cancel", () => {}]]));
     } catch (_) {}
   };
 
   const deleteSpace = async (item) => {
+    if (privateHere()) { notHere(); return; }
     const remove = spacesOf.findRemover(window.webpackChunkgapp_browser_react) ||
       spacesOf.findRemover(chrome.extension.getBackgroundPage?.()?.webpackChunkgapp_browser_react);
     if (!remove) {
@@ -1471,12 +1571,67 @@
         const there = await chrome.tabs.query({ windowId: shownIn }).catch(() => []);
         if (there.some((t) => spacesOf.of(t) !== item.id)) target = shownIn;
       }
-      await remove(target, item.id);
+      // Undelete (Task 9c): what the space was is stored and read back BEFORE Vivaldi deletes it; a store that does not
+      // take it deletes nothing, since the confirmation said it can be undone.
+      const edit = editOf();
+      let kept = null;
+      if (edit) {
+        try { kept = await edit.remember(item.id); } catch (error) {
+          console.warn("[vivarc] delete space: not kept for undo:", error);
+          say("Could not keep the space for undo, so it was not deleted");
+          return;
+        }
+      }
+      try { await remove(target, item.id); } catch (error) {
+        console.warn("[vivarc] delete space:", error);
+        say("Could not delete the space");
+        // still there: the entry just written would offer to bring back a space that was never deleted
+        const still = (await vivaldi.prefs.get("vivaldi.workspaces.list").catch(() => null))?.value;
+        if (kept && Array.isArray(still) && still.some((w) => w.id === item.id)) await edit.forget(kept).catch((e) => console.warn("[vivarc] delete space: forget the entry:", e));
+        return;
+      }
       // Vivaldi's switch of that window may bring it to the front: the window the delete was asked in keeps the focus
       if (target !== win.id) await chrome.windows.update(win.id, { focused: true }).catch(() => {});
+      if (kept) edit.noteClosed(kept).catch((error) => console.warn("[vivarc] delete space: Recently Closed entries:", error));
+    } catch (error) {
+      console.warn("[vivarc] delete space:", error);
+      say("Could not delete the space");
     } finally { end?.(); refresh(false); }
   };
+  // The New Tab menu's Recently Deleted Spaces: each row the space's name, icon and tab count; a click brings it back.
+  const spaceGlyph = (entry) => {
+    const box = el("span", "vm-ico vm-space-ico");
+    if (entry.emoji) box.textContent = entry.emoji;
+    else if (typeof entry.icon === "string" && entry.icon.trim().startsWith("<svg")) {
+      const glyph = el("span", "vm-space-glyph");
+      glyph.style.maskImage = `url("data:image/svg+xml,${encodeURIComponent(entry.icon)}")`;
+      box.append(glyph);
+    } else box.textContent = Array.from((entry.name || "").trim())[0]?.toLocaleUpperCase() || "?";
+    return box;
+  };
+  const undeleteSpace = async (entry) => {
+    try {
+      await editOf().undelete(entry, myWindow() ?? (await chrome.windows.getCurrent()).id);
+    } catch (error) { console.warn("[vivarc] undelete space:", error); say(`Could not bring back \u201c${entry.name}\u201d`); }
+    finally { refresh(true); }
+  };
+  const deletedSpacesRow = () => (!editOf() ? [] : privateHere() ? [{ label: "Recently Deleted Spaces", note: "normal window", disabled: true }] : [{ label: "Recently Deleted Spaces", flyout: async () => {
+    const now = Date.now();
+    return (await editOf().list()).map((e) => ({ label: e.name || "Space", icon: spaceGlyph(e), note: editOf().deletedNote(e, now), action: () => undeleteSpace(e) }));
+  } }]);
 
+  // + makes a space at once, named and with Vivaldi's default icon, and opens its rename (upstream #126). Without
+  // Vivaldi's manager, its own dialog (or the shortcut's reminder), as before.
+  const createSpaceNow = async () => {
+    if (privateHere()) { notHere(); return; }
+    const edit = editOf();
+    if (!edit?.manager()) return openCreateSpaceDialog();
+    try {
+      const id = await edit.create(edit.newSpaceName(state.workspaces, "New Space", state.folders.map((f) => spacesOf.label(f))));
+      state.renameSpace = id;
+      refresh(true);
+    } catch (error) { editFailed("create a space")(error); }
+  };
   const openCreateSpaceDialog = async () => {
     try {
       const create = spacesOf.findCreator(window.webpackChunkgapp_browser_react) ||
@@ -1495,7 +1650,7 @@
     const bar = el("div", "vm-space-bar");
     const plus = el("div", "vm-space-pill vm-space-plus", "+");
     plus.title = "Create a new space";
-    plus.addEventListener("click", openCreateSpaceDialog);
+    plus.addEventListener("click", createSpaceNow);
     bar.append(...items.map(spacePill), plus);
     return bar;
   };
@@ -1628,6 +1783,7 @@
     { label: "Open Tabs", flyout: openTabsFlyout },
     { label: "Recently Closed", flyout: async () => tabRows(spacesOf.closedTabs(await closedSessions()), (t) => restoreClosed(t.sessionId)) },
     { label: "Recently Closed Windows", flyout: async () => spacesOf.closedWindows(await closedSessions()).map((w) => ({ label: w.label, action: () => restoreClosed(w.sessionId) })) },
+    ...deletedSpacesRow(),
     newTabHooks.cleaned(),
     [],
     ...newTabHooks.cleanUp(),
@@ -1849,7 +2005,8 @@
     };
     let picked = pick();
     const workspace = state.workspaces.find((w) => w.id === state.active);
-    if (!picked.space && workspace && picked.base && !madeFolderFor.has(workspace.id)) {
+    // not while the space is being renamed (folder first, then the space): its folder has its new name already
+    if (!picked.space && workspace && picked.base && !madeFolderFor.has(workspace.id) && !window.__vm.spaceEdit?.renaming(workspace.id)) {
       madeFolderFor.add(workspace.id);
       const folder = await chrome.bookmarks.create({ parentId: picked.base.parentId, title: workspace.name });
       await chrome.bookmarks.create({ parentId: folder.id, title: "Pinned" });

@@ -17,7 +17,7 @@
   const BUSY_CHECK_MS = 500;
   const COOL_MS = 10000;
   const HEAL_CONFIRM_MS = 1000;
-  const DELETED_KEY = "deletedSpaces"; // undelete's store (chunk 3): ids it can still revive are not healed
+  const DELETED_KEY = "deletedSpaces"; // undelete's store (08-space-edit.js, Task 9c): ids it can still revive are not healed
   const spacesOf = window.__vm.workspaces;
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
