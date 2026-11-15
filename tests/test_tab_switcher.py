@@ -90,6 +90,7 @@ global.chrome = { extension: { inIncognitoContext: sc.incognito, getBackgroundPa
 global.vivaldi = { prefs: { get: async (path) => ({ value: JSON.parse(JSON.stringify(prefs[path] ?? null)) }), set: async ({ path, value }) => { sets.push(path); order.push("set:" + path); prefs[path] = value; } } };
 const stored = new Map(Object.entries(sc.stored || {}));
 global.window = { __vm: { config: { startUrl: "file:///guide.html" }, windows: true, shortcut: (c) => c,
+  ...(sc.dia == null ? {} : { settings: { loaded: Promise.resolve(), get: (k) => (k === "diaLayout" ? sc.dia : undefined) } }),
   workspaces: { leaderOf: (wins) => Math.min(...wins.map((w) => w.id)) },
   store: { get: async (k, f) => stored.get(k) ?? f, set: async (k, v) => { stored.set(k, v); } } } };
 vm.runInThisContext(fs.readFileSync(require("path").join(process.argv[1], "05-bootstrap.js"), "utf8"));
@@ -104,9 +105,9 @@ VIVALDI = {"COMMAND_TAB_SWITCH_FORWARD_SETTING": {"shortcuts": ["ctrl+tab"]}, "C
            "COMMAND_SAVE_PAGE": {"shortcuts": ["meta+s"]}, "COMMAND_PAGE_BACK": {"shortcuts": ["alt+left"]}}
 
 
-def setup_run(table=VIVALDI, incognito=False, leader=True, stored=None, prefs=None, bg=None):
+def setup_run(table=VIVALDI, incognito=False, leader=True, stored=None, prefs=None, bg=None, dia=None):
     out = subprocess.run(["node", "-e", SETUP, JS, json.dumps({"table": table, "incognito": incognito, "leader": leader, "stored": stored or {},
-                                                                 "prefs": prefs or {}, "bg": bg or {}})],
+                                                                 "prefs": prefs or {}, "bg": bg or {}, "dia": dia})],
                          check=True, capture_output=True, text=True)
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -181,8 +182,8 @@ class SetupFlags(unittest.TestCase):
         run = out["bg"]["__vivarcSetupRun"]
         self.assertTrue(run)
         for key in ("tabKeysFreed", "sidebarKeyFreed", "extensionsDropdown"):
-            self.assertEqual(out["stored"][key], {"pending": True, "run": run}, key)
-        self.assertEqual(out["stored"]["bootstrap"], {"pending": 16, "done": 0, "run": run})
+            self.assertEqual(out["stored"][key], {"pending": True, "run": run, "tries": 0}, key)
+        self.assertEqual(out["stored"]["bootstrap"], {"pending": 16, "done": 0, "run": run, "tries": 0})
 
     def test_a_hard_kill_before_preferences_were_written_applies_it_all_again(self):
         # the store says pending (an earlier run); Vivaldi's prefs are stock: Ctrl+Tab and Ctrl+S back on Vivaldi's commands
@@ -195,8 +196,8 @@ class SetupFlags(unittest.TestCase):
         self.assertTrue(out["freedThisRun"], "the switcher waits for the next start, as on a first launch")
         run = out["bg"]["__vivarcSetupRun"]
         self.assertNotEqual(run, "old")
-        self.assertEqual(out["stored"]["tabKeysFreed"], {"pending": True, "run": run}, "pending again, this run")
-        self.assertEqual(out["stored"]["bootstrap"], {"pending": 16, "done": 0, "run": run})
+        self.assertEqual(out["stored"]["tabKeysFreed"], {"pending": True, "run": run, "tries": 1}, "pending again, this run (a second try)")
+        self.assertEqual(out["stored"]["bootstrap"], {"pending": 16, "done": 0, "run": run, "tries": 1})
 
     def test_a_later_launch_that_sees_the_change_makes_it_done_and_writes_nothing(self):
         out = setup_run(table=FREED, stored=dict(OLD_RUN), prefs=SHOWN)
@@ -233,8 +234,30 @@ class SetupFlags(unittest.TestCase):
 
     def test_a_bump_from_a_done_version_keeps_that_version_as_done_while_pending(self):
         out = setup_run(stored={"tabKeysFreed": True, "sidebarKeyFreed": True, "extensionsDropdown": True, "bootstrap": 15})
-        self.assertEqual(out["stored"]["bootstrap"], {"pending": 16, "done": 15, "run": out["bg"]["__vivarcSetupRun"]})
+        self.assertEqual(out["stored"]["bootstrap"], {"pending": 16, "done": 15, "run": out["bg"]["__vivarcSetupRun"], "tries": 0})
         self.assertNotIn("vivaldi.tabs.bar.width", out["sets"])
+
+    def test_the_dia_layout_turning_the_address_row_on_still_counts_as_set_up(self):
+        # Dia turns vivaldi.address_bar.visible on at every start (15-dia.js): the setup survived when its toolbars did
+        out = setup_run(table=FREED, stored=dict(OLD_RUN), prefs={**SHOWN, "vivaldi.address_bar.visible": True}, dia=True)
+        self.assertEqual(out["stored"]["bootstrap"], 16, "promoted, not applied again at every launch")
+        self.assertNotIn("vivaldi.tabs.bar.width", out["sets"])
+        self.assertNotIn("vivaldi.address_bar.visible", out["sets"])
+
+    def test_without_dia_an_address_row_still_on_is_applied_again(self):
+        out = setup_run(table=FREED, stored=dict(OLD_RUN), prefs={**SHOWN, "vivaldi.address_bar.visible": True}, dia=False)
+        self.assertIn("vivaldi.address_bar.visible", out["sets"])
+        self.assertEqual(out["stored"]["bootstrap"]["tries"], 1)
+
+    def test_a_check_that_never_passes_gives_up_after_three_tries(self):
+        # whatever keeps the profile from showing the change, the setup is not applied at every launch for ever
+        worn = {k: {**v, "tries": 3} for k, v in OLD_RUN.items()}
+        out = setup_run(stored=worn)
+        self.assertEqual(out["stored"]["tabKeysFreed"], True)
+        self.assertEqual(out["stored"]["bootstrap"], 16)
+        self.assertNotIn("vivaldi.actions", out["sets"])
+        self.assertNotIn("vivaldi.address_bar.visible", out["sets"])
+        self.assertTrue(any("gave up" in str(m) for m in out["logs"]), out["logs"])
 
     def test_a_private_window_promotes_nothing(self):
         out = setup_run(table=FREED, stored=dict(OLD_RUN), prefs=SHOWN, incognito=True)

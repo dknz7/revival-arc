@@ -73,7 +73,8 @@
   // a restart, so it is on disk), else applies the step again. Not in the run that wrote it: Vivaldi's prefs in memory
   // always show it then. Done stays done (true, or bootstrap's number): a key the user puts back later is never taken again.
   // The run: a mark on the background page (it starts and ends with Vivaldi), else chrome.storage.session; with neither, a
-  // step is marked done at once, as before.
+  // step is marked done at once, as before. A step is applied again at most MAX_TRIES times: a check that something else
+  // keeps false (a pref another part of Vivarc changes, a profile Vivaldi cannot write) never re-applies it at every launch.
   const RUN_MARK = "__vivarcSetupRun";
   const newRun = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const runId = async () => {
@@ -90,7 +91,9 @@
     } catch (_) {}
     return null;
   };
+  const MAX_TRIES = 3;
   const isPending = (v) => !!v && typeof v === "object" && v.pending != null && typeof v.run === "string";
+  const triesOf = (v) => (isPending(v) && Number.isInteger(v.tries) ? v.tries : 0);
   // -> "done" | "pending" (written this run: leave it) | "redo" (written in an earlier run and the profile does not show
   // it: apply again) | "none" (never). `shows`: does the profile show the step's change now.
   const phase = async (key, shows, run) => {
@@ -99,9 +102,18 @@
     if (!isPending(v)) return v ? "done" : "none"; // any other truthy value an older build wrote
     if (v.run === run) return "pending";
     if (await shows()) { await window.__vm.store.set(key, true); return "done"; }
+    if (triesOf(v) >= MAX_TRIES) {
+      console.warn(`[vivarc] profile setup: ${key} still does not show after ${MAX_TRIES} tries; gave up (marked done)`);
+      await window.__vm.store.set(key, true);
+      return "done";
+    }
     return "redo";
   };
-  const markPending = async (key, run) => window.__vm.store.set(key, run ? { pending: true, run } : true);
+  // tries: how many times the step was applied again after the first (from the flag it replaces)
+  const markPending = async (key, run) => {
+    const tries = isPending(await window.__vm.store.get(key, false)) ? triesOf(await window.__vm.store.get(key, false)) + 1 : 0;
+    return window.__vm.store.set(key, run ? { pending: true, run, tries } : true);
+  };
   const FREED = window.__vm.shortcut("meta+t");
   const COPY_URL = window.__vm.shortcut("shift+meta+c");
 
@@ -275,11 +287,20 @@
 
   // bootstrap's flag: a number (the version done), or { pending, done, run }
   const bootDone = (v) => (typeof v === "number" ? v : isPending(v) ? Number(v.done) || 0 : 0);
+  // The setup survived when the sidebar toolbar holds the address field and the address row is off, or on because the
+  // Dia layout turns it on at every start (15-dia.js; final review: else a Dia profile re-applied the setup every launch).
+  const diaOn = async () => {
+    const settings = window.__vm.settings;
+    if (!settings?.get) return false;
+    await Promise.race([Promise.resolve(settings.loaded).catch(() => {}), new Promise((resolve) => setTimeout(resolve, 3000))]);
+    return !!settings.get("diaLayout");
+  };
   const bootShows = async () => {
     const before = await get("vivaldi.toolbars.tabbar_before").catch(() => null);
     const whole = Array.isArray(before) ? null : await get("vivaldi.toolbars").catch(() => null);
     const list = Array.isArray(before) ? before : whole?.tabbar_before;
-    return Array.isArray(list) && list.includes("AddressField") && (await get("vivaldi.address_bar.visible").catch(() => null)) === false;
+    if (!Array.isArray(list) || !list.includes("AddressField")) return false;
+    return (await get("vivaldi.address_bar.visible").catch(() => null)) === false || (await diaOn());
   };
 
   const configure = async () => {
@@ -303,7 +324,9 @@
     let boot = await window.__vm.store.get("bootstrap", 0);
     if (isPending(boot)) {
       if (boot.run === run) return; // this run applied it: a later launch checks it
-      if (await bootShows()) { await window.__vm.store.set("bootstrap", Number(boot.pending) || 0); boot = Number(boot.pending) || 0; }
+      const shown = await bootShows();
+      if (!shown && triesOf(boot) >= MAX_TRIES) console.warn(`[vivarc] profile setup: bootstrap still does not show after ${MAX_TRIES} tries; gave up (marked done)`);
+      if (shown || triesOf(boot) >= MAX_TRIES) { await window.__vm.store.set("bootstrap", Number(boot.pending) || 0); boot = Number(boot.pending) || 0; }
     }
     const done = bootDone(boot);
     if (typeof boot === "number" && done >= VERSION) return;
@@ -322,7 +345,7 @@
     await replaceWelcome();
     // pending until a later launch sees the toolbars and the hidden address row; `done` keeps the version done before, so
     // a step cut short is applied again without the first-run settings above
-    await window.__vm.store.set("bootstrap", run ? { pending: VERSION, done, run } : VERSION);
+    await window.__vm.store.set("bootstrap", run ? { pending: VERSION, done, run, tries: isPending(boot) ? triesOf(boot) + 1 : 0 } : VERSION);
   };
 
   configure().catch((e) => console.warn("[vivarc] profile setup:", e)).finally(keysDone);
