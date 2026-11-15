@@ -114,6 +114,128 @@ class Listed(unittest.TestCase):
         self.assertEqual(listed(tabs, space=11), [1, 5])
 
 
+# A press, held or quick, through the real path (25-tab-switcher.js with 07-workspaces.js and 08-pins.js, a fake row, Vivaldi's
+# shortcut and key events, a clock moved by hand). Byron, 2026-11-16 (option A): a quick tap goes to the tab you were really
+# on last here, a favorite, pin or pinned tab too; the row, once it shows, still lists no favorites, pins or pinned tabs.
+# steps: "press" / "back" (Ctrl+Tab / Ctrl+Shift+Tab from Vivaldi), "release" (Ctrl up, Vivaldi's onKeyboardChanged),
+# "settle" (the tabs read), "show" (the row's 150 ms pass), "tab" (Tab with Ctrl, at the row).
+PRESS = r'''
+const fs = require("fs"), vm = require("vm"), path = require("path");
+const sc = JSON.parse(process.argv[2]);
+let clock = 1e6;
+Date.now = () => clock;
+const timers = [];
+global.setTimeout = (fn, ms) => { timers.push({ fn, at: clock + (ms || 0) }); return timers.length; };
+global.clearTimeout = () => {};
+global.console = { log() {}, warn() {} };
+const mk = () => {
+  const set = new Set();
+  const e = { children: [], dataset: {}, style: {}, listeners: {},
+    classList: { add: (c) => set.add(c), remove: (c) => set.delete(c), toggle: (c, on) => (on ? set.add(c) : set.delete(c)), contains: (c) => set.has(c) },
+    append: (...k) => { e.children.push(...k); }, replaceChildren: (...k) => { e.children = k; }, replaceWith() {}, remove() {}, focus() {},
+    setAttribute() {}, addEventListener: (t, fn) => { (e.listeners[t] ||= []).push(fn); }, querySelector: () => null, scrollIntoView() {} };
+  return e;
+};
+const root = mk();
+global.document = { createElement: mk, querySelector: (s) => (s === "#browser" ? root : null), body: root };
+const heard = {};
+global.window = { __vm: {}, vivaldiWindowId: 1, addEventListener: (t, fn) => { (heard[t] ||= []).push(fn); },
+  removeEventListener: (t, fn) => { heard[t] = (heard[t] || []).filter((f) => f !== fn); } };
+for (const f of ["07-workspaces.js", "08-pins.js"]) vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], f), "utf8"));
+const switched = [];
+const ev = { addListener() {} };
+global.chrome = { windows: { getCurrent: async () => ({ id: 1, focused: true }) },
+  tabs: { query: async (q) => sc.tabs.filter((t) => (q.windowId == null || t.windowId === q.windowId) && (!q.active || t.active)),
+    get: async (id) => sc.tabs.find((t) => t.id === id), update: async (id) => { switched.push(id); return {}; },
+    onActivated: ev, onUpdated: ev, onRemoved: ev } };
+let keyboard = null, shortcut = null;
+global.vivaldi = { prefs: { get: async () => ({ value: [{}] }), onChanged: ev }, thumbnails: { captureTab: async () => { throw new Error("none"); } },
+  tabsPrivate: { onKeyboardChanged: { addListener: (fn) => { keyboard = fn; } } } };
+Object.assign(window.__vm, { store: {}, normalise: (c) => c, cssLoaded: true, onShortcut: (fn) => { shortcut = fn; },
+  bootstrap: { freeKey: () => ({ freed: [] }), freedThisRun: async () => false },
+  native: { record: () => ({ activeIn: () => sc.space || 0 }) },
+  boundTabIds: () => new Set(sc.bound || []), pinIds: () => new Set(sc.pins || ["55"]) });
+vm.runInThisContext(fs.readFileSync(path.join(process.argv[1], "25-tab-switcher.js"), "utf8"));
+const settle = async () => { for (let i = 0; i < 40; i++) await new Promise((r) => setImmediate(r)); };
+(async () => {
+  await settle();
+  const seen = [];
+  for (const step of sc.steps) {
+    clock += 5;
+    if (step === "press" || step === "back") { clock += 100; shortcut(step === "press" ? "ctrl+tab" : "ctrl+shift+tab", null, 1); }
+    if (step === "release") keyboard(1, false, 0, 17);
+    if (step === "settle") await settle();
+    if (step === "show") { clock += 200; for (const t of timers.splice(0)) { if (t.at <= clock) t.fn(); else timers.push(t); } }
+    if (step === "tab") { clock += 100; for (const fn of heard.keydown || []) fn({ key: "Tab", ctrlKey: true, shiftKey: false, repeat: false, preventDefault() {}, stopPropagation() {} }); }
+    if (step === "look") seen.push(window.__vm.switcher.state());
+  }
+  await settle();
+  process.stdout.write(JSON.stringify({ switched, seen, state: window.__vm.switcher.state() }) + "\n");
+})();
+'''
+
+
+def press(tabs, steps, **sc):
+    out = subprocess.run(["node", "-e", PRESS, JS, json.dumps({"tabs": tabs, "steps": steps, **sc})], check=True, capture_output=True, text=True)
+    return json.loads(out.stdout.strip().splitlines()[-1])
+
+
+QUICK = ["press", "release", "settle"]  # Ctrl up before the tabs are read
+QUICK_LATE = ["press", "settle", "release", "settle"]  # Ctrl up once the cards are made, before the row shows
+
+
+@unittest.skipUnless(shutil.which("node"), "node is needed to test the tab switcher's JavaScript")
+class QuickTap(unittest.TestCase):
+    """Byron, 2026-11-16: X after leaving his favorite Gmail, a quick Ctrl+Tab goes back to Gmail, and from Gmail back to X."""
+
+    X, GMAIL, A, B = 1, 2, 3, 4
+
+    def on_x(self):
+        return [tab(1, accessed=1000, active=True), marked(tab(2, accessed=900), "55"), tab(3, accessed=500), tab(4, accessed=400)]
+
+    def test_a_quick_tap_on_x_goes_back_to_the_favorite_you_left(self):
+        self.assertEqual(press(self.on_x(), QUICK)["switched"], [self.GMAIL])
+        self.assertEqual(press(self.on_x(), QUICK_LATE)["switched"], [self.GMAIL])
+
+    def test_a_quick_tap_on_the_favorite_goes_back_to_x(self):
+        tabs = [marked(tab(2, accessed=1000, active=True), "55"), tab(1, accessed=900), tab(3, accessed=500)]
+        self.assertEqual(press(tabs, QUICK)["switched"], [self.X])
+        self.assertEqual(press(tabs, QUICK_LATE)["switched"], [self.X])
+
+    def test_a_pinned_or_bound_tab_used_last_is_the_quick_taps_tab_too(self):
+        pinned = [tab(1, accessed=1000, active=True), {**tab(5, accessed=900), "pinned": True}, tab(3, accessed=500)]
+        self.assertEqual(press(pinned, QUICK)["switched"], [5])
+        bound = [tab(1, accessed=1000, active=True), tab(6, accessed=900), tab(3, accessed=500)]
+        self.assertEqual(press(bound, QUICK, bound=[6])["switched"], [6])
+
+    def test_with_only_a_favorite_to_go_back_to_a_quick_tap_still_goes(self):
+        self.assertEqual(press([tab(1, accessed=1000, active=True), marked(tab(2, accessed=900), "55")], QUICK)["switched"], [self.GMAIL])
+
+    def test_a_quick_shift_tap_goes_to_the_least_recent_of_the_same_full_list(self):
+        tabs = [tab(1, accessed=1000, active=True), tab(3, accessed=900), tab(4, accessed=800), marked(tab(2, accessed=100), "55")]
+        self.assertEqual(press(tabs, ["back", "release", "settle"])["switched"], [self.GMAIL])
+
+    def test_blank_tabs_and_other_spaces_are_never_the_quick_taps_tab(self):
+        tabs = [tab(1, space=11, accessed=1000, active=True), tab(7, space=11, accessed=950, url="vivaldi://newtab"),
+                tab(8, space=12, accessed=940), tab(9, window=2, space=11, accessed=930), tab(3, space=11, accessed=500)]
+        self.assertEqual(press(tabs, QUICK, space=11)["switched"], [self.A])
+
+    def test_held_the_row_shows_no_favorites_and_steps_through_its_own_cards(self):
+        out = press(self.on_x(), ["press", "settle", "show", "look", "tab", "look", "release", "settle"])
+        self.assertTrue(out["seen"][0]["shown"])
+        self.assertEqual(out["seen"][0]["items"], [self.X, self.A, self.B], "Gmail is not a card; X, on screen, comes first")
+        self.assertEqual([s["selected"] for s in out["seen"]], [1, 2])
+        self.assertEqual(out["switched"], [self.B])
+
+    def test_held_until_the_row_shows_a_release_takes_the_selected_card(self):
+        self.assertEqual(press(self.on_x(), ["press", "settle", "show", "release", "settle"])["switched"], [self.A])
+
+    def test_two_taps_before_the_row_shows_step_its_cards(self):
+        self.assertEqual(press(self.on_x(), ["press", "settle", "press", "release", "settle"])["switched"], [self.B])
+        # steps that wrap back round to where the selection started are still steps: the card, not the quick tap's tab
+        self.assertEqual(press(self.on_x(), ["press", "settle", "press", "press", "press", "release", "settle"])["switched"], [self.A])
+
+
 class RowScrolls(unittest.TestCase):
     """Ten cards can be wider than the window: the row scrolls sideways and keeps the selected card in view."""
 

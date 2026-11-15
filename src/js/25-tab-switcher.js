@@ -19,11 +19,14 @@
     .filter((t) => t.windowId === windowId && of(t) === (space || 0) && (t.active || !skip(t)))
     .sort((a, b) => (b.active ? 1 : 0) - (a.active ? 1 : 0) || (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0))
     .slice(0, SHOWN);
-  // The tabs the row lists (Byron, 2026-11-16): the command bar's list with nothing typed, as order() puts them, so blank
-  // and Peek's tabs and the tabs the lists of ordinary tabs leave out (favorites' and pins' tabs, Vivaldi-pinned ones:
-  // workspaces.heldTabs, read once per row) never fill the row. The tab on screen is always the first card, even when it
-  // is a favorite: the switcher steps back from it.
+  // The tabs you were really on here, most recent first (blank and Peek's tabs left out, as in the sidebar): a quick tap
+  // goes back along this list, a favorite, pin or pinned tab too (Byron, 2026-11-16).
   const hidden = (t) => !!window.__vm.workspaces?.isBlank?.(t) || !!window.__vm.peek?.isPeekTab?.(t);
+  const recent = (tabs, { windowId, space } = {}) => order(tabs, { windowId, space, skip: hidden });
+  // The row's cards (Byron, 2026-11-16): the command bar's list with nothing typed, as order() puts them, so the tabs the
+  // lists of ordinary tabs leave out (favorites' and pins' tabs, Vivaldi-pinned ones: workspaces.heldTabs, read once per
+  // row) never fill the row. The tab on screen is always the first card, even when it is a favorite: the switcher steps
+  // back from it.
   const listed = (tabs, { windowId, space } = {}) => {
     const held = window.__vm.workspaces?.heldTabs?.() || (() => false);
     return order(tabs, { windowId, space, skip: (t) => hidden(t) || held(t) });
@@ -76,7 +79,7 @@
     try { return new URL(url).hostname.replace(/^www\./, ""); } catch (_) { return ""; }
   };
   const monogram = (tab) => (hostOf(tab?.url || "") || tab?.title || "?").trim().charAt(0).toUpperCase() || "?";
-  window.__vm.switcher = { order, listed, step, first, of, decision, tableChange, rowKey, keyboardChange, hostOf, monogram, SHOWN, NEXT_KEY, PREV_KEY, LATE_MS: 100 };
+  window.__vm.switcher = { order, recent, listed, step, first, of, decision, tableChange, rowKey, keyboardChange, hostOf, monogram, SHOWN, NEXT_KEY, PREV_KEY, LATE_MS: 100 };
   if (!window.__vm.store) return;
 
   const { normalise } = window.__vm;
@@ -93,6 +96,7 @@
   let strip = null;
   let items = [];
   let selected = 0;
+  let quick = null; // the quick tap's tab (recent()): taken while the row is not shown, until the keys step
   let opening = false;
   let lastStep = 0;
   let showTimer = 0;
@@ -231,7 +235,7 @@
   // Ten cards can be wider than the window: the row scrolls sideways, and a card the keys select is scrolled into view
   // (the first one too). A card the pointer selects is already under it, so the row never moves beneath the mouse.
   const reveal = () => { try { strip?.children[selected]?.scrollIntoView({ block: "nearest", inline: "nearest" }); } catch (_) {} };
-  const move = (dir) => { if (items.length) { select(step(selected, dir, items.length)); reveal(); } };
+  const move = (dir) => { if (items.length) { quick = null; select(step(selected, dir, items.length)); reveal(); } };
   const advance = (dir) => {
     const now = Date.now();
     if (!bar || now - lastStep < DOUBLE_STEP) return;
@@ -262,13 +266,17 @@
     bar?.remove();
     bar = strip = null;
     items = [];
+    quick = null;
     keysSeen = false;
     return had;
   };
   // Switches only to a tab still in this window and still in the space the row was opened for: anything else (the tab
   // closed, or moved, or the window switched space meanwhile) switches nothing.
+  // What it switches to: a quick tap (the row not shown yet, no step since the press) goes to the tab you were really on
+  // last; once the row shows, or the keys have stepped, the selected card.
+  const target = () => (quick && bar && !bar.classList.contains("in") ? quick : items[selected]);
   const commit = async () => {
-    const tab = items[selected];
+    const tab = target();
     const at = scope;
     close();
     if (!tab || !at) { refocusPage(); return; }
@@ -354,7 +362,7 @@
     opening = true;
     ended = null;
     const pressedAt = Date.now();
-    let tabs = [];
+    let tabs = [], back = [];
     try {
       await decided;
       // Not armed when this window started (or since): ask again, the setup or a read may have settled meanwhile.
@@ -367,6 +375,7 @@
       const all = await chrome.tabs.query({ windowId });
       const space = window.__vm.native?.record()?.activeIn(windowId) ?? window.__vm.workspaces?.activeId?.(all) ?? 0;
       scope = { windowId, space };
+      back = recent(all, { windowId, space });
       tabs = listed(all, { windowId, space });
     } catch (error) {
       console.warn("[vivarc] tab switcher:", error);
@@ -374,10 +383,14 @@
       return;
     } finally { opening = false; }
     if (!bar) return; // ended while the tabs were read (Escape, the window lost focus)
-    const start = first(dir, tabs.length);
+    // The quick tap's tab, from the full list (Shift goes to its least recent, as the row does). With no card to step to
+    // but a favorite to go back to, the row holds only the tab on screen.
+    const backAt = first(dir, back.length);
+    const start = first(dir, tabs.length) ?? (backAt == null ? null : 0);
     if (start == null) { cancel(); return; }
     items = tabs;
     selected = start;
+    quick = backAt == null ? null : back[backAt];
     // Ctrl already released (a quick Ctrl+Tab): the previous tab, without showing the row.
     if (!ctrlDown) { ended = "Ctrl released before the row"; commit(); return; }
     lastStep = held.at = Date.now();
@@ -418,7 +431,7 @@
   });
 
   Object.assign(window.__vm.switcher, {
-    state: () => ({ armed, reason, open: !!bar, shown: !!bar?.classList.contains("in"), items: items.map((t) => t.id), selected, scope, ended }),
+    state: () => ({ armed, reason, open: !!bar, shown: !!bar?.classList.contains("in"), items: items.map((t) => t.id), selected, quick: quick?.id ?? null, scope, ended }),
     recheck: () => decide().then(() => ({ armed, reason })),
   });
   console.log("[vivarc] tab switcher started");
