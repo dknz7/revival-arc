@@ -1137,6 +1137,14 @@
   const takesField = (node) => !nativeOpen && !handing && ownsField && !!window.__vm.cssLoaded && node?.id === "urlFieldInput" &&
     !!node.closest?.("#tabs-tabbar-container .UrlBar-AddressField") && !!document.querySelector("#browser.vm-on");
   let pendingOpen = null; // a bar this route is opening: one more request waits for it instead of opening another
+  // -> a promise that settles when the bar next says it opened (vm-command-bar), or after ms: either way its listener goes,
+  // so a declined open never leaves one behind (final review, Codex minor).
+  const barOpened = (ms) => new Promise((resolve) => {
+    let t = null;
+    const end = () => { clearTimeout(t); window.removeEventListener("vm-command-bar", end); resolve(); };
+    t = setTimeout(end, ms);
+    window.addEventListener("vm-command-bar", end);
+  });
   const route = async (field) => {
     perf.fieldRoutes++;
     const sinceActivation = Date.now() - activation.at;
@@ -1165,7 +1173,7 @@
       const [active] = await chrome.tabs.query({ active: true, currentWindow: true }).catch(() => []);
       if (!active || bar) return;
       if (!startsEmpty(active)) {
-        const done = new Promise((resolve) => { const t = setTimeout(resolve, 1500); window.addEventListener("vm-command-bar", () => { clearTimeout(t); resolve(); }, { once: true }); });
+        const done = barOpened(1500);
         window.dispatchEvent(new CustomEvent("vm-edit-url"));
         await done;
         return;
@@ -1201,8 +1209,8 @@
     }
   }, true);
   window.__vm.onMark?.((browser) => { if (nativeOpen) browser.classList.add("vm-native-field"); });
-  // askedNow and fieldEntry are seams for search.test.cjs: fieldEntry is the field session itself, past nativeEntry's
+  // barOpened, askedNow and fieldEntry are seams for search.test.cjs: fieldEntry is the field session itself, past nativeEntry's
   // check, so the test proves its own boundary (it never submits a prohibited scheme either).
-  window.__vm.commandBar = { askedNow: () => intent.userAsked(Date.now(), ASKED_MS), fieldEntry: (text, options) => nativeFieldEntry(text, options), ownsField: () => ownsField, isOpen: () => !!bar, nativeOpen: () => nativeOpen, handOver: (text, options) => nativeEntry(text, options) };
+  window.__vm.commandBar = { barOpened, askedNow: () => intent.userAsked(Date.now(), ASKED_MS), fieldEntry: (text, options) => nativeFieldEntry(text, options), ownsField: () => ownsField, isOpen: () => !!bar, nativeOpen: () => nativeOpen, handOver: (text, options) => nativeEntry(text, options) };
   console.log("[vivarc] command bar started");
 })();
