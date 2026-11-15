@@ -64,6 +64,44 @@
 
   const get = async (path) => (await vivaldi.prefs.get(path))?.value;
   const set = (path, value) => vivaldi.prefs.set({ path, value });
+
+  // Two-phase setup flags (final review, AGY's design). Vivarc's store is written at once, but Vivaldi writes its
+  // Preferences file on a delay, so a hard kill seconds after the first launch kept "done" and lost the keys and toolbars
+  // themselves (seen in the sandbox: a whole sweep ran on Vivaldi's stock key table). So a step's flag is written PENDING,
+  // with the run it was written in, right after its pref writes: { pending: true, run } (bootstrap: { pending: VERSION,
+  // done: the version last done, run }). A later launch makes it done only when the profile shows the change (it survived
+  // a restart, so it is on disk), else applies the step again. Not in the run that wrote it: Vivaldi's prefs in memory
+  // always show it then. Done stays done (true, or bootstrap's number): a key the user puts back later is never taken again.
+  // The run: a mark on the background page (it starts and ends with Vivaldi), else chrome.storage.session; with neither, a
+  // step is marked done at once, as before.
+  const RUN_MARK = "__vivarcSetupRun";
+  const newRun = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const runId = async () => {
+    try { const bg = bgPage(); if (bg) return (bg[RUN_MARK] ||= newRun()); } catch (_) {}
+    try {
+      const session = chrome.storage?.session;
+      if (session?.get && session?.set) {
+        const had = (await session.get(RUN_MARK))?.[RUN_MARK];
+        if (had) return had;
+        const made = newRun();
+        await session.set({ [RUN_MARK]: made });
+        return made;
+      }
+    } catch (_) {}
+    return null;
+  };
+  const isPending = (v) => !!v && typeof v === "object" && v.pending != null && typeof v.run === "string";
+  // -> "done" | "pending" (written this run: leave it) | "redo" (written in an earlier run and the profile does not show
+  // it: apply again) | "none" (never). `shows`: does the profile show the step's change now.
+  const phase = async (key, shows, run) => {
+    const v = await window.__vm.store.get(key, false);
+    if (v === true) return "done";
+    if (!isPending(v)) return v ? "done" : "none"; // any other truthy value an older build wrote
+    if (v.run === run) return "pending";
+    if (await shows()) { await window.__vm.store.set(key, true); return "done"; }
+    return "redo";
+  };
+  const markPending = async (key, run) => window.__vm.store.set(key, run ? { pending: true, run } : true);
   const FREED = window.__vm.shortcut("meta+t");
   const COPY_URL = window.__vm.shortcut("shift+meta+c");
 
@@ -181,14 +219,15 @@
   // profile (the tab bar's hide, its auto-hide, Save Page). Ctrl+Tab and Ctrl+Shift+Tab (Ctrl on a Mac too) are the tab
   // switcher's (25-tab-switcher.js), so Vivaldi's tab cycling loses them (COMMAND_TAB_SWITCH_FORWARD_SETTING and
   // COMMAND_TAB_SWITCH_BACK_SETTING in Vivaldi 8.3's defaults). Each once per profile, apart from VERSION (a bump would
-  // run every setup step again), so a key the user puts back on a Vivaldi command later stays. Not marked done while the
+  // run every setup step again), so a key the user puts back on a Vivaldi command later stays: once it is done, that is
+  // (two-phase, above: pending until a later launch sees the key free). Not marked done while the
   // actions table cannot be read or still holds a key afterwards, so the next start tries again.
   // vivaldi.actions is one array that every writer reads whole and writes whole, so two windows doing it at once lose each
   // other's edits: only the leader window (workspaces.leaderOf, the lowest normal window id, as for the repairs) runs this,
   // and it reads the table again right before it writes. A window that is not the leader leaves the flag to the leader.
   // -> true when the keys are free (or were already), false when it left them to another window or the next start.
   // beforeWrite: run just before the table is written (the tab keys mark the run there).
-  const freeOnce = async (keys, names, flag, what, beforeWrite = null) => {
+  const freeOnce = async (keys, names, flag, what, beforeWrite = null, run = null) => {
     const leaderOf = window.__vm.workspaces?.leaderOf;
     if (leaderOf) {
       const own = (await chrome.windows.getCurrent()).id;
@@ -218,33 +257,61 @@
         return false;
       }
     }
-    await window.__vm.store.set(flag, true);
+    // written now: pending until a later launch sees it; already free when read: nothing was written, so done
+    if (changed) await markPending(flag, run);
+    else await window.__vm.store.set(flag, true);
     return changed;
   };
-  const freeSidebarKey = () => freeOnce([TOGGLE], { [TOGGLE]: window.__vm.windows ? "Ctrl+S" : "Cmd+S" }, "sidebarKeyFreed", "the sidebar key");
+  // the profile shows the keys free (each step's check for a pending flag)
+  const keysFree = (keys) => async () => {
+    const t = await get("vivaldi.actions").catch(() => null);
+    return Array.isArray(t) && !!t[0] && keys.every((key) => !freeKey(t[0], key).freed.length);
+  };
+  const freeSidebarKey = (run) => freeOnce([TOGGLE], { [TOGGLE]: window.__vm.windows ? "Ctrl+S" : "Cmd+S" }, "sidebarKeyFreed", "the sidebar key", null, run);
   // Vivaldi reads its key table at launch, so keys freed now stay Vivaldi's until the next start: the run is marked first
   // (markFreedThisRun), and the switcher waits for that start.
   const TAB_KEYS = ["ctrl+tab", "ctrl+shift+tab"];
-  const freeTabKeys = () => freeOnce(TAB_KEYS, { "ctrl+tab": "Ctrl+Tab", "ctrl+shift+tab": "Ctrl+Shift+Tab" }, "tabKeysFreed", "the tab switcher's keys", markFreedThisRun);
+  const freeTabKeys = (run) => freeOnce(TAB_KEYS, { "ctrl+tab": "Ctrl+Tab", "ctrl+shift+tab": "Ctrl+Shift+Tab" }, "tabKeysFreed", "the tab switcher's keys", markFreedThisRun, run);
+
+  // bootstrap's flag: a number (the version done), or { pending, done, run }
+  const bootDone = (v) => (typeof v === "number" ? v : isPending(v) ? Number(v.done) || 0 : 0);
+  const bootShows = async () => {
+    const before = await get("vivaldi.toolbars.tabbar_before").catch(() => null);
+    const whole = Array.isArray(before) ? null : await get("vivaldi.toolbars").catch(() => null);
+    const list = Array.isArray(before) ? before : whole?.tabbar_before;
+    return Array.isArray(list) && list.includes("AddressField") && (await get("vivaldi.address_bar.visible").catch(() => null)) === false;
+  };
 
   const configure = async () => {
     await ensureSideTabs();
     for (const delay of [4000, 12000, 30000]) setTimeout(() => ensureSideTabs().catch(() => {}), delay);
+    const run = await runId();
     // Extensions hidden with "Hide Button" open in a drop-down from the puzzle piece instead of more icons in the row
     // (as the installer sets). Once per profile, apart from VERSION, so turning it off in Vivaldi's settings sticks.
-    if (!(await window.__vm.store.get("extensionsDropdown", false))) {
+    const dropdownShows = async () => (await get("vivaldi.address_bar.extensions.render_in_dropdown").catch(() => null)) === true;
+    const dropdown = await phase("extensionsDropdown", dropdownShows, run);
+    if (dropdown === "none" || dropdown === "redo") {
       await set("vivaldi.address_bar.extensions.render_in_dropdown", true);
-      await window.__vm.store.set("extensionsDropdown", true);
+      await markPending("extensionsDropdown", run);
     }
-    if (!(await window.__vm.store.get("sidebarKeyFreed", false))) await freeSidebarKey();
+    const sidebarKey = await phase("sidebarKeyFreed", keysFree([TOGGLE]), run);
+    if (sidebarKey === "none" || sidebarKey === "redo") await freeSidebarKey(run);
     try {
-      if (!(await window.__vm.store.get("tabKeysFreed", false))) await freeTabKeys();
+      const tabKeys = await phase("tabKeysFreed", keysFree(TAB_KEYS), run);
+      if (tabKeys === "none" || tabKeys === "redo") await freeTabKeys(run);
     } finally { keysDone(); }
-    if ((await window.__vm.store.get("bootstrap", 0)) >= VERSION) return;
+    let boot = await window.__vm.store.get("bootstrap", 0);
+    if (isPending(boot)) {
+      if (boot.run === run) return; // this run applied it: a later launch checks it
+      if (await bootShows()) { await window.__vm.store.set("bootstrap", Number(boot.pending) || 0); boot = Number(boot.pending) || 0; }
+    }
+    const done = bootDone(boot);
+    if (typeof boot === "number" && done >= VERSION) return;
+    if (isPending(boot) && done >= VERSION) return;
     await bindShortcuts();
     await tidyToolbars();
     await set("vivaldi.address_bar.visible", false);
-    if (!(await window.__vm.store.get("bootstrap", 0))) {
+    if (!done) {
       await set("vivaldi.panels.position", "right");
       await set("vivaldi.auto_hide.enabled", true);
       for (const [key, value] of [["panel", true], ["tab_bar", false], ["address_bar", false], ["status_bar", false],
@@ -253,7 +320,9 @@
       await set("vivaldi.tabs.bar.width", 323);
     }
     await replaceWelcome();
-    await window.__vm.store.set("bootstrap", VERSION);
+    // pending until a later launch sees the toolbars and the hidden address row; `done` keeps the version done before, so
+    // a step cut short is applied again without the first-run settings above
+    await window.__vm.store.set("bootstrap", run ? { pending: VERSION, done, run } : VERSION);
   };
 
   configure().catch((e) => console.warn("[vivarc] profile setup:", e)).finally(keysDone);
