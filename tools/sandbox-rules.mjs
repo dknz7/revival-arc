@@ -5678,7 +5678,9 @@ for (const layout of ["dia", "arc"]) {
     act: async () => {
       const r = {};
       const tabId = (await activeUrl(ctx.W)).id;
-      const title0 = await h.ev(`chrome.tabs.get(${tabId}).then((t) => t.title)`, ctx.H);
+      // the setup's navigation to /en-1 must have its own title first, or a late "EN-1" reads as a changed title
+      const title0 = (await waitFor(() => h.ev(`chrome.tabs.get(${tabId}).then((t) => (t.title === "EN-1" ? t.title : null))`, ctx.H), 8000, 150))
+        ?? await h.ev(`chrome.tabs.get(${tabId}).then((t) => t.title)`, ctx.H);
       await h.ev(`(window.__vm.commandBar.handOver("javascript:document.title='PWNED-9B'", { tabId: ${tabId}, submit: true }), 1)`, ctx.W);
       await sleep(1500);
       r.script = { ...(await FIELD_STATE9(ctx.W)), title: await h.ev(`chrome.tabs.get(${tabId}).then((t) => t.title)`, ctx.H), title0 };
