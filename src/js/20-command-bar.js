@@ -171,9 +171,11 @@
     { label: "Manage Extensions", words: "extensions addons", run: () => openPage("vivaldi://extensions") },
     { label: "Pin This Tab", words: "pin bookmark", tab: true, run: async (tab) => {
       if (await window.__vm.pinTab?.(tab, "Pinned")) toast("Pinned Tab");
+      else toast("Could not pin the tab: this space has no bookmark folder yet");
     } },
     { label: "Add This Tab to Favorites", words: "favorite pin", tab: true, run: async (tab) => {
       if (await window.__vm.pinTab?.(tab, "Favorites")) toast("Added to Favorites");
+      else toast("Could not add the tab to Favorites: no bookmark folder yet");
     } },
     { label: "Copy Current URL", words: "copy link address share", tab: true, run: async (tab) => {
       await navigator.clipboard?.writeText(tab.url).catch(() => {});
