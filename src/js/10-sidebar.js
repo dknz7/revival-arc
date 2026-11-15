@@ -154,8 +154,11 @@
     state.bound = bound;
     for (const { tabId, patch } of writes) writeExt(tabId, patch);
   };
-  // The tabs shown as this window's favorites and pins: the command bar's list with nothing typed leaves them out.
+  // The tabs shown as this window's favorites and pins, and the ids of the favorites and pins it shows now: the command
+  // bar's list with nothing typed leaves those tabs out, and a vivarcPin mark only counts when it names one of those ids
+  // (a mark left by an unpinned last pin stays on its tab: plan clears nothing when no pins remain).
   window.__vm.boundTabIds = () => new Set([...state.bound.values()].map((t) => t.id));
+  window.__vm.pinIds = () => new Set(spacesOf.sidebarPins(state.favs, state.pinned).map((p) => p.id));
 
   // Favorites are shared by every space (like Arc's); Pinned belongs to the space on screen.
   const ensureFolder = async (name) => {

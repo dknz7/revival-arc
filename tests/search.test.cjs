@@ -473,12 +473,14 @@ test('with nothing typed, a tab of a deleted space is never offered, even as the
 });
 // The list with nothing typed (Byron, 2026-11-15): this window's tabs of the space on screen here, most recently used
 // first, without favorites' and pins' tabs, Vivaldi-pinned tabs or the active tab. Window 1 shows space 1 (its active
-// tab, 10, is there) unless `record` says otherwise. bound: the tabs the sidebar has bound to a favorite or pin.
-async function emptyBar(tabs, { known = [1, 2], record = null, bound = [], opener = 'vm-open-command-bar' } = {}) {
+// tab, 10, is there) unless `record` says otherwise. bound: the tabs the sidebar has bound to a favorite or pin; pins: the
+// ids of the favorites and pins the sidebar shows now.
+async function emptyBar(tabs, { known = [1, 2], record = null, bound = [], pins = ['55'], opener = 'vm-open-command-bar' } = {}) {
   const space = await spaces(tabs);
   vm.runInContext(source('08-pins.js'), space.context);
   space.context.window.__vm.native = { spaceIds: async () => known, hasSwitch: () => false, record: () => record };
   space.context.window.__vm.boundTabIds = () => new Set(bound);
+  space.context.window.__vm.pinIds = () => new Set(pins);
   await space.context.events[opener]();
   for (let i = 0; i < 10; i++) await new Promise(resolve => setImmediate(resolve));
   return { ...space, rows: () => tabRows(space.made) };
@@ -500,6 +502,14 @@ test("with nothing typed, favorites' and pins' tabs and Vivaldi-pinned tabs are 
     13: used(page(13, 1), 700), 14: used(page(14, 1), 100),
   }, { bound: [13] });
   assert.deepEqual(listed(rows()), [14], '11 carries a favorite, 12 is pinned, 13 is bound by the sidebar');
+});
+// Codex review: unpinning the last favorite or pin leaves its tab open with its vivarcPin mark (08-pins.js clears nothing
+// when no pins remain), and the sidebar lists it as an ordinary tab: so does the bar.
+test("with nothing typed a tab whose favorite or pin is gone (its mark left behind) is listed as an ordinary tab", async () => {
+  const tabs = { 10: page(10, 1), 11: { ...used(page(11, 1), 500), vivExtData: ext(1, { vivarcPin: '55' }) }, 14: used(page(14, 1), 100) };
+  assert.deepEqual(listed((await emptyBar(tabs, { pins: [] })).rows()), [11, 14], 'the last pin, 55, was unpinned');
+  assert.deepEqual(listed((await emptyBar(tabs, { pins: ['56'] })).rows()), [11, 14], 'another pin remains, not 55');
+  assert.deepEqual(listed((await emptyBar(tabs, { pins: ['55'] })).rows()), [14], 'while 55 is a pin its tab stays out');
 });
 test('with nothing typed the active tab is left out, and the only tab makes an empty list', async () => {
   assert.deepEqual(listed((await emptyBar({ 10: used(page(10, 1), 900), 11: used(page(11, 1), 100) })).rows()), [11], "Ctrl+T's bar over tab 10");

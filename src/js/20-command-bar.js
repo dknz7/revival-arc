@@ -600,7 +600,7 @@
 
   // The list with nothing typed (Byron, 2026-11-15; workspaces.barTabs): this window's ordinary tabs of the space on
   // screen here, most recently used first (lastAccessed), up to 50, the list scrolling past what fits. Left out: other
-  // windows and spaces, favorites' and pins' tabs (the vivarcPin mark, or the sidebar's binding not yet written there),
+  // windows and spaces, favorites' and pins' tabs (the sidebar's binding, or a vivarcPin mark naming a favorite or pin it shows),
   // Vivaldi-pinned tabs, blank tabs, the bar's own tab and the active one (switching to the tab you are on does nothing).
   // The space on screen is Vivaldi's record for this window, as the sidebar reads it, else the active tab's. Only a
   // space known to exist lists anything (Task 9a: the first row is what Enter picks). Typing still searches every tab.
@@ -614,8 +614,11 @@
     try { shown = here != null ? window.__vm.native?.record?.()?.activeIn(here) ?? null : null; } catch (_) {}
     if (shown == null) shown = active && active.windowId === here ? spaces.of(active) : null;
     if (shown == null) return [];
-    const boundIds = (() => { try { return window.__vm.boundTabIds?.() || new Set(); } catch (_) { return new Set(); } })();
-    const bound = (t) => boundIds.has(t.id) || window.__vm.pins?.pinOf?.(t) !== undefined;
+    const read = (fn) => { try { return fn?.() || new Set(); } catch (_) { return new Set(); } };
+    const boundIds = read(window.__vm.boundTabIds), pinIds = read(window.__vm.pinIds);
+    // A vivarcPin mark counts only for a favorite or pin the sidebar shows now: unpinning the last one leaves its mark on
+    // the tab (08-pins.js clears nothing without pins), and that tab is an ordinary one again.
+    const bound = (t) => { const mark = window.__vm.pins?.pinOf?.(t); return boundIds.has(t.id) || (mark !== undefined && pinIds.has(mark)); };
     const mine = (window.__vm.peek?.without ?? ((t) => t))(tabs).filter((t) => !isBlank(t));
     return spaces.barTabs({ tabs: mine, here, shown, known: spaces.spaceList(ids), bound, skip: [targetTab, active?.id] });
   };
